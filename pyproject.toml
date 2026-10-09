@@ -1,0 +1,16 @@
+[project]
+name = "mooc-fully-automatic"
+version = "4.0.0"
+description = "智慧职教课程管理、题目导出与可配置 AI 答题工具"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "lxml==6.1.0",
+    "pycryptodome~=3.18.0",
+    "requests==2.31.0",
+    "python-docx~=1.1.0",
+    "urllib3<2; sys_platform == 'darwin' and python_version < '3.10'",
+]
+
+[tool.uv]
+package = false
