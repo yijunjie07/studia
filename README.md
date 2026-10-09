@@ -1,4 +1,4 @@
-# MOOC Fully Automatic
+# ICVE AI Assistant · 智慧职教 AI 助手
 
 智慧职教常规 MOOC / AI 优课的课程管理、题目导出和 AI 答题工具。
 
@@ -19,8 +19,8 @@ AI 答题及题目导出支持 `ai.icve.com.cn`，资源库当前支持学习管
 建议 Python 3.10–3.12，最低 Python 3.9。
 
 ```bash
-git clone https://github.com/yijunjie07/mooc_fully_automatic.git
-cd mooc_fully_automatic
+git clone https://github.com/yijunjie07/icve-ai-assistant.git
+cd icve-ai-assistant
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt

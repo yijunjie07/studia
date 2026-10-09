@@ -97,7 +97,7 @@ def print_startup_info():
     border = '*' * 80
     logger.info(border)
     logger.info(f'应用程序启动，版本: {APP_VERSION}')
-    logger.info('项目地址: https://github.com/yijunjie07/mooc_fully_automatic')
+    logger.info('项目地址: https://github.com/yijunjie07/icve-ai-assistant')
     logger.info(border)
 
     # 发布构建才检查更新；源码运行 release_build=False 跳过

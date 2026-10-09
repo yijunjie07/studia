@@ -334,7 +334,7 @@ wheels = [
 ]
 
 [[package]]
-name = "mooc-fully-automatic"
+name = "icve-ai-assistant"
 version = "4.0.0"
 source = { virtual = "." }
 dependencies = [

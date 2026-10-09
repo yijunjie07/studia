@@ -159,7 +159,7 @@ def sign_learn(session, course_id, type_value):
     post = session.get(url=result_json['data'], headers=HEADERS)
     logger.debug(post.text)
     if 'id="parm_0"' in post.text or 'window.top.location = "/";' in post.text:
-        alicfw = input('填入alicfw(查看: https://github.com/yijunjie07/mooc_fully_automatic/blob/main/docs/legacy/ALICFW.md): ')
+        alicfw = input('填入alicfw(查看: https://github.com/yijunjie07/icve-ai-assistant/blob/main/docs/legacy/ALICFW.md): ')
         session.cookies.set('alicfw', alicfw)
         return sign_learn(session, course_id, type_value)
 
