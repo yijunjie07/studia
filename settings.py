@@ -100,7 +100,8 @@ class SettingsStore:
                     raise ValueError()
                 ids.add(item["id"])
                 AIConfig(item["base_url"], item["model"], item["api_key"],
-                         provider_name=item.get("provider_name", ""))
+                         provider_name=item.get("provider_name", ""),
+                         api_format=item.get("api_format", "chat_completions"))
             if profiles.get("active_id") is not None and profiles["active_id"] not in ids:
                 raise ValueError()
             return profiles
@@ -123,7 +124,8 @@ class SettingsStore:
     def ai_profiles(self):
         profiles = self._profiles(self._read())
         return [ModelProfile(item["id"], AIConfig(item["base_url"], item["model"], item["api_key"],
-                         provider_name=item.get("provider_name", "")),
+                         provider_name=item.get("provider_name", ""),
+                         api_format=item.get("api_format", "chat_completions")),
                              profiles.get("active_id") == item["id"])
                 for item in sorted(profiles["items"], key=lambda item: item["id"] != DEFAULT_PROFILE_ID)]
 
@@ -140,8 +142,9 @@ class SettingsStore:
         matching = next((item for item in profiles["items"] if item["id"] == DEFAULT_PROFILE_ID), None)
         if matching is None:
             matching = next((item for item in profiles["items"]
-                         if (item["base_url"], item["model"], item["api_key"]) ==
-                         (config.base_url, config.model, config.api_key)), None)
+                         if (item["base_url"], item["model"], item["api_key"],
+                             item.get("api_format", "chat_completions")) ==
+                         (config.base_url, config.model, config.api_key, config.api_format)), None)
         if matching is None:
             if not profiles["items"]:
                 profiles["active_id"] = DEFAULT_PROFILE_ID
@@ -151,7 +154,8 @@ class SettingsStore:
                 profiles["active_id"] = DEFAULT_PROFILE_ID
             profiles["items"].remove(matching)
         matching.update(id=DEFAULT_PROFILE_ID, base_url=config.base_url,
-                        model=config.model, api_key=config.api_key, provider_name=DEFAULT_PROVIDER_NAME)
+                        model=config.model, api_key=config.api_key, provider_name=DEFAULT_PROVIDER_NAME,
+                        api_format="chat_completions")
         profiles["items"].insert(0, matching)
         if profiles == original and data.get("default_model_added"):
             return
@@ -172,7 +176,7 @@ class SettingsStore:
             if profile_id == DEFAULT_PROFILE_ID:
                 raise SettingsError("默认供应商不可修改")
         item.update(base_url=config.base_url, model=config.model, api_key=config.api_key,
-                    provider_name=config.provider_name)
+                    provider_name=config.provider_name, api_format=config.api_format)
         health = item.get("health", {})
         if not isinstance(health, dict) or health.get("config") != self.ai_fingerprint(config):
             item.pop("health", None)
@@ -211,6 +215,8 @@ class SettingsStore:
     @staticmethod
     def ai_fingerprint(config):
         identity = json.dumps([config.endpoint, config.model, config.api_key])
+        if config.api_format == "auto":
+            identity += ":auto"
         return hashlib.sha256(identity.encode()).hexdigest()
 
     def ai_health(self, config):
@@ -221,14 +227,18 @@ class SettingsStore:
                 return health
         return {}
 
-    def save_ai_health(self, config, status, message=""):
+    def save_ai_health(self, config, status, message="", *, previous_config=None):
         data = self._read()
         profiles = self._profiles(data)
         fingerprint = self.ai_fingerprint(config)
+        previous_fingerprint = self.ai_fingerprint(previous_config) if previous_config else fingerprint
         for item in profiles["items"]:
             stored = AIConfig(item["base_url"], item["model"], item["api_key"],
-                         provider_name=item.get("provider_name", ""))
-            if self.ai_fingerprint(stored) == fingerprint:
+                         provider_name=item.get("provider_name", ""),
+                         api_format=item.get("api_format", "chat_completions"))
+            if self.ai_fingerprint(stored) == previous_fingerprint:
+                if status == "ok":
+                    item["api_format"] = config.api_format
                 item["health"] = {"config": fingerprint, "status": status, "message": message,
                                   "checked_at": datetime.now().isoformat(timespec="seconds")}
         self._save_profiles(data, profiles)

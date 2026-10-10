@@ -472,9 +472,9 @@ class TerminalUI:
 
     def course_menu(self, courses, platform):
         title = courses[0].get("courseName", "未知课程") if len(courses) == 1 else f"已选 {len(courses)} 门课程"
-        choices = [(1, "继续学习", "处理课程学习进度")]
+        choices = [(1, "自动学习", "完成课程学习任务")]
         if platform == 0:
-            choices += [(2, "导出题目", "保存平台已有题目和答案"), (3, "AI 答题", "生成报告或当次选择交卷")]
+            choices += [(2, "AI 答题", "AI 作答并自动交卷"), (3, "导出题目", "保存题目和已有答案")]
         return self.choice(title, choices, help_text="Esc 返回课程列表 · q 退出")
 
     def choose_platform(self, current):
@@ -494,7 +494,7 @@ class TerminalUI:
         self.ask("回车返回课程，q 退出")
 
     def review_study(self, courses):
-        self.table("继续学习", ["课程", "操作"], [(c.get("courseName", "未知课程"), "处理学习进度") for c in courses],
+        self.table("自动学习", ["课程", "操作"], [(c.get("courseName", "未知课程"), "完成课程学习任务") for c in courses],
                    "回车开始 · Esc 返回 · q 退出")
         while self.ask("操作", "开始") != "开始":
             self.note("回车开始；Esc 返回，q 退出。")
@@ -517,24 +517,24 @@ class TerminalUI:
             self.note("请输入 y 或 n。", "warning")
 
     def ai_config(self, current=None):
-        from ai.client import AIConfig
+        from model_ui import draft_config
         provider = 2 if current and current.base_url == "https://api.deepseek.com" else 1
         url, model = (current.base_url, current.model) if current else (None, None)
         step = "provider"
         while True:
             try:
                 if step == "provider":
-                    provider = self.choice("AI 服务", [(1, "自定义接口", "兼容 OpenAI Chat Completions"),
+                    provider = self.choice("AI 服务", [(1, "自定义服务", "OpenAI 兼容"),
                                                         (2, "DeepSeek", "填写 Key 并选择模型")], default=provider,
                                            help_text="Esc 返回 · q 退出")
                     if provider == 2 and url != "https://api.deepseek.com":
                         url, model = "https://api.deepseek.com", None
-                    step = "url" if provider == 1 else "model"
+                    step = "url" if provider != 2 else "model"
                 elif step == "url":
                     url = self.ask("API Base URL（含 /v1 等服务路径）", url)
                     step = "model"
                 elif step == "model":
-                    if provider == 1:
+                    if provider != 2:
                         model = self.ask("Model ID", model)
                         step = "key"
                     else:
@@ -552,17 +552,16 @@ class TerminalUI:
                 else:
                     reuse_key = current and url.strip().rstrip("/") == current.base_url
                     key = self.ask("API Key（隐藏输入，回车保留原 Key）" if reuse_key else "API Key（隐藏输入，将保存到本机）", secret=True)
-                    if not key and reuse_key:
-                        key = current.api_key
-                    return AIConfig(url, model, key)
+                    return draft_config(url, model, key, current,
+                                        provider_name=current.provider_name if current else "")
             except Back:
                 if step == "provider":
                     raise
-                step = {"url": "provider", "model": "url" if provider == 1 else "provider",
+                step = {"url": "provider", "model": "url" if provider != 2 else "provider",
                         "custom_model": "model", "key": "model"}[step]
             except ValueError as exc:
                 self.note(str(exc), "warning")
-                step = "url" if provider == 1 else "model"
+                step = "url" if provider != 2 else "model"
 
     def model_picker(self, rows, active_id=None, *, cursor_id=None, message="", locked_ids=()):
         from model_ui import choose_model, ModelChoice
@@ -810,9 +809,9 @@ class TerminalUI:
 
     def home(self, platform_default=0):
         mode = self.choice("1 / 选择功能", [
-            (1, "学习管理", "选择课程，处理学习进度"),
-            (2, "题目导出", "Markdown / Word，包含平台已有答案"),
-            (3, "AI 答题", "生成答案报告，可自动交卷"),
+            (1, "自动学习", "完成课程学习任务"),
+            (2, "AI 答题", "AI 作答并自动交卷"),
+            (3, "导出题目", "保存题目和已有答案"),
             (4, "本机设置", "修改模型配置、清除 Key、退出登录"),
         ], default=1)
         platform = 0
@@ -940,14 +939,14 @@ def prompt_ai_config(input_fn=None, secret_fn=None, output=None):
     read = input_fn or input
     secret = secret_fn or getpass.getpass
     emit = output or TerminalUI().note
-    emit("AI 服务：1. 自定义 OpenAI 兼容接口  2. DeepSeek")
+    emit("AI 服务：1. 自定义服务（OpenAI 兼容）  2. DeepSeek")
     while True:
         provider = read("请选择 [1/2]（默认1）: ").strip() or "1"
         if provider in ("1", "2"):
             break
         emit("请输入 1 或 2")
     while True:
-        if provider == "1":
+        if provider != "2":
             url = read("API Base URL（含服务所需的 /v1 等路径）: ").strip()
             model = read("Model ID: ").strip()
         else:

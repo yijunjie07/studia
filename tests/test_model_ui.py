@@ -25,6 +25,36 @@ class ModelUITests(unittest.TestCase):
             pipe.send_text(keys)
             return edit_model(current, input=pipe, output=DummyOutput())
 
+    def test_four_fields_save_without_protocol_selection_and_preserve_detected_format(self):
+        old = AIConfig('https://one.example/v1', 'old', 'secret-key', api_format='responses')
+        result = self.form('供应商\t\t\t\t\r\x03', old)
+        self.assertEqual(result.action, 'save')
+        self.assertEqual(result.config.provider_name, '供应商')
+        self.assertEqual(result.config.api_format, 'responses')
+        self.assertEqual(result.config.api_key, 'secret-key')
+        self.assertEqual(old.provider_name, '')
+
+    def test_draft_retains_detected_format_only_when_connection_fields_are_unchanged(self):
+        from model_ui import draft_config
+        old = AIConfig('https://one.example/v1', 'old', 'secret-key', api_format='responses')
+        renamed = draft_config(' https://one.example/v1/ ', ' old ', '', old, provider_name='新名称')
+        self.assertEqual(renamed.api_format, 'responses')
+        self.assertEqual(renamed.api_key, 'secret-key')
+        for url, model, key in [('https://one.example/v1', 'new', ''),
+                                ('https://one.example/v1', 'old', 'new-key'),
+                                ('https://two.example/v1', 'old', 'new-key')]:
+            with self.subTest(url=url, model=model):
+                updated = draft_config(url, model, key, old)
+                self.assertEqual(updated.api_format, 'auto')
+        with self.assertRaisesRegex(ValueError, '新 API Key'):
+            draft_config('https://two.example/v1', 'new', '', old)
+
+    def test_new_draft_uses_auto_but_complete_endpoint_specifies_format(self):
+        from model_ui import draft_config
+        self.assertEqual(draft_config('https://one.example/v1', 'model', 'key').api_format, 'auto')
+        self.assertEqual(draft_config('https://one.example/v1/responses', 'model', 'key').api_format,
+                         'responses')
+
     def test_provider_name_is_independent_from_connection_fields_and_cancel_discards_it(self):
         result = self.form('  我的供应商  \thttps://two.example/v1\tmodel-b\tnew-key\t\r')
         self.assertEqual(result.action, 'save')

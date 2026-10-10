@@ -126,7 +126,7 @@ class CourseWorkspace:
             if not selected:
                 return 1
             try:
-                if mode == 2:
+                if mode == 3:
                     options = self.view.review_export(selected, export_options)
                     self.app.remember(lambda: self.store.set("export", options))
                     def export():

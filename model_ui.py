@@ -23,7 +23,6 @@ STYLE = Style.from_dict({
     'button': 'ansicyan', 'button.focused': 'bg:ansicyan ansiblack bold',
 })
 
-
 @dataclass
 class ModelChoice:
     action: str
@@ -110,7 +109,11 @@ def draft_config(url, model, key, current=None, *, provider_name=""):
         if url.strip().rstrip('/') != current.base_url:
             raise ValueError('接口地址已更改，请填写新 API Key')
         key = current.api_key
-    return AIConfig(url, model, key, provider_name=provider_name)
+    config = AIConfig(url, model, key, provider_name=provider_name)
+    if current and (config.base_url, config.model, config.api_key) == (
+            current.base_url, current.model, current.api_key):
+        config.api_format = current.api_format
+    return config
 
 
 def edit_model(current=None, *, input=None, output=None):

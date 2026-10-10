@@ -30,6 +30,42 @@ class ModelManagementTests(unittest.TestCase):
         self.a = AIConfig('https://one.example/v1', 'first', 'key-one')
         self.b = AIConfig('https://two.example/v1', 'second', 'key-two')
 
+    def test_text_editor_saves_four_fields_and_summary_omits_protocol(self):
+        inputs = iter(['供应商', 'https://one.example/v1', 'model', ''])
+        self.view.input_fn = lambda: next(inputs)
+        self.view.secret_fn = lambda prompt: 'private-key'
+        result = self.view.model_editor()
+        self.assertEqual(result.action, 'save')
+        self.assertEqual(result.config.api_format, 'auto')
+        current = AIConfig('https://one.example/v1', 'model', 'private-key', api_format='responses')
+        inputs = iter(['1', '新供应商', '', '', ''])
+        self.view.secret_fn = lambda prompt: ''
+        updated = self.view.model_editor(current)
+        self.assertEqual(updated.config.api_format, 'responses')
+        self.assertEqual(updated.config.api_key, 'private-key')
+        self.view.input_fn = lambda: ''
+        self.view.review_ai([], updated.config, {})
+        rendered = self.output.getvalue()
+        self.assertIn('新供应商', rendered)
+        self.assertNotIn('接口格式', rendered)
+        self.assertNotIn('Responses', rendered)
+        self.assertNotIn('private-key', rendered)
+
+    def test_legacy_configuration_custom_url_and_deepseek_sequences_use_auto(self):
+        from ui import prompt_ai_config
+        for values, expected in [(['1', 'https://one.example/v1', 'model'], 'auto'),
+                                  (['1', 'https://one.example/v1/responses', 'model'], 'responses'),
+                                  (['2', '1'], 'auto')]:
+            with self.subTest(values=values):
+                inputs = iter(values)
+                self.view.input_fn = lambda: next(inputs)
+                self.view.secret_fn = lambda prompt: 'private-key'
+                config = self.view.ai_config()
+                self.assertEqual(config.api_format, expected)
+                inputs = iter(values)
+                config = prompt_ai_config(lambda prompt: next(inputs), lambda prompt: 'private-key', lambda text: None)
+                self.assertEqual(config.api_format, expected)
+
     def test_custom_provider_name_is_shown_in_picker_and_answer_summary(self):
         config = AIConfig('https://private.example/v1', 'same-model', 'private-key',
                           provider_name='课程供应商')
@@ -133,7 +169,7 @@ class ModelManagementTests(unittest.TestCase):
              patch('app.AIClient.check_connection', autospec=True, side_effect=lambda client: seen.append(client.config)), \
              patch.object(self.app, 'execute_ai', side_effect=execute), \
              patch.object(self.view, 'operation_result', return_value=1):
-            CourseWorkspace(self.app).tasks([selected[0][0]], 3, state)
+            CourseWorkspace(self.app).tasks([selected[0][0]], 2, state)
         self.assertEqual(seen, [self.b, (selected, self.b, True, .9)])
         self.assertEqual(self.store.ai_config(), self.b)
         self.assertIn('second', self.output.getvalue())

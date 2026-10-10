@@ -1,8 +1,8 @@
-"""Small Chat Completions client for DeepSeek and compatible providers."""
+"""Chat Completions and Responses clients for compatible providers."""
 import json
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from urllib.parse import urlsplit
 
 import requests
@@ -21,6 +21,10 @@ class AITransientServiceError(AIServiceError):
     retryable = True
 
 
+class AIEndpointUnsupported(AIServiceError):
+    """An explicit endpoint rejection, eligible for a connection-test fallback."""
+
+
 class AIResponseError(AIError):
     """A malformed or incomplete model answer can be generated again."""
     retryable = True
@@ -33,12 +37,15 @@ class AIConfig:
     api_key: str = field(repr=False)
     timeout: int = 120
     provider_name: str = ""
+    api_format: str = "auto"
 
     def __post_init__(self):
         self.base_url = self.base_url.strip().rstrip("/")
         self.provider_name = self.provider_name.strip()
         self.model = self.model.strip()
         self.api_key = self.api_key.strip()
+        if self.api_format not in ("auto", "chat_completions", "responses"):
+            raise ValueError("接口格式无效")
         url = urlsplit(self.base_url)
         local = url.hostname in ("localhost", "127.0.0.1", "::1")
         if (url.scheme != "https" and not (url.scheme == "http" and local)) or not url.hostname:
@@ -47,12 +54,19 @@ class AIConfig:
             raise ValueError("API URL 不应包含账号、密钥、查询参数或片段")
         if not self.model or not self.api_key:
             raise ValueError("Model 和 API Key 不能为空")
+        for api_format, suffix in (("chat_completions", "/chat/completions"), ("responses", "/responses")):
+            if self.base_url.endswith(suffix):
+                if self.api_format == "auto":
+                    self.api_format = api_format
+                elif self.api_format != api_format:
+                    raise ValueError("完整接口地址与所选接口格式不一致")
 
     @property
     def endpoint(self):
-        if self.base_url.endswith("/chat/completions"):
+        suffix = "/responses" if self.api_format == "responses" else "/chat/completions"
+        if self.base_url.endswith(suffix):
             return self.base_url
-        return self.base_url + "/chat/completions"
+        return self.base_url + suffix
 
 
 def prompt_config(input_fn=None, secret_fn=None, output=None):
@@ -70,6 +84,24 @@ confidence 为 0 到 1。材料不足、需要未提供的图片或音频时 ans
 不要把猜测当成确定答案，不要输出 Markdown。"""
 
 
+def responses_text(payload):
+    """Read completed REST output messages, not the SDK-only output_text helper."""
+    if payload.get("status") != "completed" or payload.get("error"):
+        raise ValueError("incomplete response")
+    parts = []
+    for item in payload["output"]:
+        if item.get("type") == "reasoning":
+            continue
+        if (item.get("type") != "message" or item.get("role") != "assistant"
+                or item.get("status") != "completed"):
+            raise ValueError("unexpected output")
+        for block in item["content"]:
+            if block.get("type") != "output_text" or not isinstance(block.get("text"), str):
+                raise ValueError("missing text or refusal")
+            parts.append(block["text"])
+    return "".join(parts)
+
+
 class AIClient:
     def __init__(self, config, session=None):
         self.config = config
@@ -77,6 +109,15 @@ class AIClient:
         self.session = session or requests.Session()
 
     def check_connection(self):
+        if self.config.api_format == "auto":
+            candidate = AIClient(replace(self.config, api_format="chat_completions"), self.session)
+            try:
+                candidate.check_connection()
+            except AIEndpointUnsupported:
+                candidate = AIClient(replace(self.config, api_format="responses"), self.session)
+                candidate.check_connection()
+            self.config.api_format = candidate.config.api_format
+            return
         result = self.answer({"type": "单选", "title": "连接测试：请选择 A。",
                               "options": [{"label": "A", "text": "连接正常"}]})
         if result["answer"] != "A":
@@ -92,6 +133,10 @@ class AIClient:
             ],
             "stream": False,
         }
+        if self.config.api_format == "responses":
+            body = {"model": self.config.model, "instructions": SYSTEM_PROMPT,
+                    "input": json.dumps(public_question, ensure_ascii=False),
+                    "stream": False, "store": False}
         try:
             response = self.session.post(
                 self.config.endpoint, json=body,
@@ -104,6 +149,16 @@ class AIClient:
             raise AIServiceError("AI 连接失败或超时；请检查服务地址和网络") from None
         if response.status_code != 200:
             # Provider error bodies may echo keys or submitted prompts.
+            unsupported = response.status_code in (405, 501)
+            if response.status_code in (400, 404):
+                try:
+                    error_data = response.json().get("error", {})
+                    unsupported = isinstance(error_data, dict) and error_data.get("code") in (
+                        "endpoint_not_found", "route_not_found", "unsupported_endpoint", "unsupported_api")
+                except (ValueError, AttributeError, TypeError):
+                    pass
+            if unsupported:
+                raise AIEndpointUnsupported("AI 服务不支持此接口路径")
             reasons = {
                 401: "鉴权失败：请重新填写此服务商的 API Key，并核对服务地址",
                 403: "访问被拒绝：请检查账号或模型使用权限",
@@ -116,10 +171,13 @@ class AIClient:
             raise error("AI 服务 HTTP %s · %s" % (response.status_code, reason))
         try:
             payload = response.json()
-            choice = payload["choices"][0]
-            if choice.get("finish_reason") != "stop":
-                raise ValueError("incomplete response")
-            content = choice["message"]["content"].strip()
+            if self.config.api_format == "responses":
+                content = responses_text(payload).strip()
+            else:
+                choice = payload["choices"][0]
+                if choice.get("finish_reason") != "stop":
+                    raise ValueError("incomplete response")
+                content = choice["message"]["content"].strip()
             if content.startswith("```"):
                 content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content)
             result = json.loads(content)

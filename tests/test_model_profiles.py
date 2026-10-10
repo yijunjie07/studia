@@ -14,11 +14,48 @@ class ModelProfilesTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.store = SettingsStore(Path(self.temp.name))
         default_patch = patch('ai.defaults.default_config', return_value=AIConfig(
-            'https://mochif.com/v1', 'gemini-3.8-flash', 'test-shared-key'))
+            'https://mochif.com/v1', 'gemini-3.8-flash', 'test-shared-key', api_format='chat_completions'))
         default_patch.start()
         self.addCleanup(default_patch.stop)
-        self.a = AIConfig('https://one.example/v1', 'same-model', 'key-one')
-        self.b = AIConfig('https://two.example/v1', 'same-model', 'key-two')
+        self.a = AIConfig('https://one.example/v1', 'same-model', 'key-one', api_format='chat_completions')
+        self.b = AIConfig('https://two.example/v1', 'same-model', 'key-two', api_format='chat_completions')
+
+    def test_responses_profile_survives_restart_and_health_is_protocol_specific(self):
+        chat_id = self.store.save_ai_profile(self.a)
+        responses = AIConfig(self.a.base_url, self.a.model, self.a.api_key, api_format='responses')
+        response_id = self.store.save_ai_profile(responses)
+        self.store.save_ai_health(self.a, 'ok')
+        self.store.save_ai_health(responses, 'error', '连接失败')
+        self.store.activate_ai_profile(response_id)
+        restarted = SettingsStore(self.store.directory)
+        self.assertEqual(restarted.ai_config(), responses)
+        self.assertEqual(restarted.ai_health(self.a)['status'], 'ok')
+        self.assertEqual(restarted.ai_health(responses)['status'], 'error')
+        self.store.delete_ai_profile(response_id)
+        self.store.save_ai_profile(responses, chat_id)
+        self.assertEqual(self.store.ai_health(responses), {})
+
+    def test_legacy_protocol_defaults_to_chat_and_invalid_protocol_does_not_overwrite(self):
+        raw = {'base_url': self.a.base_url, 'model': self.a.model, 'api_key': self.a.api_key}
+        self.store.set('ai', raw)
+        self.store.set('ai_health', {'config': self.store.ai_fingerprint(self.a), 'status': 'ok'})
+        self.assertEqual(self.store.ai_config().api_format, 'chat_completions')
+        self.assertEqual(self.store.ai_health(self.a)['status'], 'ok')
+        self.store.set('ai', dict(raw, api_format='unsupported'))
+        before = self.store.path.read_bytes()
+        with self.assertRaises(SettingsError):
+            self.store.save_ai_profile(self.b)
+        self.assertEqual(self.store.path.read_bytes(), before)
+
+    def test_responses_custom_profile_matching_default_is_not_replaced(self):
+        from ai.defaults import default_config
+        default = default_config()
+        responses = AIConfig(default.base_url, default.model, default.api_key, api_format='responses')
+        custom_id = self.store.save_ai_profile(responses)
+        self.store.ensure_default_model()
+        self.assertEqual([p.id for p in self.store.ai_profiles()], ['builtin-default', custom_id])
+        self.assertEqual(self.store.ai_profiles()[0].config.api_format, 'chat_completions')
+        self.assertEqual(self.store.ai_config(), responses)
 
     def test_provider_name_round_trip_and_rename_preserve_connection_health(self):
         named = AIConfig(self.a.base_url, self.a.model, self.a.api_key,

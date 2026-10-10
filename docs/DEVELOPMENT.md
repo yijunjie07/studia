@@ -57,6 +57,12 @@ python -m tools.ui_demo exports/ui-preview.html
 
 `Application` 可注入 `SettingsStore`，测试使用临时目录或 Mock，不能触碰真实用户配置。平台客户端接收关键字参数 `access_token` 时只验证账号，不再兑换 SSO 令牌；主流程使用严格模式读取课程。只有明确的认证过期会触发重新登录，恢复逻辑只覆盖执行任务前的只读操作，不重试答题或提交。
 
+`AIConfig.api_format` 取 `auto`（新建默认）、`chat_completions` 或 `responses`，作为末尾可选字段保留原位置参数兼容性；旧配置缺少该字段时按 Chat Completions 读取，内置默认供应商明确使用此格式。界面只收集供应商名称、URL、模型和 Key。`auto` 配合完整 `/chat/completions` 或 `/responses` URL 时直接推断对应格式；基础 URL 等待连接测试识别。旧配置的显式格式继续接受，显式格式与完整端点冲突时拒绝保存。仅修改显示名称保留格式和健康记录；规范化后的 URL、模型或 Key 变化会重置为 `auto`（完整 URL 则直接推断）。
+
+`check_connection()` 对 `auto` 先测试 Chat Completions，只有明确的接口不支持错误才尝试 Responses：HTTP 405/501，或 HTTP 400/404 携带受支持的接口错误码（`endpoint_not_found`、`route_not_found`、`unsupported_endpoint`、`unsupported_api`）。鉴权、额度、超时、普通 400 和模型不存在均不触发回退。测试成功后更新实际格式，`verify_ai()` 使用测试前配置快照将识别结果与健康记录一同持久化；显式格式和已识别配置不重复探测。健康指纹继续使用 endpoint、模型和 Key，旧 Chat Completions 健康记录保持有效。
+
+Chat Completions 请求使用 `messages`；Responses 请求使用 `instructions` 和 `input`，并明确设置 `stream=false`、`store=false`。Responses 解析仅接受已完成响应中的消息 `output_text`，忽略 reasoning 等非消息输出；拒绝 refusal、失败、未完成或不合法的答案 JSON。两种协议共用答案校验与重试分类；答题请求不触发协议切换。Responses 协议参考 [OpenAI Create a response](https://developers.openai.com/api/reference/resources/responses/methods/create)。
+
 AI 配置与连接健康状态独立保存；健康记录绑定 endpoint、模型和 Key 的指纹，配置变化后失效。`verify_ai()` 发送固定的合成题验证连接和答案格式，必须先于读取平台试卷。单题生成中，`AITransientServiceError`（网络、408/429、5xx）和 `AIResponseError`（响应格式异常）允许最多 2 次重试，间隔 1、2 秒，每次请求前检查时限。重试耗尽、答案无效或低置信度时，runner 调用 `manual_answer(question, reason)`；返回有效答案后标记来源为 manual，返回 None 则保存 paused 并停止队列。未注入交互回调时保留原有 ai_error / needs_review 行为。鉴权错误不交给人工补题；低置信度不靠重复生成抬高。平台读取、计时、交卷不由此重放，错误信息不包含 Key 或服务商原始响应。
 
 补答前写入 pending_manual 检查点，输入时 UI 暂停 Rich Live，平台计时继续。人工答案先校验并落盘，再检查时限决定能否继续。每次启动答题都重新调用 AI 生成全部答案，不读取旧报告中的答案、题库答案或上次人工答案。报告仅用于查阅和交卷状态保护；本次运行内仅重试失败的单题，人工补答后继续处理下一题。交卷前仍复查平台记录，结果未知的提交不自动重发。

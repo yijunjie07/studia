@@ -150,6 +150,8 @@ class Application:
         return "连接失败 · " + str(health.get("message", "请重新测试"))
 
     def verify_ai(self, config, client=None):
+        from dataclasses import replace
+        previous_config = replace(config)
         client = client or AIClient(config)
         try:
             with self.view.activity("测试 AI 连接"):
@@ -157,7 +159,7 @@ class Application:
         except AIError as exc:
             self.remember(lambda: self.store.save_ai_health(config, "error", str(exc)))
             raise
-        self.remember(lambda: self.store.save_ai_health(config, "ok"))
+        self.remember(lambda: self.store.save_ai_health(config, "ok", previous_config=previous_config))
         return client
 
     def test_ai_connection(self, config=None):

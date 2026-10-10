@@ -14,6 +14,7 @@ def default_config():
     return AIConfig(
         base_url="https://mochif.com/v1",
         model="gemini-3.8-flash",
+        api_format="chat_completions",
         provider_name=DEFAULT_PROVIDER_NAME,
         api_key="sk-l4HgtBSCj9vgMUrL49RUDFYakcokDMGIx3Z5wQ8xMRnigTjW",
     )

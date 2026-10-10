@@ -75,7 +75,7 @@ class ChecklistTests(unittest.TestCase):
                  patch('ui.read_terminal_line', return_value='q'), \
                  patch.object(app, 'task_catalog', side_effect=[initial, updated]):
                 with self.assertRaises(Cancelled):
-                    CourseWorkspace(app).tasks([course], 2, state)
+                    CourseWorkspace(app).tasks([course], 3, state)
         self.assertEqual(state.get('selected'), updated)
 
 

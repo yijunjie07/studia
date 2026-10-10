@@ -203,21 +203,21 @@ class WorkspaceTests(unittest.TestCase):
 
     def test_back_from_ai_summary_preserves_selected_papers(self):
         catalog = [(COURSES[0], {"id": "a", "name": "第一章"}, 3)]
-        _, text, _, runner = self.run_workspace(["1", "3", "1", "\x1b", "", "", "", "q"], catalog)
+        _, text, _, runner = self.run_workspace(["1", "2", "1", "\x1b", "", "", "", "q"], catalog)
         self.assertIn("回车保留", text)
         self.assertEqual(runner.return_value.run_paper.call_count, 1)
 
     def test_report_only_override_returns_to_auto_submit_next_operation(self):
         catalog = [(COURSES[0], {"id": "a", "name": "第一章"}, 3)]
         _, text, _, runner = self.run_workspace(
-            ["1", "3", "1", "s", "1", "1", "b", "", "", "3", "1", "", "", "q"], catalog)
+            ["1", "2", "1", "s", "1", "1", "b", "", "", "2", "1", "", "", "q"], catalog)
         self.assertEqual([call.kwargs["auto_submit"] for call in runner.call_args_list], [False, True])
         self.assertIsNone(self.store.get("auto_submit"))
 
     def test_paused_manual_question_stops_queue_without_repeating_errors(self):
         catalog = [(COURSES[0], {"id": "a", "name": "第一章"}, 3),
                    (COURSES[0], {"id": "b", "name": "第二章"}, 3)]
-        view, text, _, runner = self.run_workspace(["1", "3", "all", "", "", "q"], catalog,
+        view, text, _, runner = self.run_workspace(["1", "2", "all", "", "", "q"], catalog,
             {"status": "paused", "paper": "第一章", "message": "答案已保留，待补答",
              "answers": [{"error": "单题重试 2 次后仍失败：bad JSON"}]})
         runner.return_value.run_paper.assert_called_once()
@@ -238,7 +238,7 @@ class WorkspaceTests(unittest.TestCase):
         self.assertIn("本机设置", text)
 
     def test_no_tasks_returns_to_same_course_without_running_ai(self):
-        _, text, _, runner = self.run_workspace(["1", "3", "", "q"])
+        _, text, _, runner = self.run_workspace(["1", "2", "", "q"])
         self.assertIn("暂无作业", text)
         runner.assert_not_called()
 
@@ -259,7 +259,7 @@ class WorkspaceTests(unittest.TestCase):
         def export(**kwargs):
             return QuizExportHandler(output_dir=str(target), **kwargs)
         with patch.object(course_flow, "QuizExportHandler", side_effect=export):
-            _, text, _, _ = self.run_workspace(["1", "2", "2", "", "", "q"], catalog)
+            _, text, _, _ = self.run_workspace(["1", "3", "2", "", "", "q"], catalog)
         files = list(target.rglob("*.md"))
         self.assertEqual(len(files), 1)
         self.assertIn("第二章", files[0].read_text())
@@ -273,7 +273,7 @@ class WorkspaceTests(unittest.TestCase):
         (root / "a.md").write_text("结果未知")
         (root / "b.md").write_text("旧报告")
         with patch("course_flow.report_path", side_effect=lambda directory, user, course, exam: root / (exam + ".json")):
-            _, text, _, runner = self.run_workspace(["1", "3", "all", "", "", "q"], catalog,
+            _, text, _, runner = self.run_workspace(["1", "2", "all", "", "", "q"], catalog,
                                                     {"status": "submission_unknown", "paper": "第一章"})
         self.assertEqual(runner.return_value.run_paper.call_count, 1)
         self.assertNotIn("b.md", text)

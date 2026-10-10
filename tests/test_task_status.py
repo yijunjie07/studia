@@ -86,7 +86,7 @@ class TaskStatusTests(unittest.TestCase):
 
         with patch('AIMoocMain.exam_api.ExamAPI.request', autospec=True, side_effect=request):
             with self.assertRaises(Cancelled):
-                workspace.tasks([COURSE], 3, {})
+                workspace.tasks([COURSE], 2, {})
         before, after = output.getvalue().split('已提交', 1)
         self.assertIn('未作答', before)
         self.assertNotIn('未作答', after)
@@ -107,7 +107,7 @@ class TaskStatusTests(unittest.TestCase):
         state = {}
         with patch.object(app, 'task_catalog', side_effect=[initial, refreshed]):
             with self.assertRaises(Cancelled):
-                CourseWorkspace(app).tasks([COURSE], 2, state)
+                CourseWorkspace(app).tasks([COURSE], 3, state)
         self.assertEqual([item['id'] for _, item, _ in state['selected']], ['a', 'b'])
         self.assertEqual(state['selected'][0][1]['_completion_status'], 'submitted')
 
