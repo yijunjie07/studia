@@ -50,12 +50,8 @@ Windows 激活命令为 `.venv\Scripts\activate`。使用 uv 时执行 `uv sync 
 
 ## 来源与致谢
 
-本仓库由 **yijunjie07** 维护，是基于以下项目与贡献继续开发的版本：
+基于 [11273/mooc-work-answer](https://github.com/11273/mooc-work-answer) 继续开发，由 **yijunjie07** 维护。感谢原作者及贡献者，以及 **tooplick** 的[题目导出贡献](https://github.com/11273/mooc-work-answer/pull/198)。
 
-- 基础代码：[11273/mooc-work-answer](https://github.com/11273/mooc-work-answer)，感谢原项目作者及历任贡献者。整理时的上游基线为 `aa87320f6cda73a8ed363dd1e4e3cb6fe4b9c61b`。
-- 题目导出：感谢 **tooplick** 的 [PR #198](https://github.com/11273/mooc-work-answer/pull/198)，采用版本为 `a276abd0627f44bc433a4b8d8bc74dc1e44c09ac`。
-- 本仓库后续开发：可配置 AI 答题、交卷验证、课程选择及相关测试。新版 AI 模块独立实现，不依赖上游历史版本中缺失的 `AIExamHandler`。
+本仓库重建过提交历史，保留原作者署名；旧教程见 [docs/legacy](docs/legacy/)。
 
-本仓库重新建立了提交历史；GitHub 的贡献者统计只反映新历史，不代表全部源码均由当前维护者原创。保留源码中的原作者署名，旧教程归档在 [docs/legacy](docs/legacy/)。
-
-所采用的上游版本未发现明确的许可证文件。本仓库不对上游代码重新声明许可，使用或再分发前请确认相应授权。
+上游未发现明确的许可证，使用或再分发前请确认授权。
