@@ -11,7 +11,10 @@ from AIMoocMain.exam_api import ExamError
 from AIMoocMain.export_questions import get_questions_from_paper, paper_display_name, paper_exam_id, safe_filename
 from reporting import Reporter, log_callback
 from ai.client import AIError, AIServiceError
+from ai.concurrency import ParallelAnswers, prepared_questions
+from base.concurrency import validate_workers
 from ai.questions import answer_record, model_question, prepare_question
+from task_capabilities import is_attachment_task
 
 
 class AttemptClock:
@@ -101,9 +104,10 @@ def attempt_not_draft(records, task_id):
 
 
 class AnswerRunner:
-    def __init__(self, api, ai, output_dir="ai_results", auto_submit=False, min_confidence=0.8, output=None, clock_factory=AttemptClock, *, on_log=None, on_progress=None, manual_answer=None):
+    def __init__(self, api, ai, output_dir="ai_results", auto_submit=False, min_confidence=0.8, output=None, clock_factory=AttemptClock, *, on_log=None, on_progress=None, manual_answer=None, max_workers=1):
         if not math.isfinite(min_confidence) or not 0 <= min_confidence <= 1:
             raise ValueError("置信度阈值必须在 0 到 1 之间")
+        self.max_workers = validate_workers(max_workers)
         self.api, self.ai, self.output_dir = api, ai, output_dir
         self.auto_submit, self.min_confidence = auto_submit, min_confidence
         self.output = lambda message: log_callback(on_log if on_log is not None else output, message)
@@ -129,6 +133,8 @@ class AnswerRunner:
                 time.sleep(attempt + 1)
 
     def run_paper(self, course, item, category):
+        if is_attachment_task(item, category):
+            raise ExamError("附件作业暂不支持，请在平台完成。")
         self.reused = False
         self.progress.detail("准备试卷：" + paper_display_name(item))
         self.progress.questions("读取试卷", 0)
@@ -176,6 +182,7 @@ class AnswerRunner:
                   "task_id": previous.get("task_id"),
                   "submitted_task_ids": submitted_task_ids}
         clock = None
+        parallel = None
         completed, question_total = 0, None
         try:
             # The browser uses this same paper endpoint for '再次答题'. Older
@@ -216,6 +223,9 @@ class AnswerRunner:
             question_total = sum(len(raw["questionSubList"]) if isinstance(raw, dict) and
                                  isinstance(raw.get("questionSubList"), list) and raw["questionSubList"]
                                  else 1 for raw in raw_questions)
+            if self.max_workers > 1:
+                parallel = ParallelAnswers(self.ai, prepared_questions(raw_questions), self.max_workers, clock,
+                                           allow_manual=self.manual_answer is not None)
             for number, raw in enumerate(raw_questions):
                 children = raw.get("questionSubList") if isinstance(raw, dict) else None
                 if children is not None and not isinstance(children, list):
@@ -238,9 +248,12 @@ class AnswerRunner:
                         self.progress.detail(report["paper"])
                         self.progress.questions(stage + " · AI 生成", completed, question_total)
                         self.output("AI 作答 %s / %s：%s" % (completed + 1, question_total, q["title"][:70]))
-                        answer = self.answer_question(model_question(q), clock,
-                            on_retry=lambda retry: self.progress.questions(
-                                stage + " · 重试 %s/2" % retry, completed, question_total))
+                        if parallel is not None:
+                            answer = parallel.answer(completed)
+                        else:
+                            answer = self.answer_question(model_question(q), clock,
+                                on_retry=lambda retry: self.progress.questions(
+                                    stage + " · 重试 %s/2" % retry, completed, question_total))
                         self.progress.questions(stage + " · 校验答案", completed, question_total)
                         item_report.update(answer)
                         if (answer.get("source") != "manual" and
@@ -256,6 +269,10 @@ class AnswerRunner:
                         if isinstance(exc, AIServiceError) and not (exc.retryable and self.manual_answer is not None):
                             report["answers"].append(item_report)
                             report.update(status="ai_error", message=str(exc))
+                            return report
+                        if parallel is not None and parallel.fatal_error is not None:
+                            report["answers"].append(item_report)
+                            report.update(status="ai_error", message=str(parallel.fatal_error))
                             return report
                         if q is not None and self.manual_answer is not None:
                             # Persist before waiting for input, including EOF or Ctrl+C.
@@ -325,6 +342,8 @@ class AnswerRunner:
             state = "submission_unknown" if report["status"] == "submitting" else "error"
             report.update(status=state, message=str(exc))
         finally:
+            if parallel is not None:
+                parallel.close()
             if clock:
                 clock.stop()
             write_report(path, report)

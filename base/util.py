@@ -76,12 +76,14 @@ def get_mp3_duration(mp3_url: str) -> float:
     :param mp3_url: MP3 文件的 URL
     :return: MP3 时长（秒）
     """
-    response = requests.get(mp3_url, stream=True)
-    if response.status_code != 200:
-        raise Exception("无法下载 MP3 文件")
-
-    # 读取前 100KB 数据
-    data = response.raw.read(100000)
+    response = requests.get(mp3_url, stream=True, timeout=(10, 30))
+    try:
+        if response.status_code != 200:
+            raise Exception("无法下载 MP3 文件")
+        # 读取前 100KB 数据；关闭流，包括读取超时的情况。
+        data = response.raw.read(100000)
+    finally:
+        response.close()
 
     # MPEG 版本映射表
     mpeg_versions = {

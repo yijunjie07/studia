@@ -38,6 +38,9 @@ class Reporter:
     def result(self, name, status):
         self.emit("result", name, status=status)
 
+    def resources(self, name, completed, total=None):
+        self.emit("resources", name, total=total, completed=completed, unit="项资源")
+
     def questions(self, name, completed, total=None):
         self.emit("questions", name, total=total, completed=completed, unit="题")
 

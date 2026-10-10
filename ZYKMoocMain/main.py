@@ -1,7 +1,12 @@
 import random
 import time
+import threading
 from typing import List, Dict, Any
 
+from base.api_client import RequestRateLimited
+from base.auth import AuthenticationExpired
+from base.concurrency import validate_workers
+from base.study import run_resources, check_study_response
 from reporting import Reporter
 from MoocMain.log import Logger
 from ZYKMoocMain.api import ZYKMoocApi
@@ -9,12 +14,14 @@ from base.util import parse_duration, get_mp3_duration
 
 
 class ZYKMoocHandler:
-    def __init__(self, username: str = "", password: str = "", jump_content: str = "", token: str = None, *, client=None, course_rows=None, on_progress=None):
+    def __init__(self, username: str = "", password: str = "", jump_content: str = "", token: str = None, *, client=None, course_rows=None, on_progress=None, max_workers=1, cancel_event=None):
         """初始化 API 客户端和日志"""
+        self.max_workers = validate_workers(max_workers)
+        self.cancel_event = cancel_event if cancel_event is not None else threading.Event()
         self.jump_list = []
         if jump_content and '#' in jump_content:
             self.jump_list = jump_content.split('#')[1:]
-        
+
         # 根据是否提供token选择不同的初始化方式
         if client is not None:
             self.client = client
@@ -22,11 +29,15 @@ class ZYKMoocHandler:
             self.client = ZYKMoocApi(token=token)
         else:
             self.client = ZYKMoocApi(username, password)
-            
+
         self.course_rows = course_rows
         self.logging = Logger(__name__).get_log()
         self.progress = Reporter(on_progress)
-        self.start_courses()
+        try:
+            self.start_courses()
+        finally:
+            if client is None:
+                self.client.close()
 
     def start_courses(self) -> None:
         """获取并处理课程列表"""
@@ -43,7 +54,10 @@ class ZYKMoocHandler:
                 return
             self.progress.begin("学习管理", total_courses, "门课程")
             for course in course_rows:
+                if self.cancel_event.is_set():
+                    break
                 course_name = course.get("courseName", "未知课程")
+                self.progress.resources(f"{course_name} · 正在读取资源目录", 0)
                 if any(s in course.get("courseName") for s in self.jump_list):
                     self.progress.result(course_name, "skipped")
                     continue
@@ -73,12 +87,12 @@ class ZYKMoocHandler:
 
         if course_info_id:
             study_design_list = self.client.study_design_list(course_info_id)
-            self.print_course_structure(study_design_list)
+            run_resources(self, self.print_course_structure(study_design_list), course_name)
         else:
             self.logging.warning(f" 课程 {course_name} 缺少 CourseInfoId，跳过")
 
-    def print_course_structure(self, nodes: List[Dict[str, Any]], indent: int = 0) -> None:
-        """递归打印课程结构"""
+    def print_course_structure(self, nodes: List[Dict[str, Any]], indent: int = 0):
+        """递归打印课程结构，按原顺序产出资源参数"""
         prefix = " " * (indent * 4)  # 每层缩进 4 个空格
 
         for node in nodes:
@@ -88,11 +102,11 @@ class ZYKMoocHandler:
 
             children = node.get("children", [])
             if children:
-                self.print_course_structure(children, indent + 1)
+                yield from self.print_course_structure(children, indent + 1)
             else:
-                self.handle_resource(node, indent)
+                yield (node, indent)
 
-    def handle_resource(self, node: Dict[str, Any], indent: int = 0) -> None:
+    def handle_resource(self, node: Dict[str, Any], indent: int = 0) -> str:
         """处理最终的资源，并保存学习记录"""
         resource_name = node.get("name", "未知资源")
         self.progress.detail(resource_name)
@@ -106,12 +120,12 @@ class ZYKMoocHandler:
         # 跳过作业
         if file_type == "作业":
             self.logging.info(f"{prefix}  跳过作业")
-            return
+            return "skipped"
 
         # 进度已经到100的不再处理
         if speed == 100:
             self.logging.info(f"{prefix}  跳过进度: {speed}")
-            return
+            return "skipped"
 
         try:
             # 默认学习总数1：图片
@@ -148,10 +162,19 @@ class ZYKMoocHandler:
             self.logging.info(f"{prefix}  学习数: {total_num}，等待 {wait_time} 秒...")
 
             time.sleep(wait_time)
+            if self.cancel_event.is_set():
+                self._course_failed = True
+                return "cancelled"
             response = self.client.study_record(course_info_id, parent_id, study_time, source_id,
                                                 total_num, total_num, total_num)
-            self.logging.info(f"API 响应: {response['msg']}")
+            check_study_response(response, parsed=True)
+            self.logging.info("学习记录已保存")
             self._course_processed = True
+            return "success"
+        except (AuthenticationExpired, RequestRateLimited):
+            self.cancel_event.set()
+            raise
         except Exception as e:
             self._course_failed = True
             self.logging.error(f"处理资源失败: {e}")
+            return "error"

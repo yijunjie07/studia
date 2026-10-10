@@ -1,0 +1,111 @@
+"""Concurrency settings are user-local, validated, and used by the next run."""
+import io
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+from rich.console import Console
+
+import theme
+from app import Application
+from settings import SettingsError, SettingsStore
+from ui import TerminalUI
+
+
+class ConcurrencySettingsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.store = SettingsStore(Path(self.temp.name))
+
+    def view(self, answers):
+        output = io.StringIO()
+        inputs = iter(answers)
+        view = TerminalUI(console=Console(file=output, width=100, theme=theme.THEME), input_fn=lambda: next(inputs))
+        return view, output
+
+    def test_worker_bounds_reject_bool_float_strings_and_out_of_range(self):
+        from base.concurrency import validate_workers
+        for value in (1, 2, 8):
+            self.assertEqual(validate_workers(value), value)
+        for value in (True, False, 1.0, '2', None, 0, -1, 9, 100):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                validate_workers(value)
+
+    def test_absent_old_settings_default_to_one_without_creating_file(self):
+        self.assertEqual(self.store.concurrency(), {'ai': 1, 'study': 1})
+        self.assertFalse(self.store.path.exists())
+
+    def test_restart_preserves_separate_values_and_other_settings(self):
+        self.store.set('confidence', .9)
+        self.store.save_concurrency(8, 2)
+        restarted = SettingsStore(self.temp.name)
+        self.assertEqual(restarted.concurrency(), {'ai': 8, 'study': 2})
+        self.assertEqual(restarted.get('confidence'), .9)
+        restarted.save_concurrency(1, 8)
+        self.assertEqual(self.store.concurrency(), {'ai': 1, 'study': 8})
+
+    def test_invalid_save_never_changes_previous_settings(self):
+        self.store.save_concurrency(3, 4)
+        before = self.store.path.read_bytes()
+        for bad in (True, 0, 9, '8', 2.5, None):
+            for values in ((bad, 2), (2, bad)):
+                with self.subTest(values=values), self.assertRaises(SettingsError):
+                    self.store.save_concurrency(*values)
+                self.assertEqual(self.store.path.read_bytes(), before)
+
+    def test_malformed_saved_value_falls_back_per_field_without_rewrite(self):
+        for saved, expected in ((None, {'ai': 1, 'study': 1}),
+                                ([], {'ai': 1, 'study': 1}),
+                                ({'ai': 8}, {'ai': 8, 'study': 1}),
+                                ({'ai': 99, 'study': 4}, {'ai': 1, 'study': 4}),
+                                ({'ai': True, 'study': '8'}, {'ai': 1, 'study': 1})):
+            self.store.set('concurrency', saved)
+            before = self.store.path.read_bytes()
+            self.assertEqual(self.store.concurrency(), expected)
+            self.assertEqual(self.store.path.read_bytes(), before)
+
+    def test_settings_menu_saves_and_invalid_input_is_reprompted(self):
+        # 6 opens concurrency; invalid AI values must not save or leave the editor.
+        view, output = self.view(['6', '0', '9', '1.5', '8', '2', '0'])
+        Application(view, self.store).manage_settings()
+        self.assertEqual(SettingsStore(self.temp.name).concurrency(), {'ai': 8, 'study': 2})
+        self.assertIn('并发', output.getvalue())
+
+    def test_escape_at_second_field_cancels_entire_edit(self):
+        self.store.save_concurrency(3, 4)
+        before = self.store.path.read_bytes()
+        view, _ = self.view(['6', '8', '\x1b', '0'])
+        Application(view, self.store).manage_settings()
+        self.assertEqual(self.store.path.read_bytes(), before)
+
+    def test_enter_preserves_current_values_and_save_failure_keeps_previous(self):
+        self.store.save_concurrency(3, 4)
+        view, _ = self.view(['6', '', '', '0'])
+        Application(view, self.store).manage_settings()
+        self.assertEqual(self.store.concurrency(), {'ai': 3, 'study': 4})
+        view, output = self.view(['6', '8', '8', '0'])
+        with patch('settings.os.replace', side_effect=OSError('disk full')):
+            Application(view, self.store).manage_settings()
+        self.assertEqual(self.store.concurrency(), {'ai': 3, 'study': 4})
+        self.assertIn('无法保存', output.getvalue())
+
+    def test_execution_reads_settings_for_each_operation(self):
+        self.store.save_concurrency(8, 2)
+        view, _ = self.view([])
+        app = Application(view, self.store)
+        course = {'id': 'ci', 'courseId': 'c', 'courseName': 'course'}
+        client = Mock()
+        with patch('app.AIMoocHandler') as mooc, patch('app.ZYKMoocHandler') as zyk:
+            app.study(0, client, [course])
+            app.study(1, client, [course])
+        self.assertEqual(mooc.call_args.kwargs['max_workers'], 2)
+        self.assertEqual(zyk.call_args.kwargs['max_workers'], 2)
+        with patch.object(app, 'verify_ai', return_value=Mock()), patch('app.AnswerRunner') as runner:
+            runner.return_value.run_paper.return_value = {'status': 'preview'}
+            app.execute_ai(client, [(course, {'id': 'exam'}, 3)], Mock(), False, .8, api=Mock())
+            self.assertEqual(runner.call_args.kwargs['max_workers'], 8)
+            self.store.save_concurrency(1, 1)
+            app.execute_ai(client, [(course, {'id': 'exam'}, 3)], Mock(), False, .8, api=Mock())
+            self.assertEqual(runner.call_args.kwargs['max_workers'], 1)

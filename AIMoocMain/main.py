@@ -1,8 +1,13 @@
 import json
 import random
 import time
+import threading
 from typing import List, Dict, Any
 
+from base.api_client import RequestRateLimited
+from base.auth import AuthenticationExpired
+from base.concurrency import validate_workers
+from base.study import run_resources, check_study_response
 from reporting import Reporter
 from MoocMain.log import Logger
 from AIMoocMain.api import AIMoocApi
@@ -10,9 +15,11 @@ from base.util import parse_duration, get_mp3_duration
 
 
 class AIMoocHandler:
-    def __init__(self, jump_content: str = "", token: str = None, username: str = None, password: str = None, *, client=None, course_rows=None, on_progress=None):
+    def __init__(self, jump_content: str = "", token: str = None, username: str = None, password: str = None, *, client=None, course_rows=None, on_progress=None, max_workers=1, cancel_event=None):
         """初始化 API 客户端和日志"""
         # 跳过课程列表
+        self.max_workers = validate_workers(max_workers)
+        self.cancel_event = cancel_event if cancel_event is not None else threading.Event()
         self.jump_list = []
         # 已完成的课程id列表
         self.study_record_list = []
@@ -25,7 +32,11 @@ class AIMoocHandler:
 
         self.logging = Logger(__name__).get_log()
         self.progress = Reporter(on_progress)
-        self.start_courses()
+        try:
+            self.start_courses()
+        finally:
+            if client is None:
+                self.client.close()
 
     def start_courses(self) -> None:
         """获取并处理课程列表"""
@@ -42,7 +53,10 @@ class AIMoocHandler:
                 return
             self.progress.begin("学习管理", total_courses, "门课程")
             for course in course_rows:
+                if self.cancel_event.is_set():
+                    break
                 course_name = course.get("courseName", "未知课程")
+                self.progress.resources(f"{course_name} · 正在读取资源目录", 0)
                 if any(s in course.get("courseName") for s in self.jump_list):
                     self.progress.result(course_name, "skipped")
                     continue
@@ -76,19 +90,23 @@ class AIMoocHandler:
             self.study_record_list = self.client.study_record_list(
                 course_info_id, course_id
             )
-            for node in study_design_list:
-                parent_id = node.get("id")
-                cell_list = self.client.get_cell_list(
-                    course_info_id, course_id, parent_id
-                )
-                self.print_course_structure(cell_list, parent_id)
+            if not isinstance(self.study_record_list, (list, tuple)):
+                raise RuntimeError("无法读取课程已完成记录，停止学习")
+            self.study_record_list = tuple(self.study_record_list)
+
+            def resources():
+                for node in study_design_list:
+                    parent_id = node.get("id")
+                    cell_list = self.client.get_cell_list(course_info_id, course_id, parent_id)
+                    yield from self.print_course_structure(cell_list, parent_id)
+            run_resources(self, resources(), course_name)
         else:
             self.logging.warning(f" 课程 {course_name} 缺少 CourseInfoId，跳过")
 
     def print_course_structure(
         self, nodes: List[Dict[str, Any]], parent_id: str, indent: int = 0
-    ) -> None:
-        """递归打印课程结构"""
+    ):
+        """递归打印课程结构，按原顺序产出资源参数"""
         prefix = " " * (indent * 4)  # 每层缩进 4 个空格
 
         for node in nodes:
@@ -98,13 +116,13 @@ class AIMoocHandler:
 
             children = node.get("children", [])
             if children:
-                self.print_course_structure(children, parent_id, indent + 1)
+                yield from self.print_course_structure(children, parent_id, indent + 1)
             else:
-                self.handle_resource(node, parent_id, indent)
+                yield (node, parent_id, indent)
 
     def handle_resource(
         self, node: Dict[str, Any], parent_id: str, indent: int = 0
-    ) -> None:
+    ) -> str:
         """处理最终的资源，并保存学习记录"""
         resource_name = node.get("name", "未知资源")
         self.progress.detail(resource_name)
@@ -118,36 +136,37 @@ class AIMoocHandler:
         # 跳过作业
         if file_type == "作业":
             self.logging.info(f"{prefix}  跳过作业")
-            return
+            return "skipped"
 
         # 跳过考试
         if file_type == "考试":
             self.logging.info(f"{prefix}  跳过考试")
-            return
+            return "skipped"
 
         # 跳过测验
         if file_type == "测验":
             self.logging.info(f"{prefix}  跳过测验")
-            return
+            return "skipped"
 
         # 跳过子节点
         if file_type == "子节点":
             self.logging.info(f"{prefix}  跳过无法展开的子节点")
-            return
+            return "skipped"
 
         # 跳过文件夹
         if file_type == "文件夹":
             self.logging.info(f"{prefix}  跳过文件夹")
-            return
+            return "skipped"
 
         # 已完成的课程不再处理
         if source_id in self.study_record_list:
             self.logging.info(f"{prefix}  跳过已完成的课程: {resource_name}")
-            return
+            return "skipped"
 
         try:
             # 默认学习总数
             total_num = random.randint(1, 10)
+            url_short = None
             course_content = node.get("fileUrl", "")
             if course_content and course_content.strip() != "":
                 course_content = json.loads(course_content)
@@ -182,6 +201,9 @@ class AIMoocHandler:
             )
 
             time.sleep(wait_time)
+            if self.cancel_event.is_set():
+                self._course_failed = True
+                return "cancelled"
             response = self.client.study_record(
                 course_id,
                 course_info_id,
@@ -192,8 +214,14 @@ class AIMoocHandler:
                 total_num,
                 total_num,
             )
-            self.logging.info(f"API 响应: {response['msg']}")
+            check_study_response(response)
+            self.logging.info("学习记录已保存")
             self._course_processed = True
+            return "success"
+        except (AuthenticationExpired, RequestRateLimited):
+            self.cancel_event.set()
+            raise
         except Exception as e:
             self._course_failed = True
             self.logging.error(f"处理资源失败: {e}")
+            return "error"

@@ -3,6 +3,8 @@ import json
 import math
 import re
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from urllib.parse import urlsplit
 
 import requests
@@ -168,7 +170,21 @@ class AIClient:
             reason = reasons.get(response.status_code, "服务请求失败，请检查服务状态和接口配置")
             error = (AITransientServiceError if response.status_code in (408, 429) or
                      500 <= response.status_code < 600 else AIServiceError)
-            raise error("AI 服务 HTTP %s · %s" % (response.status_code, reason))
+            failure = error("AI 服务 HTTP %s · %s" % (response.status_code, reason))
+            if response.status_code in (429, 503):
+                retry_after = getattr(response, "headers", {}).get("Retry-After")
+                if isinstance(retry_after, str):
+                    try:
+                        delay = float(retry_after)
+                    except ValueError:
+                        try:
+                            delay = (parsedate_to_datetime(retry_after) - datetime.now(timezone.utc)).total_seconds()
+                        except (ValueError, TypeError, OverflowError):
+                            delay = 0
+                    if math.isfinite(delay) and delay > 0:
+                        # Bound external cooldowns; callers can always cancel a wait.
+                        failure.retry_after = min(delay, 300)
+            raise failure
         try:
             payload = response.json()
             if self.config.api_format == "responses":

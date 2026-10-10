@@ -34,9 +34,11 @@ def fit(text, width):
 
 
 def choose_many(title, rows, *, selected=(), cursor=1, refresh=False, heading='',
-                extra_headers=(), account_name='', input=None, output=None):
+                extra_headers=(), account_name='', disabled=(), input=None, output=None):
     """Rows are (label, status, detail, *extras); indexes refer to original rows."""
-    checked = {i for i in selected if 0 <= i < len(rows)}
+    disabled = set(disabled)
+    available = set(range(len(rows))) - disabled
+    checked = set(selected) & available
     cursor = min(max(0, cursor), len(rows))
     message = ''
     animation = NameAnimation()
@@ -60,10 +62,12 @@ def choose_many(title, rows, *, selected=(), cursor=1, refresh=False, heading=''
         nonlocal message
         message = ''
         if cursor == 0:
-            if len(checked) == len(rows):
+            if checked == available:
                 checked.clear()
             else:
-                checked.update(range(len(rows)))
+                checked.update(available)
+        elif cursor - 1 in disabled:
+            message = '该任务暂不支持，请在平台完成。'
         elif cursor - 1 in checked:
             checked.remove(cursor - 1)
         else:
@@ -95,7 +99,8 @@ def choose_many(title, rows, *, selected=(), cursor=1, refresh=False, heading=''
 
     def header():
         text = (heading + '\n\n') if heading else ''
-        return [('class:title', text + f'{title}  ·  已选 {len(checked)}/{len(rows)} 项\n')]
+        unavailable = f' · {len(rows) - len(available)} 项暂不支持' if disabled else ''
+        return [('class:title', text + f'{title}  ·  已选 {len(checked)}/{len(available)} 项' + unavailable + '\n')]
 
     def columns():
         """Use one set of terminal-cell widths for the entire list and its header."""
@@ -132,14 +137,14 @@ def choose_many(title, rows, *, selected=(), cursor=1, refresh=False, heading=''
 
     def content():
         width, fields = columns()
-        all_mark = 'x' if rows and len(checked) == len(rows) else '-' if checked else ' '
-        all_label = 'All 取消全选' if rows and len(checked) == len(rows) else 'All 全选'
+        all_mark = 'x' if available and checked == available else '-' if checked else ' '
+        all_label = 'All 取消全选' if available and checked == available else 'All 全选'
         display = [(all_mark, all_label, '', '')]
-        display += [('x' if i in checked else ' ', *row) for i, row in enumerate(rows)]
+        display += [('-' if i in disabled else 'x' if i in checked else ' ', *row) for i, row in enumerate(rows)]
         fragments = []
         for index, (mark, *values) in enumerate(display):
             active = index == cursor
-            style = 'class:cursor' if active else 'class:checked' if mark == 'x' else ''
+            style = 'class:cursor' if active else 'class:disabled' if index - 1 in disabled else 'class:checked' if mark == 'x' else ''
             if active:
                 fragments.append(('[SetCursorPosition]', ''))
             prefix = ('> ' if active else '  ') + f'[{mark}] '
@@ -174,7 +179,8 @@ def choose_many(title, rows, *, selected=(), cursor=1, refresh=False, heading=''
         Window(FormattedTextControl(footer), dont_extend_height=True, wrap_lines=True),
     ]), focused_element=body), key_bindings=keys, full_screen=True,
         style=Style.from_dict({'title': 'ansicyan bold', 'columns': 'bold', 'checked': 'ansicyan bold',
-                               'cursor': 'bg:ansicyan ansiblack bold', 'warning': 'ansiyellow'}),
+                               'cursor': 'bg:ansicyan ansiblack bold', 'warning': 'ansiyellow',
+                               'disabled': 'ansibrightblack'}),
         input=input, output=output, color_depth=terminal_color_depth(), refresh_interval=1 / 30 if account_name else None)
     try:
         return app.run()

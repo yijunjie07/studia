@@ -1236,6 +1236,11 @@ class QuizExportHandler:
         course_info_id: str = "",
     ) -> Optional[Dict[str, Any]]:
         """拉取并解析一份试卷（含答案），不负责写文件"""
+        from task_capabilities import is_attachment_task
+        if is_attachment_task(item, category_id):
+            self._info(f"附件作业暂不支持导出，请在平台查看：{paper_display_name(item)}")
+            self.progress.result(paper_display_name(item), "skipped")
+            return None
         exam_id = paper_exam_id(item)
         self.progress.detail(paper_display_name(item))
         if not exam_id:

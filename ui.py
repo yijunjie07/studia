@@ -77,7 +77,7 @@ class CountColumn(ProgressColumn):
     def render(self, task):
         total = "?" if task.total is None else str(int(task.total))
         count = f"{int(task.completed)}/{total}"
-        if task.fields.get("questions") and task.total:
+        if (task.fields.get("questions") or task.fields.get("resources")) and task.total:
             count += f" · {task.percentage:.0f}%"
         return Text(count, style="muted", no_wrap=True)
 
@@ -87,6 +87,8 @@ class TaskColumn(ProgressColumn):
         super().__init__(table_column=Column(ratio=1, no_wrap=True, overflow="ellipsis"))
 
     def render(self, task):
+        if task.fields.get("resources"):
+            return Text("本课资源", style="accent", no_wrap=True)
         return Text(" ".join(task.description.split()), style="accent", no_wrap=True, overflow="ellipsis")
 
 
@@ -138,6 +140,7 @@ class TerminalUI:
         )
         self.task = self.progress.add_task("准备中", total=None)
         self.question_task = self.progress.add_task("本卷题目", total=None, visible=False, questions=True)
+        self.resource_task = self.progress.add_task("本课资源", total=None, visible=False, resources=True)
         self.counts = Counter()
         self.unit = "项"
         self.started = clock()
@@ -187,6 +190,7 @@ class TerminalUI:
             if event.kind == "begin":
                 self.unit = event.unit
                 self.progress.update(self.question_task, visible=False)
+                self.progress.update(self.resource_task, visible=False)
                 self.progress.reset(self.task, total=event.total, description=safe_text(event.name))
             elif event.kind == "questions":
                 if event.total is None:
@@ -196,6 +200,14 @@ class TerminalUI:
                                                                 visible=True, questions=True)
                 else:
                     self.progress.update(self.question_task, total=event.total, completed=event.completed or 0,
+                                         visible=True, description=safe_text(event.name))
+            elif event.kind == "resources":
+                if event.total is None:
+                    self.progress.remove_task(self.resource_task)
+                    self.resource_task = self.progress.add_task(safe_text(event.name), total=None,
+                                                                visible=True, resources=True)
+                else:
+                    self.progress.update(self.resource_task, total=event.total, completed=event.completed or 0,
                                          visible=True, description=safe_text(event.name))
             elif event.kind == "add_total":
                 task = self.progress.tasks[0]
@@ -226,7 +238,9 @@ class TerminalUI:
                     body.append("\n")
             panel = Panel(body, title=Text("运行日志 · 最近 8 行", style="muted"),
                           box=theme.BORDER, border_style="border", height=theme.LOG_LINES + 2, padding=(0, 1))
-            return Group(self.progress, panel)
+            resource_details = [Text(task.description, style="muted") for task in self.progress.tasks
+                                if task.visible and task.fields.get("resources")]
+            return Group(self.progress, *resource_details, panel)
 
     @contextmanager
     def activity(self, name):
@@ -234,6 +248,7 @@ class TerminalUI:
         self.depth += 1
         if outer:
             self.progress.update(self.question_task, visible=False)
+            self.progress.update(self.resource_task, visible=False)
             self.progress.reset(self.task, description=safe_text(name), total=None)
             self.live = Live(console=self.console, get_renderable=self.render, transient=True,
                              refresh_per_second=theme.REFRESH_PER_SECOND,
@@ -438,8 +453,9 @@ class TerminalUI:
 
     def select(self, title, items, label, details=None, default=None, *,
                multiple=True, actions=None, filters=None, state=None, selected=None, status=None,
-               extra_columns=()):
+               extra_columns=(), selectable=None):
         actions = actions or {}
+        disabled = {i for i, item in enumerate(items) if selectable and not selectable(item)}
         if not items and not actions:
             self.note("没有可选择的项目。", "warning")
             return []
@@ -453,9 +469,10 @@ class TerminalUI:
                                  account_name=self.account_name,
                                  selected=[i for i, item in enumerate(items) if selected and item in selected],
                                  cursor=state.get("cursor", 1), refresh="r" in actions,
+                                 disabled=disabled,
                                  extra_headers=[name for name, _ in extra_columns])
             state["cursor"] = result.cursor
-            state["selected"] = [items[i] for i in result.indexes]
+            state["selected"] = [items[i] for i in result.indexes if i not in disabled]
             if result.action == "back":
                 raise Back()
             if result.action == "quit":
@@ -472,7 +489,8 @@ class TerminalUI:
                         and query in (str(row[1]) + " " + str(row[2])).casefold()]
             pages = max(1, (len(filtered) + theme.PAGE_SIZE - 1) // theme.PAGE_SIZE)
             page = min(state.get("page", 0), pages - 1)
-            help_parts = (["1,3 / 1-3", f"all 全选 {len(filtered)} 项"] if multiple else ["编号进入"])
+            available_rows = [row for row in filtered if row[0] - 1 not in disabled]
+            help_parts = (["1,3 / 1-3", f"all 全选 {len(available_rows)} 项"] if multiple else ["编号进入"])
             if pages > 1:
                 help_parts.append("n/p 翻页")
             help_parts += ["/ 关键词搜索"] + [f"{key} {name}" for key, name in actions.items()]
@@ -499,6 +517,7 @@ class TerminalUI:
                 self.note(f"搜索：{query} · / 清除搜索")
             visible = {row[0] for row in filtered}
             retained = [i for i, item in enumerate(items, 1) if selected and item in selected and i in visible]
+            retained = [i for i in retained if i - 1 not in disabled]
             effective_default = "保留" if retained else default
             if retained:
                 self.note(f"已选 {len(retained)} 项 · 回车保留")
@@ -521,7 +540,10 @@ class TerminalUI:
             if raw == "保留" and retained:
                 indexes = retained
             else:
-                indexes = [row[0] for row in filtered] if raw.lower() == "all" else parse_index_input(raw, len(items))
+                indexes = [row[0] for row in available_rows] if raw.lower() == "all" else parse_index_input(raw, len(items))
+            if any(i - 1 in disabled for i in (indexes or ())) or (raw.lower() == "all" and not available_rows):
+                self.note("附件作业暂不支持，请在平台完成；请选择其他任务。", "warning")
+                continue
             if indexes and set(indexes) <= visible and (multiple or len(indexes) == 1):
                 self.note(f"已选择 {len(indexes)} 项。")
                 return [items[index - 1] for index in indexes]
@@ -728,6 +750,7 @@ class TerminalUI:
 
     def begin_operation(self):
         self.progress.update(self.question_task, visible=False)
+        self.progress.update(self.resource_task, visible=False)
         self.counts.clear()
         self.lines.clear()
         self.results.clear()
@@ -926,16 +949,24 @@ class TerminalUI:
     def papers(self, catalog, selected=None, state=None, refresh=False):
         from AIMoocMain.export_questions import CATEGORY_FALLBACK, paper_display_name
         from task_metrics import score_text, attempts_text
+        from task_capabilities import is_attachment_task, task_type_label
         filters = {"f0": ("全部", lambda x: True)}
         filters.update({f"f{category}": (CATEGORY_FALLBACK[category], lambda x, c=category: x[2] == c)
                         for category in (1, 2, 3)})
         statuses = {"submitted": "已提交", "draft": "未提交", "not_started": "未作答"}
         single_course = bool(catalog) and all(x[0] == catalog[0][0] for x in catalog)
-        return self.select("选择任务", catalog, lambda x: paper_display_name(x[1]),
-                           lambda x: CATEGORY_FALLBACK[x[2]] if single_course else
-                           f"{x[0].get('courseName', '')} · {CATEGORY_FALLBACK[x[2]]}",
+        def unsupported(task):
+            return is_attachment_task(task[1], task[2])
+        unsupported_count = sum(unsupported(task) for task in catalog)
+        if unsupported_count:
+            self.note(f"附件作业 {unsupported_count} 项暂不支持，请在平台完成；全选会自动排除。", "warning")
+        return self.select("选择任务", catalog,
+                           lambda x: ("[附件作业] " if unsupported(x) else "") + paper_display_name(x[1]),
+                           lambda x: task_type_label(x[1], x[2]) if single_course else
+                           f"{x[0].get('courseName', '')} · {task_type_label(x[1], x[2])}",
                            filters=filters, selected=selected, state=state,
-                           status=lambda x: statuses.get(x[1].get("_completion_status"), "?"),
+                           status=lambda x: "暂不支持" if unsupported(x) else statuses.get(x[1].get("_completion_status"), "?"),
+                           selectable=lambda x: not unsupported(x),
                            extra_columns=(("成绩", lambda x: score_text(x[1])),
                                           ("剩余次数", lambda x: attempts_text(x[1], x[2]))),
                            actions={"r": "刷新状态"} if refresh else None)
@@ -949,10 +980,27 @@ class TerminalUI:
         return self.choice("本机设置", [
             (1, "模型配置", "添加、编辑、切换 · " + ai_status),
             (5, "测试 AI 连接", "发送一条短测试消息，验证 Key、模型和接口"),
+            (6, "并发设置", "AI 答题 / 自动学习 · 默认 1，上限 8"),
             (3, "退出 MOOC 登录", "当前平台退出后立即重新登录，可切换账号"),
             (4, "退出资源库登录", "不影响 MOOC 登录"),
             (0, "返回", "回到功能选择"),
         ], default=0, help_text=f"配置含凭证，请勿分享：{path}", message=message)
+
+    def concurrency_settings(self, current):
+        from base.concurrency import DEFAULT_WORKERS, MAX_WORKERS, validate_workers
+        self.table("并发设置", ["功能", "当前并发"], [
+            ("AI 答题", str(current["ai"])), ("自动学习", str(current["study"]))],
+            f"{DEFAULT_WORKERS} 为顺序执行，最多 {MAX_WORKERS} · 两项填写完成后保存 · Esc 取消")
+        values = {}
+        for key, label in (("ai", "AI 答题"), ("study", "自动学习")):
+            while True:
+                raw = self.ask(f"{label}并发数（{DEFAULT_WORKERS}–{MAX_WORKERS}）", str(current[key]))
+                try:
+                    values[key] = validate_workers(int(raw))
+                    break
+                except (ValueError, TypeError):
+                    self.note(f"请输入 {DEFAULT_WORKERS}–{MAX_WORKERS} 的整数。", "warning")
+        return values
 
     def plan(self, name, courses, options=None):
         self.note(f"准备开始：{name} · {len(courses)} 门课程", "accent")

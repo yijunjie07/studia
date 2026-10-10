@@ -13,6 +13,7 @@ from ai.runner import AnswerRunner
 from reporting import Reporter
 from base.auth import AuthenticationExpired, PlatformUnavailable
 from settings import SettingsStore, SettingsError
+from task_capabilities import is_attachment_task
 
 logger = Logger(__name__).get_log()
 
@@ -177,6 +178,7 @@ class Application:
         return self.ai_status_text(config)
 
     def study(self, version, client=None, selected=None):
+        max_workers = self.store.concurrency().get("study", 1)
         api_class, handler = (ZYKMoocApi, ZYKMoocHandler) if version == 1 else (AIMoocApi, AIMoocHandler)
         if client is None:
             client, selected = self.client_and_courses(api_class)
@@ -184,8 +186,10 @@ class Application:
             self.view.cancelled = True
             return
         self.view.plan("学习管理", selected)
+        self.view.note(f"自动学习并发：{max_workers}")
         with self.view.activity("处理课程"):
-            handler(client=client, course_rows=selected, on_progress=self.view.on_progress)
+            handler(client=client, course_rows=selected, on_progress=self.view.on_progress,
+                    max_workers=max_workers)
 
     def export(self):
         client, selected = self.client_and_courses(AIMoocApi)
@@ -247,6 +251,9 @@ class Application:
                 for category in (1, 2, 3):
                     for item in api.catalog(course, category):
                         exam_id = paper_exam_id(item)
+                        if is_attachment_task(item, category):
+                            catalog.append((course, dict(item, _completion_status="unsupported"), category))
+                            continue
                         if exam_id not in statuses:
                             try:
                                 statuses[exam_id] = api.completion_status(exam_id)
@@ -256,17 +263,27 @@ class Application:
         return catalog
 
     def execute_ai(self, client, selected, config, auto_submit, threshold, api=None):
+        max_workers = self.store.concurrency().get("ai", 1)
         # Verify with synthetic material before paper() can start an attempt.
-        ai_client = self.verify_ai(config)
-        api = api or ExamAPI(client)
-        runner = AnswerRunner(api, ai_client, auto_submit=auto_submit,
-                              min_confidence=threshold, on_progress=self.view.on_progress,
-                              manual_answer=self.view.manual_answer)
+        runner = None
+        if any(not is_attachment_task(item, category) for _, item, category in selected):
+            ai_client = self.verify_ai(config)
+            api = api or ExamAPI(client)
+            runner = AnswerRunner(api, ai_client, auto_submit=auto_submit,
+                                  min_confidence=threshold, on_progress=self.view.on_progress,
+                                  manual_answer=self.view.manual_answer, max_workers=max_workers)
         results = []
+        self.view.note(f"AI 答题并发：{max_workers}")
         with self.view.activity("AI 答题"):
             self.progress.begin("AI 答题", len(selected), "份试卷")
             for course, item, category in selected:
                 name = paper_display_name(item)
+                if is_attachment_task(item, category):
+                    message = "附件作业暂不支持，请在平台完成。"
+                    logger.warning("%s：%s", name, message)
+                    results.append({"paper": name, "status": "skipped", "message": message})
+                    self.progress.result(name, "skipped")
+                    continue
                 try:
                     result = runner.run_paper(course, item, category)
                     results.append(result)
@@ -314,6 +331,15 @@ class Application:
                     self.view.ask("回车或 Esc 返回设置")
                 except Back:
                     pass
+            elif action == 6:
+                try:
+                    options = self.view.concurrency_settings(self.store.concurrency())
+                    if self.remember(lambda: self.store.save_concurrency(**options)):
+                        message = f"并发设置已保存：AI 答题 {options['ai']} · 自动学习 {options['study']}；下次操作生效。"
+                except Back:
+                    pass
+                except SettingsError as exc:
+                    self.view.note(str(exc), "error")
             elif action in (3, 4):
                 platform = "mooc" if action == 3 else "zyk"
                 if self.remember(lambda: self.store.clear_session(platform)):

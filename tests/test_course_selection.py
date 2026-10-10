@@ -42,12 +42,14 @@ class CourseSelectionTests(unittest.TestCase):
         view = self.view()
         store = Mock()
         store.session.return_value = None
+        store.concurrency.return_value = {'ai': 1, 'study': 1}
         app = Application(view, store=store)
         with patch.object(app, 'login', return_value=('', '', 'token')), \
              patch.object(view, 'courses', side_effect=choose), \
              patch('app.AIMoocApi', api_class), patch('app.AIMoocHandler', handler):
             app.study(0)
-        handler.assert_called_once_with(client=client, course_rows=[self.courses[1]], on_progress=view.on_progress)
+        handler.assert_called_once_with(client=client, course_rows=[self.courses[1]], on_progress=view.on_progress,
+                                        max_workers=1)
 
     def test_cancel_never_starts_processing(self):
         client, handler = Mock(), Mock()

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ai.client import AIConfig
 from ai.defaults import DEFAULT_PROFILE_ID, DEFAULT_PROVIDER_NAME
+from base.concurrency import DEFAULT_WORKERS, validate_workers
 
 
 class SettingsError(RuntimeError):
@@ -63,6 +64,24 @@ class SettingsStore:
         else:
             data[key] = value
         self._write(data)
+
+    def concurrency(self):
+        saved = self.get("concurrency", {})
+        saved = saved if isinstance(saved, dict) else {}
+        result = {}
+        for key in ("ai", "study"):
+            try:
+                result[key] = validate_workers(saved.get(key, DEFAULT_WORKERS))
+            except ValueError:
+                result[key] = DEFAULT_WORKERS
+        return result
+
+    def save_concurrency(self, ai, study):
+        try:
+            options = {"ai": validate_workers(ai), "study": validate_workers(study)}
+        except ValueError as exc:
+            raise SettingsError(str(exc)) from None
+        self.set("concurrency", options)
 
     def _write(self, data):
         data["version"] = 1
