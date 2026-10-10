@@ -5,6 +5,7 @@ description = "智慧职教课程管理、题目导出与可配置 AI 答题工�
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
+    "rich>=13.9,<15",
     "lxml==6.1.0",
     "pycryptodome~=3.18.0",
     "requests==2.31.0",

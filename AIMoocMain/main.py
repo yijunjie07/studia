@@ -3,13 +3,14 @@ import random
 import time
 from typing import List, Dict, Any
 
+from reporting import Reporter
 from MoocMain.log import Logger
 from AIMoocMain.api import AIMoocApi
 from base.util import parse_duration, get_mp3_duration
 
 
 class AIMoocHandler:
-    def __init__(self, jump_content: str = "", token: str = None, username: str = None, password: str = None, *, client=None, course_rows=None):
+    def __init__(self, jump_content: str = "", token: str = None, username: str = None, password: str = None, *, client=None, course_rows=None, on_progress=None):
         """初始化 API 客户端和日志"""
         # 跳过课程列表
         self.jump_list = []
@@ -23,6 +24,7 @@ class AIMoocHandler:
         self.course_rows = course_rows
 
         self.logging = Logger(__name__).get_log()
+        self.progress = Reporter(on_progress)
         self.start_courses()
 
     def start_courses(self) -> None:
@@ -35,52 +37,25 @@ class AIMoocHandler:
                 course_rows = self.course_rows
             total_courses = len(course_rows)
 
-            self.logging.info(
-                f"📚 获取课程成功，共 {total_courses} 门课程，当前获取到 {len(course_rows)} 门课程"
-            )
-
             if not course_rows:
-                self.logging.warning("⚠️ 当前没有课程数据")
+                self.logging.warning("当前没有课程数据")
                 return
-            self.logging.info("")
-            self.logging.info("➕➕➕ 课程读取 ➕➕➕")
-
-            # 记录跳过的课程
-            skipped_courses = []
-            for index, course in enumerate(course_rows, start=1):  # 添加索引，从 1 开始
-                course_name = course.get("courseName", "未知课程")
-                teacher = course.get("displayName", "未知教师")  # 适配新字段
-                course_info_name = course.get("courseInfoName", "未知课程信息")
-                study_speed = course.get("studySpeed", "未知")  # 适配新字段：学习进度
-                final_score = course.get("finalScore", "未知")
-
-                # 判断是否跳过该课程
-                if any(s in course_name for s in self.jump_list):
-                    skipped_courses.append(course_name)
-                    self.logging.info(
-                        f"⏭️ [跳过] 课程: {course_name} ({course_info_name}) | 教师: {teacher} | 📊 学习进度: {study_speed}% | 成绩: {final_score}"
-                    )
-                    continue
-                self.logging.info(
-                    f"🪧 [{index}] 课程: {course_name} ({course_info_name}) | 教师: {teacher} | 📊 学习进度: {study_speed}% | 成绩: {final_score}"
-                )
-
-            self.logging.info("➕➕➕ 课程读取完成 ➕➕➕")
-            self.logging.info("")
-            # 打印跳过的课程
-            if skipped_courses:
-                self.logging.info(
-                    f"🚫 共跳过 {len(skipped_courses)} 门课程: {', '.join(skipped_courses)}"
-                )
-            else:
-                self.logging.info("✅ 将处理以上课程")
+            self.progress.begin("学习管理", total_courses, "门课程")
             for course in course_rows:
+                course_name = course.get("courseName", "未知课程")
                 if any(s in course.get("courseName") for s in self.jump_list):
+                    self.progress.result(course_name, "skipped")
                     continue
+                self._course_failed = False
+                self._course_processed = False
+                self.progress.detail(course_name)
                 self.process_course(course)
+                status = "error" if self._course_failed else "success" if self._course_processed else "skipped"
+                self.progress.result(course_name, status)
 
         except Exception as e:
-            self.logging.error(f"❌ 获取课程失败: {e}")
+            self.logging.error(f"获取课程失败: {e}")
+            self.progress.result("读取或处理课程", "error")
 
     def process_course(self, course: Dict[str, Any]) -> None:
         """处理单个课程"""
@@ -93,7 +68,7 @@ class AIMoocHandler:
         course_id = course.get("courseId")
 
         self.logging.info(
-            f"🎯 课程: {course_name} ({course_info_name}) | 教师: {teacher} | 📊 学习进度: {study_speed}% | 成绩: {final_score}"
+            f" 课程: {course_name} ({course_info_name}) | 教师: {teacher} |  学习进度: {study_speed}% | 成绩: {final_score}"
         )
 
         if course_info_id:
@@ -108,7 +83,7 @@ class AIMoocHandler:
                 )
                 self.print_course_structure(cell_list, parent_id)
         else:
-            self.logging.warning(f"⚠️ 课程 {course_name} 缺少 CourseInfoId，跳过")
+            self.logging.warning(f" 课程 {course_name} 缺少 CourseInfoId，跳过")
 
     def print_course_structure(
         self, nodes: List[Dict[str, Any]], parent_id: str, indent: int = 0
@@ -132,41 +107,42 @@ class AIMoocHandler:
     ) -> None:
         """处理最终的资源，并保存学习记录"""
         resource_name = node.get("name", "未知资源")
+        self.progress.detail(resource_name)
         file_type = node.get("fileType", "未知类型")
         course_id = node.get("courseId")
         source_id = node.get("id")
         prefix = " " * ((indent + 1) * 4)  # 每层缩进 4 个空格
 
-        self.logging.info(f"{prefix} 💭 资源: {resource_name} | 类型: {file_type}")
+        self.logging.info(f"{prefix}  资源: {resource_name} | 类型: {file_type}")
 
         # 跳过作业
         if file_type == "作业":
-            self.logging.info(f"{prefix} ⏭ 跳过作业")
+            self.logging.info(f"{prefix}  跳过作业")
             return
 
         # 跳过考试
         if file_type == "考试":
-            self.logging.info(f"{prefix} ⏭ 跳过考试")
+            self.logging.info(f"{prefix}  跳过考试")
             return
 
         # 跳过测验
         if file_type == "测验":
-            self.logging.info(f"{prefix} ⏭ 跳过测验")
+            self.logging.info(f"{prefix}  跳过测验")
             return
 
         # 跳过子节点
         if file_type == "子节点":
-            self.logging.info(f"{prefix} ⏭ 跳过无法展开的子节点")
+            self.logging.info(f"{prefix}  跳过无法展开的子节点")
             return
 
         # 跳过文件夹
         if file_type == "文件夹":
-            self.logging.info(f"{prefix} ⏭ 跳过文件夹")
+            self.logging.info(f"{prefix}  跳过文件夹")
             return
 
         # 已完成的课程不再处理
         if source_id in self.study_record_list:
-            self.logging.info(f"{prefix} ⏭ 跳过已完成的课程: {resource_name}")
+            self.logging.info(f"{prefix}  跳过已完成的课程: {resource_name}")
             return
 
         try:
@@ -202,7 +178,7 @@ class AIMoocHandler:
             wait_time = round(random.uniform(0.5, 1.5), 2)
 
             self.logging.info(
-                f"{prefix} ⏳ 学习数: {total_num}，等待 {wait_time} 秒..."
+                f"{prefix}  学习数: {total_num}，等待 {wait_time} 秒..."
             )
 
             time.sleep(wait_time)
@@ -216,6 +192,8 @@ class AIMoocHandler:
                 total_num,
                 total_num,
             )
-            self.logging.info(f"{prefix} ✅ API 响应: {response['msg']}")
+            self.logging.info(f"API 响应: {response['msg']}")
+            self._course_processed = True
         except Exception as e:
-            self.logging.error(f"{prefix} ❌ 处理资源失败: {e}")
+            self._course_failed = True
+            self.logging.error(f"处理资源失败: {e}")

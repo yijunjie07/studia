@@ -9,6 +9,7 @@ from pathlib import Path
 
 from AIMoocMain.exam_api import ExamError
 from AIMoocMain.export_questions import get_questions_from_paper, paper_display_name, paper_exam_id, safe_filename
+from reporting import Reporter, log_callback
 from ai.client import AIError
 from ai.questions import answer_record, model_question, prepare_question
 
@@ -84,14 +85,19 @@ def write_report(path, report):
 
 
 class AnswerRunner:
-    def __init__(self, api, ai, output_dir="ai_results", auto_submit=False, min_confidence=0.8, output=print, clock_factory=AttemptClock):
+    def __init__(self, api, ai, output_dir="ai_results", auto_submit=False, min_confidence=0.8, output=None, clock_factory=AttemptClock, *, on_log=None, on_progress=None):
         if not math.isfinite(min_confidence) or not 0 <= min_confidence <= 1:
             raise ValueError("置信度阈值必须在 0 到 1 之间")
         self.api, self.ai, self.output_dir = api, ai, output_dir
         self.auto_submit, self.min_confidence = auto_submit, min_confidence
-        self.output, self.clock_factory = output, clock_factory
+        self.output = lambda message: log_callback(on_log if on_log is not None else output, message)
+        self.clock_factory = clock_factory
+        self.progress = Reporter(on_progress)
+        self.reused = False
 
     def run_paper(self, course, item, category):
+        self.reused = False
+        self.progress.detail("准备试卷：" + paper_display_name(item))
         path = report_path(self.output_dir, self.api.user_id, course, paper_exam_id(item))
         path.parent.mkdir(parents=True, exist_ok=True)
         lock = path.with_suffix(".lock")
@@ -119,6 +125,7 @@ class AnswerRunner:
             except (ValueError, OSError):
                 raise ExamError("已有报告无法读取，请先检查文件，避免重复交卷") from None
             if previous.get("status") in ("submitting", "submitted", "submission_unknown"):
+                self.reused = True
                 self.output("跳过已有交卷记录：%s（%s）" % (paper_display_name(item), previous["status"]))
                 return previous
         report = {"course": course.get("courseName", ""), "paper": paper_display_name(item),
@@ -177,6 +184,7 @@ class AnswerRunner:
                             raise ValueError("试卷包含重复试题 ID")
                         identities.add(identity)
                         item_report.update(title=q["title"], options=model_question(q)["options"])
+                        self.progress.detail("%s · 题 %s/%s" % (report["paper"], number + 1, len(raw_questions)))
                         self.output("AI 作答 %s / %s：%s" % (number + 1, len(raw_questions), q["title"][:70]))
                         answer = self.ai.answer(model_question(q))
                         item_report.update(answer)
@@ -211,6 +219,7 @@ class AnswerRunner:
                 # Persist before the irreversible request, including on Ctrl-C or process exit.
                 report["status"] = "submitting"
                 write_report(path, report)
+                self.progress.detail("正在交卷：" + report["paper"])
                 self.api.submit(payload)
                 if self.api.verify_submitted(exam_id, task_id):
                     report.update(status="submitted", message="平台作答记录已确认交卷")

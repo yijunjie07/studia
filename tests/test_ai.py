@@ -277,16 +277,22 @@ class WorkflowTests(unittest.TestCase):
 
 class MainResultTests(unittest.TestCase):
     def test_failed_ai_task_is_not_reported_as_normal_success(self):
+        import io
         import StartWork
+        import theme
+        from rich.console import Console
+        from reporting import ProgressEvent
+        from ui import TerminalUI
         from unittest.mock import patch
-        with patch.object(StartWork, "print_startup_info"), patch.object(StartWork.time, "sleep"), \
-             patch.object(StartWork, "get_work_mode_choice", return_value=3), \
-             patch.object(StartWork, "get_version_choice", return_value=0), \
-             patch.object(StartWork, "print_exit_message"), patch.object(StartWork, "logger") as logger, \
-             patch("ai.menu.run_ai_menu", return_value=[{"status": "error", "message": "paper response"}]):
-            StartWork.main()
-        self.assertFalse(any("正常结束" in str(call) for call in logger.info.call_args_list))
-        self.assertTrue(logger.warning.called)
+        stream = io.StringIO()
+        view = TerminalUI(console=Console(file=stream, theme=theme.THEME, width=120))
+        def fail():
+            view.on_progress(ProgressEvent("result", "作业", status="error"))
+        with patch("app.Application.run", side_effect=fail):
+            StartWork.main(view)
+        text = stream.getvalue()
+        self.assertIn("成功 0 · 失败 1", text)
+        self.assertNotIn("正常结束", text)
 
 
 if __name__ == "__main__":

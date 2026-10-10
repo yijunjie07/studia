@@ -46,16 +46,9 @@ def open_download_url(asset_url):
 
 def show_update_prompt(asset_url):
     """显示更新提示弹窗。"""
-    import tkinter as tk
-    from tkinter import messagebox
-    
-    root = tk.Tk()
-    root.withdraw()  # 隐藏主窗口
-
-    if messagebox.askyesno("更新可用", "检测到新版本，是否下载？"):
+    from ui import confirm_update
+    if confirm_update():
         open_download_url(asset_url)
-
-    root.destroy()
 
 
 def _is_release_version(app_version) -> bool:

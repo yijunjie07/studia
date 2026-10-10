@@ -8,6 +8,25 @@
 import datetime
 import logging
 import sys
+import re
+
+
+def redact(message):
+    """Redact credentials in legacy request/response diagnostics before rendering or writing."""
+    message = str(message)
+    message = re.sub(r"(?i)(Bearer\s+)[^\s,'\"}]+", r"\1[hidden]", message)
+    message = re.sub(
+        r"(?i)((?:access_token|refresh_token|token|api_key|password|authorization|cookie)[\"']?\s*[:=]\s*[\"']?)([^\s,\"'&}\]]+)",
+        r"\1[hidden]", message,
+    )
+    return message
+
+
+class RedactFilter(logging.Filter):
+    def filter(self, record):
+        record.msg = redact(record.getMessage())
+        record.args = ()
+        return True
 
 
 def is_dev_mode() -> bool:
@@ -15,25 +34,15 @@ def is_dev_mode() -> bool:
     return any(arg in ("-dev", "--dev") for arg in sys.argv[1:])
 
 
-def _console_formatter() -> logging.Formatter:
-    """控制台格式：-dev 保留 [时间戳] ::；正式模式只输出消息本身"""
-    if is_dev_mode():
-        return logging.Formatter('[%(asctime)s] :: %(message)s')
-    return logging.Formatter('%(message)s')
-
-
 class Logger:
     def __init__(self, name):
         self.logger = logging.getLogger(name)
         self.logger.setLevel(level=logging.DEBUG)
+        if not any(isinstance(f, RedactFilter) for f in self.logger.filters):
+            self.logger.addFilter(RedactFilter())
 
-        # 同名模块可能多次 Logger()，避免重复挂控制台 handler
-        has_console = any(type(h) is logging.StreamHandler for h in self.logger.handlers)
-        if not has_console:
-            ch = logging.StreamHandler()
-            ch.setLevel(logging.INFO)
-            ch.setFormatter(_console_formatter())
-            self.logger.addHandler(ch)
+        # Console handlers are owned exclusively by ui.py.
+        self.logger.propagate = True
 
         # 文件日志始终带完整上下文，便于排查
         if not any(isinstance(h, logging.FileHandler) for h in self.logger.handlers):

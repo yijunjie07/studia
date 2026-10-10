@@ -15,6 +15,7 @@ import requests
 
 import MoocMain.lookVideo as mook_video
 import MoocMain.workMain as workMain
+from ui import legacy_input
 from MoocMain.log import Logger
 
 logger = Logger(__name__).get_log()
@@ -37,20 +38,20 @@ def get_verify_code(session):
         from PIL import Image
         Image.open(BytesIO(code_result.content)).show()
         time.sleep(0.2)
-        code_value = input("请输入验证码：")
+        code_value = legacy_input("请输入验证码：")
     except Exception as e:
         logger.info(e)
         logger.info('打开验证码失败!!! 请前往该项目根目录找到并打开 verify_code.jpg 后输入验证码!!!')
         with open(verify_code_file, "wb", ) as f:
             f.write(code_result.content)
-        code_value = input("请输入验证码：")
+        code_value = legacy_input("请输入验证码：")
     finally:
         # 删除验证码照片
         if os.path.exists(verify_code_file):
             os.remove(verify_code_file)
     if not code_result.cookies or not code_value:
         logger.error('识别验证码出错，程序退出!')
-        input()
+        legacy_input()
         exit(0)
     return {'verify_code_ck': code_result.cookies, 'verify_code_value': code_value}
 
@@ -73,7 +74,7 @@ def to_login(session, name, password):  # 0.登录
     else:
         logger.error("====> 登陆失败: %s", json_result['msg'])
         logger.error('程序关闭，请重新执行......')
-        input()
+        legacy_input()
         exit(0)
 
 
@@ -84,14 +85,14 @@ def save_cookies(session, username1, password1, username2, password2):  # 登录
         if username2 and password2:
             if username1 == username2 and password1 == password2:
                 logger.error('小号请勿使用与大号相同账号！！！ 程序关闭，请重新执行......')
-                input()
+                legacy_input()
                 exit(0)
             ck['ck2'] = to_login(session, username2, password2)
         else:
             logger.info("\n>>> 未填写账号2信息，仅刷课不答题!")
     else:
         logger.error("请填写账号1 账号以及密码!!! 程序关闭，请重新执行......")
-        input()
+        legacy_input()
         exit(0)
     return ck
 
@@ -137,7 +138,7 @@ def run(username1, password1,
             time.sleep(0.2)
             logger.info('\n(可选)请输入需要跳过的课程序号，英文逗号隔开，回车跳过(例: 1,3,4) ↓')
             if not pass_work:
-                filter_list = input("请输入: ") or []
+                filter_list = legacy_input("请输入: ") or []
             else:
                 filter_list = pass_work
             if filter_list:
@@ -161,7 +162,7 @@ def run(username1, password1,
             asyncio.run(mook_video.start(session, is_continue_work))
             if not user_cookies.get('ck2', None):
                 logger.info('未获取小号信息, 不答题 程序退出！')
-                input('按回车退出...')
+                legacy_input('按回车退出...')
                 exit(0)
 
             logger.info('-' * 60)
@@ -245,4 +246,4 @@ def run(username1, password1,
     logger.info('%s 运行结束 支持一下！By https://github.com/11273/mooc-work-answer %s', '=' * 20, '=' * 20)
     logger.info('=' * 100)
     logger.info('程序运行结束，关闭程序......')
-    input()
+    legacy_input()

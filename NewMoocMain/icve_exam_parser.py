@@ -6,6 +6,9 @@
 
 import re
 from lxml import html
+from MoocMain.log import Logger
+
+logger = Logger(__name__).get_log()
 from typing import List, Dict, Any
 
 # 填空题空格标记
@@ -133,7 +136,7 @@ def parse_exam_questions(html_content: str) -> List[Dict[str, Any]]:
             questions.append(question)
             
         except Exception as e:
-            print(f"解析题目失败: {e}")
+            logger.warning(f"解析题目失败: {e}")
             continue
     
     return questions
@@ -162,43 +165,10 @@ def get_question_stats(questions: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def display_questions(questions: List[Dict[str, Any]], show_options: bool = True) -> None:
-    """打印题目信息"""
-    if not questions:
-        print("没有找到题目")
-        return
-    
-    # 按题型分组
-    grouped = {}
-    for q in questions:
-        q_type = q['type']
-        if q_type not in grouped:
-            grouped[q_type] = []
-        grouped[q_type].append(q)
-    
-    # 显示统计
-    stats = get_question_stats(questions)
-    print(f"\n题目总数: {stats['total']}, 总分: {stats['total_score']}分")
-    print("题型分布:", end='')
-    for q_type, info in stats['by_type'].items():
-        print(f"  {q_type}: {info['count']}题/{info['score']}分", end='')
-    print("\n")
-    
-    # 显示题目
-    for q_type, qs in grouped.items():
-        print(f"\n{'='*20} {q_type} {'='*20}")
-        for q in qs:
-            print(f"\n{q['number']}. {q['text']} ({q['score']}分)")
-            
-            if q['type'] == '填空题':
-                print(f"   空格数: {q['blank_count']}")
-            elif show_options and 'options' in q:
-                for opt in q['options']:
-                    print(f"   {opt['label']}. {opt['text']}")
+    from ui import display_questions as render
+    render(questions, show_options)
 
-# 使用示例
+
 if __name__ == '__main__':
-    # 示例用法
-    print("职教云考试解析工具")
-    print("使用方法:")
-    print("questions = parse_exam_questions(html_content)")
-    print("display_questions(questions)")
+    from ui import parser_help
+    parser_help()

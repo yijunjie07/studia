@@ -1,10 +1,10 @@
 import base64
 import json
-import textwrap
 from typing import Dict, Any, Optional, List
 
 from MoocMain.log import Logger
 from base.api_client import BaseAPIClient
+from base.auth import authenticated_get, PlatformUnavailable
 
 logging = Logger(__name__).get_log()
 
@@ -29,7 +29,7 @@ def _parse_jwt_user_id(token: Optional[str]) -> Optional[str]:
 
 
 class AIMoocApi(BaseAPIClient):
-    def __init__(self, token: str = None, username: str = None, password: str = None):
+    def __init__(self, token: str = None, username: str = None, password: str = None, *, access_token=None):
         super().__init__(BASE_URL)
 
         self.token = token  # 如果提供了token，就使用OAuth登录
@@ -38,26 +38,30 @@ class AIMoocApi(BaseAPIClient):
         self.password = password
         self.user_info: Dict[str, Any] = {}
         self.user_id: Optional[str] = None
-        self.login()
+        if access_token:
+            self.set_auth_token(access_token)
+            self.get_info(strict=True)
+        else:
+            self.login()
 
     def login(self) -> None:
         """登录逻辑"""
         # 如果没有提供token，使用用户名密码登录
         if not self.token:
-            logging.info("🔐 使用用户名密码登录...")
+            logging.info(" 使用用户名密码登录...")
             self.token = self._get_sso_token()
             if not self.token:
-                logging.error("❌ 登录失败，未获取到 token")
+                logging.error(" 登录失败，未获取到 token")
                 return
         else:
-            logging.info("🔐 使用OAuth登录获取的token...")
+            logging.info(" 使用OAuth登录获取的token...")
 
         self.access_token = self._get_access_token(self.token)
         if self.access_token:
             self.set_auth_token(self.access_token)
-            self.get_info()
+            self.get_info(strict=True)
         else:
-            logging.error("❌ 登录失败")
+            logging.error(" 登录失败")
 
     def _get_sso_token(self) -> Optional[str]:
         """第一步：调用 SSO 登录，获取 token"""
@@ -75,7 +79,7 @@ class AIMoocApi(BaseAPIClient):
 
         token = result
         if token:
-            logging.debug(f"🔑 获取到 token: {token}")
+            logging.debug("已获取登录凭证（已隐藏）")
         return token
 
     def _get_access_token(self, token: str) -> Optional[str]:
@@ -87,47 +91,21 @@ class AIMoocApi(BaseAPIClient):
             return result["access_token"]
         return None
 
-    def get_info(self) -> None:
+    def get_info(self, strict=False) -> None:
         """获取用户信息"""
         endpoint = "/system/baseUser/info"
-        user = self.get(endpoint) or {}
+        user = (authenticated_get(self, endpoint) if strict else self.get(endpoint)) or {}
+        if strict and (not isinstance(user, dict) or not (user.get("id") or user.get("userId"))):
+            raise PlatformUnavailable("平台未返回有效账号信息，登录缓存已保留")
         self.user_info = user if isinstance(user, dict) else {}
         self.user_id = _parse_jwt_user_id(self.access_token) or str(
             self.user_info.get("id") or self.user_info.get("userId") or ""
         ) or None
 
-        # 性别显示转换
-        sex_display = {1: "男", 2: "女", 0: "未知"}.get(user.get("sex", 0), "未知")
-
-        # 用户类型显示转换
-        user_type_display = "学生" if user.get("userType") == "1" else "其他"
-
-        # 管理员状态
-        is_admin = user.get("isAdmin", 0) == 1
-
-        # 记录日志
-        logging.info(
-            textwrap.dedent(
-                f"""
-            ┏━━━━━━━━━━━━━━━━ ✅ 用户登录成功 ━━━━━━━━━━━━━━━┓
-            ┃ 📌 用户 ID    : {user.get('id', '未知')}
-            ┃ 👤 用户名    : {user.get('userName', '未知')}（{user.get('displayName', '未知')}）
-            ┃ 📧 邮箱      : {user.get('email', '未知') if user.get('email') else '未填写'}
-            ┃ 📱 手机号    : {user.get('phoneNumber', '未知')}
-            ┃ 🧑 性别      : {sex_display}
-            ┃ 🏫 学校      : {user.get('schoolName', '未知')}
-            ┃ 🎓 学号/工号 : {user.get('userNum', '未知')}
-            ┃ 🔹 用户类型  : {user_type_display}
-            ┃ 🔸 管理员    : {"是" if is_admin else "否"}
-            ┃ 📅 创建时间  : {user.get('createTime', '未知')}
-            ┃ 🔄 更新时间  : {user.get('updateTime', '未知')}
-            ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-            """
-            )
-        )
+        logging.info("登录成功：%s", self.user_info.get("displayName") or self.user_info.get("userName") or "当前账号")
 
     def my_course_list(
-        self, page_num: int = 1, page_size: int = 6, query_type: int = 1, flag: int = 1
+        self, page_num: int = 1, page_size: int = 6, query_type: int = 1, flag: int = 1, *, strict=False
     ) -> Dict[str, Any]:
         """获取我的课程列表"""
         endpoint = "/course/courseInfo/myCourse"
@@ -143,6 +121,8 @@ class AIMoocApi(BaseAPIClient):
             # 查询类型
             "queryType": query_type
         }
+        if strict:
+            return authenticated_get(self, endpoint, params=params)
         return self.get(endpoint, params=params)
 
     def study_design_list(

@@ -180,3 +180,7 @@ tiku/
 # 本地课程结构导出与 Git 历史备份
 /exports/
 *.bundle
+
+# 本机登录与模型配置（默认存放在仓库外）
+settings.json
+.settings-*

@@ -14,6 +14,7 @@ import time
 import requests
 from lxml import etree, html
 
+from ui import legacy_input
 from MoocMain.log import Logger
 from NewMoocMain.acwv2 import get_acw_sc__v2
 from NewMoocMain.icve_exam_parser import parse_exam_questions
@@ -58,7 +59,7 @@ def auth(session, username, password):
         return post_json['data']['token']
     else:
         logger.info(f"登录失败: {username} msg: {post_json['msg']}")
-        input('程序退出')
+        legacy_input('程序退出')
         exit(0)
 
 
@@ -159,7 +160,7 @@ def sign_learn(session, course_id, type_value):
     post = session.get(url=result_json['data'], headers=HEADERS)
     logger.debug(post.text)
     if 'id="parm_0"' in post.text or 'window.top.location = "/";' in post.text:
-        alicfw = input('填入alicfw(查看: https://github.com/yijunjie07/icve-ai-assistant/blob/main/docs/legacy/ALICFW.md): ')
+        alicfw = legacy_input('填入alicfw(查看: https://github.com/yijunjie07/icve-ai-assistant/blob/main/docs/legacy/ALICFW.md): ')
         session.cookies.set('alicfw', alicfw)
         return sign_learn(session, course_id, type_value)
 
@@ -598,55 +599,55 @@ def openLearnResItem(id, type, w=None, c=None):
                         logger.error('\t\t\t\t\t 获取考试页面html失败: %s', exam_record_id)
                         continue
                     questions = parse_exam_questions(exam_page_html)
-                    logger.info('\t\t\t\t\t 🤖 开始AI智能答题，当前处理题目数量 %s，页码: %s', len(questions), page)
+                    logger.info('\t\t\t\t\t  开始AI智能答题，当前处理题目数量 %s，页码: %s', len(questions), page)
                     for idx, question in enumerate(questions, 1):
                         text = question.get('text', '')
                         text = text[:50] + '...' if len(text) > 80 else text
-                        logger.info('\t\t\t\t\t\t 📝 [%d/%d] %s (%s分) %s', 
+                        logger.info('\t\t\t\t\t\t  [%d/%d] %s (%s分) %s',
                                     idx, 
                                     len(questions),
                                     question.get('type', ''), 
                                     question.get('score', '0'), 
                                     text)
-                    logger.info('\t\t\t\t\t 🤖 AI思考中，请稍等，题目数量较多将耗费一定时间...')
+                    logger.info('\t\t\t\t\t  AI思考中，请稍等，题目数量较多将耗费一定时间...')
 
-                    logger.debug(f'\t\t\t\t\t 🤖 AI思考开始，题目: {questions}')
+                    logger.debug(f'\t\t\t\t\t  AI思考开始，题目: {questions}')
                     start_time = time.time()
                     ai_answers = ai_exam_handler.process_exam(questions, use_auto_submit)
                     end_time = time.time()
-                    logger.debug(f'\t\t\t\t\t 🤖 AI思考完成，结果: {ai_answers}')
+                    logger.debug(f'\t\t\t\t\t  AI思考完成，结果: {ai_answers}')
                     
                     if ai_answers:
-                        logger.info(f'\t\t\t\t\t ✅ AI答题成功，生成{len(ai_answers)}个答案，共{questionCount}个题目，耗时: {end_time - start_time}秒')
+                        logger.info(f'\t\t\t\t\t  AI答题成功，生成{len(ai_answers)}个答案，共{questionCount}个题目，耗时: {end_time - start_time}秒')
                         # 输出AI答案结果
                         # logger.info("\t\t\t\t\t 🎯 AI答题结果: %s", json.dumps(ai_answers))
                         # 保存答案 
                         save_result = save_exam_answers(session, exam_record_id, ai_answers)
                         if save_result['retCode'] == '0':
                             answerCount += len(ai_answers)
-                            logger.info(f'\t\t\t\t\t ✅ 保存 {len(ai_answers)} 个答案，结果: {save_result["data"]["saveDate"]}')
+                            logger.info(f'\t\t\t\t\t  保存 {len(ai_answers)} 个答案，结果: {save_result["data"]["saveDate"]}')
                         else:
-                            logger.info(f'\t\t\t\t\t ❌ 保存答案结果，将取消自动提交: {save_result["retMsg"]}')
+                            logger.info(f'\t\t\t\t\t  保存答案结果，将取消自动提交: {save_result["retMsg"]}')
                     else:
-                        logger.debug('\t\t\t\t\t ❌ AI答题失败，输出原始题目 %s', json.dumps(questions))
+                        logger.debug('\t\t\t\t\t  AI答题失败，输出原始题目 %s', json.dumps(questions))
                 # 如果保存答案成功，则自动提交
                 if use_auto_submit:
-                    logger.info(f'\t\t\t\t\t ✅ 准备自动提交答案...')
+                    logger.info(f'\t\t\t\t\t  准备自动提交答案...')
                     time.sleep(random.randint(1, 2))
                     if answerCount == questionCount:
                         submit = submit_exam_answers(session, exam_record_id)
-                        logger.info(f'\t\t\t\t\t ✅ 自动提交结果: {submit["retMsg"]}')
+                        logger.info(f'\t\t\t\t\t  自动提交结果: {submit["retMsg"]}')
                         time.sleep(random.randint(1, 2))
                         exam_info = get_exam_record_info_before_exam(session, exam_id)
                         if exam_info.get('data').get('lastScore'):
-                            logger.info(f'\t\t\t\t\t\t ✅ 分数: {exam_info["data"]["lastScore"]}')
+                            logger.info(f'\t\t\t\t\t\t  分数: {exam_info["data"]["lastScore"]}')
                             time.sleep(random.randint(1, 2))
                     else:
-                        logger.info(f'\t\t\t\t\t ❌ 自动提交取消，答案数量不一致，共{questionCount}个题目，仅保存{answerCount}个答案，请手动检查后自行提交')
+                        logger.info(f'\t\t\t\t\t  自动提交取消，答案数量不一致，共{questionCount}个题目，仅保存{answerCount}个答案，请手动检查后自行提交')
 
                     
             else:
-                logger.info('\t\t\t\t\t 🤖 未开启AI答题功能，跳过...')
+                logger.info('\t\t\t\t\t  未开启AI答题功能，跳过...')
                 
         elif type == "homework":
             logger.info("\t\t\t\t ~~~~>执行结果: 附件作业跳过。")
@@ -696,8 +697,8 @@ def run(username, password, topic_content, jump_content, type_value, is_ai_answe
     logger.info(f"* 评论配置: {topic_content if topic_content is not None else ''}")
     logger.info(f"* 跳过课程: {jump_content if jump_content is not None else ''}")
     logger.info(f"* 课程类型: {type_value}")
-    logger.info(f"* AI智能答题: {'✅ 已启用' if is_ai_answer else '❌ 未启用'}")
-    logger.info(f"* AI答题自动提交: {'✅ 已启用' if is_auto_submit else '❌ 未启用'}")
+    logger.info(f"* AI智能答题: {' 已启用' if is_ai_answer else ' 未启用'}")
+    logger.info(f"* AI答题自动提交: {' 已启用' if is_auto_submit else ' 未启用'}")
     logger.info(separator)
     logger.info("开始执行")
     logger.info(separator)
@@ -720,51 +721,51 @@ def run(username, password, topic_content, jump_content, type_value, is_ai_answe
     # 根据是否提供token选择不同的认证方法
     if token:
         # 使用已提供的token（OAuth登录）
-        logger.info("🔐 使用OAuth登录获取的token")
+        logger.info(" 使用OAuth登录获取的token")
         session.cookies.set('token', token)
     else:
         # 使用传统的用户名密码登录
         token = auth(session, username, password)
     
     # 获取并展示用户信息
-    logger.info("📋 获取用户信息...")
+    logger.info(" 获取用户信息...")
     user_info_response = get_user_info(session)
     if user_info_response and isinstance(user_info_response, dict):
         if user_info_response.get('errorCode') == 'A0000' and user_info_response.get('data'):
             user_data = user_info_response['data']
-            logger.info("✅ 用户信息获取成功")
+            logger.info(" 用户信息获取成功")
             logger.info("=" * 50)
-            logger.info("📋 用户信息")
+            logger.info(" 用户信息")
             logger.info("=" * 50)
-            logger.info(f"👤 用户名: {user_data.get('userName', '未知')}")
-            logger.info(f"🏷️  显示名: {user_data.get('displayName', '未知')}")
-            logger.info(f"🏫 学校名: {user_data.get('schoolName', '未知')}")
-            logger.info(f"📱 手机号: {user_data.get('mobile', '未知')}")
-            logger.info(f"📧 邮箱: {user_data.get('email', '未填写') if user_data.get('email') else '未填写'}")
-            logger.info(f"🌍 省份: {user_data.get('province', '未知')}")
-            logger.info(f"🌆 城市: {user_data.get('city', '未填写') if user_data.get('city') else '未填写'}")
-            logger.info(f"👥 用户类型: {'学生' if user_data.get('userType') == '1' else '其他'}")
-            logger.info(f"🕐 上次访问: {user_data.get('dateLastVisit', '未知')}")
-            logger.info(f"📅 注册时间: {user_data.get('dateCreated', '未知')}")
+            logger.info(f" 用户名: {user_data.get('userName', '未知')}")
+            logger.info(f"  显示名: {user_data.get('displayName', '未知')}")
+            logger.info(f" 学校名: {user_data.get('schoolName', '未知')}")
+            logger.info(f" 手机号: {user_data.get('mobile', '未知')}")
+            logger.info(f" 邮箱: {user_data.get('email', '未填写') if user_data.get('email') else '未填写'}")
+            logger.info(f" 省份: {user_data.get('province', '未知')}")
+            logger.info(f" 城市: {user_data.get('city', '未填写') if user_data.get('city') else '未填写'}")
+            logger.info(f" 用户类型: {'学生' if user_data.get('userType') == '1' else '其他'}")
+            logger.info(f" 上次访问: {user_data.get('dateLastVisit', '未知')}")
+            logger.info(f" 注册时间: {user_data.get('dateCreated', '未知')}")
             logger.info("=" * 50)
             
             # 更新全局用户变量
             user = user_data.get('displayName', user_data.get('userName', username))
         else:
-            logger.warning(f"⚠️ 用户信息获取失败: {user_info_response.get('errorMsg', '未知错误')}")
+            logger.warning(f" 用户信息获取失败: {user_info_response.get('errorMsg', '未知错误')}")
     else:
-        logger.warning("⚠️ 无法获取用户信息，继续执行...")
+        logger.warning(" 无法获取用户信息，继续执行...")
     
     # 如果开启AI答题功能，初始化AI处理器
     if use_ai_answer:
         try:
-            logger.info("🤖 初始化AI答题处理器...")
+            logger.info(" 初始化AI答题处理器...")
             from ai.ai_exam_handler import AIExamHandler
             ai_exam_handler = AIExamHandler(token, verbose=False, auto_delete_chat=True)
             
             # 检查AI处理器是否正常初始化
             if ai_exam_handler is None:
-                logger.error("❌ AI答题处理器初始化返回None，将关闭AI答题功能")
+                logger.error(" AI答题处理器初始化返回None，将关闭AI答题功能")
                 use_ai_answer = False
                 ai_exam_handler = None
             else:
@@ -772,13 +773,13 @@ def run(username, password, topic_content, jump_content, type_value, is_ai_answe
                 
                 # 加载AI体
                 if ai_exam_handler.load_agents():
-                    logger.info("✅ AI答题处理加载成功")
+                    logger.info(" AI答题处理加载成功")
                 else:
-                    logger.error("❌ AI答题处理器加载失败，将关闭AI答题功能")
+                    logger.error(" AI答题处理器加载失败，将关闭AI答题功能")
                     use_ai_answer = False
                     ai_exam_handler = None
         except Exception as e:
-            logger.exception(f"❌ AI处理初始化失败: {e}", e)
+            logger.exception(f" AI处理初始化失败: {e}", e)
             use_ai_answer = False
             ai_exam_handler = None
     

@@ -241,9 +241,9 @@ def run_start_work(session, ck1, ck2, work_exam_type, course_open_id, is_work_sc
                             question_type_type_map[i['questionType']], i['TitleText'])
         if len(work_exam_questions) == answer_count:
             work_exam_save_res = workExamSave(session, work_exam_preview['uniqueId'], exam_item['Id'], work_exam_type)
-            logger.info('\t\t\t\t4. ✅✅✅ 提交作业成功... 【%s】\t 状态: %s', exam_item['Title'], work_exam_save_res['msg'])
+            logger.info('\t\t\t\t4.  提交作业成功... 【%s】\t 状态: %s', exam_item['Title'], work_exam_save_res['msg'])
         else:
-            logger.error('\t\t\t\t4. ⛔⛔⛔ 提交作业失败... 【%s】\t 状态: 未提交！请前往网页手动提交！注意作答时长！', exam_item['Title'])
+            logger.error('\t\t\t\t4.  提交作业失败... 【%s】\t 状态: 未提交！请前往网页手动提交！注意作答时长！', exam_item['Title'])
 
 
 def run_get_answer(session, work_exam_type, course_open_id, work_exam_id):

@@ -125,7 +125,7 @@ async def start(session, is_continue_work):
                             logger.info("\t\t %s", module_list2_i['name'])
                             module_list3 = await getCellByTopicId(session, course_item['courseOpenId'], module_list2_i['id'])
                             tasks = []
-                            logger.info("\t\t\t [🎉🎉🎉 正在批量刷小节: 【%s】, 检测中, 等待任务创建...]", module_list2_i['name'])
+                            logger.info("\t\t\t [ 正在批量刷小节: 【%s】, 检测中, 等待任务创建...]", module_list2_i['name'])
                             for module_list3_i in module_list3:
                                 if not len(module_list3_i['childNodeList']):
                                     category_name = module_list3_i['categoryName']
@@ -146,11 +146,11 @@ async def start(session, is_continue_work):
                                         info = await viewDirectory(session, module_list4_i['courseOpenId'], module_list4_i['Id'])
                                         tasks.append(statStuProcess(session, info, category_name, cell_name))
                             logger.info("\t\t\t ["
-                                        "🚀🚀🚀 批量刷小节: 【%s】, 检测完成, 执行中...]", module_list2_i['name'])
+                                        " 批量刷小节: 【%s】, 检测完成, 执行中...]", module_list2_i['name'])
                             result = await asyncio.gather(*tasks)
                             for i in result:
                                 logger.info(i)
-                            logger.info("\t\t\t [🚩🚩🚩 批量刷小节: 【%s】, 执行完成]", module_list2_i['name'])
+                            logger.info("\t\t\t [ 批量刷小节: 【%s】, 执行完成]", module_list2_i['name'])
                 course_list = await getCourseOpenList(session)
                 logger.info('%s 刷课已完成 %s', "*" * 40, "*" * 40)
                 for course_item in course_list:

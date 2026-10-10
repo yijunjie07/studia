@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from reporting import Reporter
 from MoocMain.log import Logger
 from AIMoocMain.api import AIMoocApi
 
@@ -1025,7 +1026,10 @@ class QuizExportHandler:
         dev_mode: bool = False,
         export_format: str = EXPORT_FORMAT_MD,
         include_my_answer: bool = False,
+        on_progress=None,
     ):
+        self.progress = Reporter(on_progress)
+        self._pending_outputs = []
         self.logging = Logger(__name__).get_log()
         self.client = client or AIMoocApi(token=token, username=username, password=password)
         self.category_ids = category_ids or [1, 2, 3]
@@ -1065,12 +1069,11 @@ class QuizExportHandler:
         self.course_rows = course_rows
         self.start_export()
 
-    # -------------------- 日志（过程日志仅 -dev） --------------------
+    # -------------------- 日志（终端显示由 UI 订阅） --------------------
 
     def _info(self, msg: str) -> None:
-        """过程/进度日志：仅 -dev 输出；正式模式保持安静"""
-        if self.dev_mode:
-            self.logging.info(msg)
+        """仅记录事件，由 UI 决定渲染，完整记录仍写入日志。"""
+        self.logging.info(msg)
 
     def _wants(self, fmt: str) -> bool:
         if self.export_format == EXPORT_FORMAT_BOTH:
@@ -1080,45 +1083,49 @@ class QuizExportHandler:
     # -------------------- 主流程 --------------------
 
     def start_export(self) -> None:
+        self.progress.begin("题目导出", None, "份试卷")
         try:
-            self._info(f"📚 待导出课程 {len(self.course_rows)} 门")
+            self._info(f" 待导出课程 {len(self.course_rows)} 门")
             if not self.course_rows:
-                self.logging.warning("⚠️ 未选择课程或没有课程数据")
+                self.logging.warning(" 未选择课程或没有课程数据")
                 return
 
-            self._info("➕➕➕ 开始导出题目 ➕➕➕")
+            self._info(" 开始导出题目 ")
             self._info(
-                f"⚙️ 测验模式: {QUIZ_MODE_LABEL.get(self.quiz_mode, self.quiz_mode)}"
+                f" 测验模式: {QUIZ_MODE_LABEL.get(self.quiz_mode, self.quiz_mode)}"
             )
             self._info(
-                f"📄 导出格式: {EXPORT_FORMAT_LABEL.get(self.export_format, self.export_format)}"
+                f" 导出格式: {EXPORT_FORMAT_LABEL.get(self.export_format, self.export_format)}"
             )
             if self.selected_exam_ids:
-                self._info(f"🎯 已选章节测验: {len(self.selected_exam_ids)} 份")
+                self._info(f" 已选章节测验: {len(self.selected_exam_ids)} 份")
             if self.dev_mode:
-                self._info("ℹ️ -dev：将额外输出 *.json / raw/ / summary（含姓名/学号等信息，请勿公开分享）")
+                self._info("ℹ -dev：将额外输出 *.json / raw/ / summary（含姓名/学号等信息，请勿公开分享）")
 
             for index, course in enumerate(self.course_rows, start=1):
                 course_name = course.get("courseName", "未知课程")
                 self._info(
-                    f"🪧 [{index}] 课程: {course_name} ({course.get('courseInfoName', '')})"
+                    f" [{index}] 课程: {course_name} ({course.get('courseInfoName', '')})"
                 )
                 self.export_course(course)
 
             self.save_summary()
-            self._info("➕➕➕ 导出完成 ➕➕➕")
+            self._info(" 导出完成 ")
             self._info(
-                f"📊 统计: 课程 {self.stats['courses']} | "
+                f" 统计: 课程 {self.stats['courses']} | "
                 f"试卷 {self.stats['papers']} | "
                 f"题目 {self.stats['questions']} | "
                 f"正确答案 {self.stats['answered']} | "
                 f"我的答案 {self.stats['my_answered']} | "
                 f"错误 {self.stats['errors']}"
             )
-            self._info(f"📁 输出目录: {self.output_dir.resolve()}")
+            self._info(f" 输出目录: {self.output_dir.resolve()}")
 
         except Exception as e:
-            self.logging.error(f"❌ 导出失败: {e}")
+            self.logging.error(f"导出失败: {e}")
+            for name in self._pending_outputs or ["导出中断"]:
+                self.progress.result(name, "error")
+            self._pending_outputs.clear()
 
     def export_course(self, course: Dict[str, Any]) -> None:
         course_name = course.get("courseName", "未知课程")
@@ -1126,7 +1133,9 @@ class QuizExportHandler:
         course_id = course.get("courseId")
 
         if not course_info_id or not course_id:
-            self.logging.warning(f"⚠️ 课程 {course_name} 缺少 ID，跳过")
+            self.logging.warning(f"课程 {course_name} 缺少 ID，跳过")
+            self.progress.add_total(1)
+            self.progress.result(course_name, "skipped")
             return
 
         course_dir = self.output_dir / safe_filename(course_name)
@@ -1139,8 +1148,10 @@ class QuizExportHandler:
                     course_info_id, course_id, category_id
                 )
             except Exception as e:
-                self.logging.error(f"❌ 获取试卷列表失败 course={course_name} cat={category_id}: {e}")
+                self.logging.error(f" 获取试卷列表失败 course={course_name} cat={category_id}: {e}")
                 self.stats["errors"] += 1
+                self.progress.add_total(1)
+                self.progress.result(course_name + " / 读取试卷列表", "error")
                 continue
 
             items = extract_list(resp)
@@ -1149,7 +1160,7 @@ class QuizExportHandler:
 
             category_name = CATEGORY_FALLBACK.get(category_id, str(category_id))
             self._info(
-                f"  📋 分类 {category_id}（{category_name}）: {len(items)} 份"
+                f"   分类 {category_id}（{category_name}）: {len(items)} 份"
             )
 
             # 章节测验：按模式过滤/合并
@@ -1157,7 +1168,7 @@ class QuizExportHandler:
                 if self.quiz_mode == QUIZ_MODE_SINGLE:
                     if not self.selected_exam_ids:
                         self._info(
-                            "    ⏭️ 单选模式未选中章节测验，跳过该课程测验"
+                            "     单选模式未选中章节测验，跳过该课程测验"
                         )
                         continue
                     filtered = []
@@ -1167,12 +1178,13 @@ class QuizExportHandler:
                             filtered.append(item)
                     items = filtered
                     self._info(
-                        f"    🎯 按所选章节测验过滤后: {len(items)} 份"
+                        f"     按所选章节测验过滤后: {len(items)} 份"
                     )
                 if not items:
                     continue
 
                 if self.quiz_mode == QUIZ_MODE_MERGED:
+                    self.progress.add_total(len(items))
                     if self.export_merged_quizzes(
                         items, category_name, course_name, course_dir,
                         course_info_id=str(course_info_id),
@@ -1180,6 +1192,7 @@ class QuizExportHandler:
                         exported_any = True
                     continue
 
+            self.progress.add_total(len(items))
             for item in items:
                 if self.export_one_paper(
                     item, category_id, course_name, course_dir,
@@ -1200,10 +1213,13 @@ class QuizExportHandler:
     ) -> Optional[Dict[str, Any]]:
         """拉取并解析一份试卷（含答案），不负责写文件"""
         exam_id = paper_exam_id(item)
+        self.progress.detail(paper_display_name(item))
         if not exam_id:
+            self.progress.result(paper_display_name(item), "skipped")
             return None
 
         paper_name = paper_display_name(item, exam_id)
+        self._pending_outputs.append(paper_name)
         category_name = clean_html_text(_first(
             item, "categoryName", "typeName", "workExamType", default=""
         )) or CATEGORY_FALLBACK.get(category_id, str(category_id))
@@ -1211,18 +1227,22 @@ class QuizExportHandler:
         try:
             paper_raw = self.client.get_exam_paper(str(exam_id))
         except Exception as e:
-            self.logging.error(f"❌ 获取试卷失败 [{category_name}] {paper_name}: {e}")
+            self.logging.error(f" 获取试卷失败 [{category_name}] {paper_name}: {e}")
             self.stats["errors"] += 1
+            self.progress.result(paper_name, "error")
+            self._pending_outputs.remove(paper_name)
             return None
 
         paper = unwrap_paper(paper_raw)
         raw_questions = get_questions_from_paper(paper)
         if not raw_questions:
             self.logging.warning(
-                f"  ⚠️ 未解析到题目 [{category_name}] {paper_name}（examId={exam_id}）"
+                f"   未解析到题目 [{category_name}] {paper_name}（examId={exam_id}）"
             )
             self.save_raw(course_dir, category_name, paper_name, exam_id, paper_raw)
             self.stats["errors"] += 1
+            self.progress.result(paper_name, "error")
+            self._pending_outputs.remove(paper_name)
             return None
 
         questions = [parse_question(q, i + 1) for i, q in enumerate(raw_questions)]
@@ -1336,6 +1356,8 @@ class QuizExportHandler:
         if not data:
             return False
         self.write_single_paper(course_dir, data)
+        self.progress.result(data["paper_name"], "success")
+        self._pending_outputs.remove(data["paper_name"])
         return True
 
     def write_single_paper(self, course_dir: Path, data: Dict[str, Any]) -> None:
@@ -1414,7 +1436,7 @@ class QuizExportHandler:
             "docx": str(docx_path) if docx_path else "",
         })
         self._info(
-            f"    ✅ [{category_name}] {paper_name}: {len(questions)} 题 "
+            f"     [{category_name}] {paper_name}: {len(questions)} 题 "
             f"（答案 {answered}，我的 {my_answered}） → {', '.join(written) or '（无输出）'}"
         )
 
@@ -1552,9 +1574,12 @@ class QuizExportHandler:
             "docx": str(docx_path) if docx_path else "",
         })
         self._info(
-            f"    ✅ [{category_name}] 全部章节测验（{len(sections)}份）: "
+            f"     [{category_name}] 全部章节测验（{len(sections)}份）: "
             f"{total} 题（答案 {answered}） → {', '.join(written) or '（无输出）'}"
         )
+        for section in sections:
+            self.progress.result(section["paper_name"], "success")
+            self._pending_outputs.remove(section["paper_name"])
         return True
 
     @staticmethod

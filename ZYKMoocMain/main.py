@@ -2,13 +2,14 @@ import random
 import time
 from typing import List, Dict, Any
 
+from reporting import Reporter
 from MoocMain.log import Logger
 from ZYKMoocMain.api import ZYKMoocApi
 from base.util import parse_duration, get_mp3_duration
 
 
 class ZYKMoocHandler:
-    def __init__(self, username: str = "", password: str = "", jump_content: str = "", token: str = None, *, client=None, course_rows=None):
+    def __init__(self, username: str = "", password: str = "", jump_content: str = "", token: str = None, *, client=None, course_rows=None, on_progress=None):
         """初始化 API 客户端和日志"""
         self.jump_list = []
         if jump_content and '#' in jump_content:
@@ -24,6 +25,7 @@ class ZYKMoocHandler:
             
         self.course_rows = course_rows
         self.logging = Logger(__name__).get_log()
+        self.progress = Reporter(on_progress)
         self.start_courses()
 
     def start_courses(self) -> None:
@@ -36,49 +38,25 @@ class ZYKMoocHandler:
                 course_rows = self.course_rows
             total_courses = len(course_rows)
 
-            self.logging.info(f"📚 获取课程成功，共 {total_courses} 门课程，当前获取到 {len(course_rows)} 门课程")
-
             if not course_rows:
-                self.logging.warning("⚠️ 当前没有课程数据")
+                self.logging.warning("当前没有课程数据")
                 return
-            self.logging.info("")
-            self.logging.info("➕➕➕ 课程读取 ➕➕➕")
-
-            # 记录跳过的课程
-            skipped_courses = []
-            for index, course in enumerate(course_rows, start=1):  # 添加索引，从 1 开始
-                course_name = course.get("courseName", "未知课程")
-                teacher = course.get("presidingTeacher", "未知教师")
-                course_info_name = course.get("courseInfoName", "未知课程信息")
-                study_time = course.get("studyTime", "未知")
-                final_score = course.get("finalScore", "未知")
-
-
-                # 判断是否跳过该课程
-                if any(s in course_name for s in self.jump_list):
-                    skipped_courses.append(course_name)
-                    self.logging.info(
-                        f"⏭️ [跳过] 课程: {course_name} ({course_info_name}) | 教师: {teacher} | ⏳ 学习时长: {study_time} | 成绩: {final_score}"
-                    )
-                    continue
-                self.logging.info(
-                    f"🪧 [{index}] 课程: {course_name} ({course_info_name}) | 教师: {teacher} | ⏳ 学习时长: {study_time} | 成绩: {final_score}"
-                )
-
-            self.logging.info("➕➕➕ 课程读取完成 ➕➕➕")
-            self.logging.info("")
-            # 打印跳过的课程
-            if skipped_courses:
-                self.logging.info(f"🚫 共跳过 {len(skipped_courses)} 门课程: {', '.join(skipped_courses)}")
-            else:
-                self.logging.info("✅ 将处理以上课程")
+            self.progress.begin("学习管理", total_courses, "门课程")
             for course in course_rows:
+                course_name = course.get("courseName", "未知课程")
                 if any(s in course.get("courseName") for s in self.jump_list):
+                    self.progress.result(course_name, "skipped")
                     continue
+                self._course_failed = False
+                self._course_processed = False
+                self.progress.detail(course_name)
                 self.process_course(course)
+                status = "error" if self._course_failed else "success" if self._course_processed else "skipped"
+                self.progress.result(course_name, status)
 
         except Exception as e:
-            self.logging.error(f"❌ 获取课程失败: {e}")
+            self.logging.error(f"获取课程失败: {e}")
+            self.progress.result("读取或处理课程", "error")
 
     def process_course(self, course: Dict[str, Any]) -> None:
         """处理单个课程"""
@@ -90,14 +68,14 @@ class ZYKMoocHandler:
         course_info_id = course.get("courseInfoId")
 
         self.logging.info(
-            f"🎯 课程: {course_name} ({course_info_name}) | 教师: {teacher} | ⏳ 学习时长: {study_time} | 成绩: {final_score}"
+            f" 课程: {course_name} ({course_info_name}) | 教师: {teacher} |  学习时长: {study_time} | 成绩: {final_score}"
         )
 
         if course_info_id:
             study_design_list = self.client.study_design_list(course_info_id)
             self.print_course_structure(study_design_list)
         else:
-            self.logging.warning(f"⚠️ 课程 {course_name} 缺少 CourseInfoId，跳过")
+            self.logging.warning(f" 课程 {course_name} 缺少 CourseInfoId，跳过")
 
     def print_course_structure(self, nodes: List[Dict[str, Any]], indent: int = 0) -> None:
         """递归打印课程结构"""
@@ -117,21 +95,22 @@ class ZYKMoocHandler:
     def handle_resource(self, node: Dict[str, Any], indent: int = 0) -> None:
         """处理最终的资源，并保存学习记录"""
         resource_name = node.get("name", "未知资源")
+        self.progress.detail(resource_name)
         file_type = node.get("fileType", "未知类型")
         student_study_record = node.get('studentStudyRecord')
         speed = (student_study_record or {}).get('speed', 0)
         prefix = " " * ((indent + 1) * 4)  # 每层缩进 4 个空格
 
-        self.logging.info(f"{prefix} 💭 资源: {resource_name} | 类型: {file_type} | 进度: {speed}")
+        self.logging.info(f"{prefix}  资源: {resource_name} | 类型: {file_type} | 进度: {speed}")
 
         # 跳过作业
         if file_type == "作业":
-            self.logging.info(f"{prefix} ✅ 跳过作业")
+            self.logging.info(f"{prefix}  跳过作业")
             return
 
         # 进度已经到100的不再处理
         if speed == 100:
-            self.logging.info(f"{prefix} ✅ 跳过进度: {speed}")
+            self.logging.info(f"{prefix}  跳过进度: {speed}")
             return
 
         try:
@@ -166,11 +145,13 @@ class ZYKMoocHandler:
 
             wait_time = random.randint(1, 3)
 
-            self.logging.info(f"{prefix} ⏳ 学习数: {total_num}，等待 {wait_time} 秒...")
+            self.logging.info(f"{prefix}  学习数: {total_num}，等待 {wait_time} 秒...")
 
             time.sleep(wait_time)
             response = self.client.study_record(course_info_id, parent_id, study_time, source_id,
                                                 total_num, total_num, total_num)
-            self.logging.info(f"{prefix} ✅ API 响应: {response['msg']}")
+            self.logging.info(f"API 响应: {response['msg']}")
+            self._course_processed = True
         except Exception as e:
-            self.logging.error(f"{prefix} ❌ 处理资源失败: {e}")
+            self._course_failed = True
+            self.logging.error(f"处理资源失败: {e}")

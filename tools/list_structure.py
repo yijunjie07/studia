@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List
 
+from ui import legacy_input, run_console_tool
 from MoocMain.log import Logger
 from AIMoocMain.api import AIMoocApi
 
@@ -81,20 +82,20 @@ def _walk_inline(client: AIMoocApi, course_info_id: str, course_id: str,
     return [item]
 
 
-def main() -> None:
+def main() -> bool:
     keyword = sys.argv[1] if len(sys.argv) > 1 else "物理因子治疗"
 
     logger.info("=" * 50)
     logger.info("课程目录查看（需浏览器 OAuth 登录）")
     logger.info(f"关键词: {keyword}")
     logger.info("=" * 50)
-    input("* 按回车键打开浏览器登录...")
+    legacy_input("* 按回车键打开浏览器登录...")
 
     from NewMoocMain.oauth_login import oauth_login
     token = oauth_login(timeout=300)
     if not token:
-        logger.error("❌ 登录失败")
-        return
+        logger.error(" 登录失败")
+        return False
 
     client = AIMoocApi(token=token)
     courses = client.my_course_list(page_size=9999) or {}
@@ -106,7 +107,7 @@ def main() -> None:
         logger.warning(f"未找到包含「{keyword}」的课程，全部课程如下：")
         for c in rows:
             logger.info(f"  - {c.get('courseName')} ({c.get('courseInfoName')})")
-        return
+        return False
 
     out_dir = Path("exports") / "structure" / time.strftime("%Y%m%d_%H%M%S")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -116,7 +117,7 @@ def main() -> None:
         course_info_id = course.get("id") or course.get("courseInfoId")
         course_id = course.get("courseId")
         logger.info("")
-        logger.info(f"🎯 课程: {course_name}")
+        logger.info(f" 课程: {course_name}")
         logger.info(f"   courseInfoId={course_info_id}")
         logger.info(f"   courseId={course_id}")
         if not course_info_id or not course_id:
@@ -136,7 +137,7 @@ def main() -> None:
                     continue
                 name = chapter.get("name") or chapter.get("title") or "未知"
                 ch_id = chapter.get("id")
-                logger.info(f"📖 {name}")
+                logger.info(f" {name}")
                 children = chapter.get("children") or []
                 chapter_item = {"id": ch_id, "name": name, "children": []}
                 if children:
@@ -165,10 +166,11 @@ def main() -> None:
             ),
             encoding="utf-8",
         )
-        logger.info(f"✅ 已保存: {out_file}")
+        logger.info(f" 已保存: {out_file}")
 
-    logger.info(f"📁 输出目录: {out_dir.resolve()}")
+    logger.info(f" 输出目录: {out_dir.resolve()}")
+    return True
 
 
 if __name__ == "__main__":
-    main()
+    run_console_tool(main, "读取课程目录")
