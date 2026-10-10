@@ -17,26 +17,48 @@ AI 答题及题目导出支持 `ai.icve.com.cn`，资源库当前支持学习管
 
 ## 安装与启动
 
-建议 Python 3.10–3.12，最低 Python 3.9。
+推荐使用 **uv**，macOS、Windows、Linux 都使用下面这套命令。uv 会管理 Python 和项目依赖，无需手动创建或激活虚拟环境。
+
+### 1. 首次安装
+
+先安装 [Git](https://git-scm.com/downloads) 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)，安装后重新打开终端（Windows 使用 PowerShell）。在想存放项目的目录执行：
 
 ```bash
 git clone https://github.com/yijunjie07/icve-ai-assistant.git
 cd icve-ai-assistant
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python StartWork.py
+uv sync --locked --python 3.12
+uv run StartWork.py
 ```
 
-Windows 激活命令为 `.venv\Scripts\activate`。使用 uv 时执行 `uv sync --locked`、`uv run StartWork.py`。Mac 自带 Python 3.9 的 LibreSSL 兼容依赖已包含在安装配置中。
+首次安装会下载所需的 Python 3.12 和依赖（已有可用版本时复用）。启动后，在浏览器完成平台登录，再回到终端操作。
 
-启动后自动恢复上次的平台和有效登录，直接显示课程。首次使用在浏览器完成登录后回到终端。输入 `2` 进入第 2 门课程，再选择继续学习、导出题目或 AI 答题；`m` 进入批量选择，用方向键移动、空格勾选、回车确认，顶部 `All` 可全选或取消全选。`t` 切换平台，`s` 打开设置。更新代码后需要退出旧程序再启动。
+### 2. 以后启动
 
-选择页支持 `n/p` 翻页、`/关键词` 搜索，搜索后的 `all` 只选匹配项。`b` 返回上一步，`q` 退出；回车仅采用明确显示的默认值。导出和 AI 先选任务，再看执行摘要，回车开始或 `s` 修改设置。AI 默认答题并自动交卷，置信度默认为 **0.8**；全部题目通过校验才交卷，也可切换为仅生成本地答案。运行时显示进度和最近 8 行日志，结束后保留结果、文件位置和失败原因，可回到当前课程继续操作。无需登录可执行 `python -m tools.ui_demo` 预览界面。
+在项目目录（包含 `StartWork.py` 的文件夹）打开终端，执行：
+
+```bash
+uv run StartWork.py
+```
+
+### 3. 更新项目
+
+先退出正在运行的程序，再在项目目录执行：
+
+```bash
+git pull --ff-only
+uv sync --locked
+uv run StartWork.py
+```
+
+## 使用
+
+每次启动默认进入 MOOC / AI 优课，自动恢复有效登录，直接显示课程。输入 `2` 进入第 2 门课程，再选择继续学习、导出题目或 AI 答题；`m` 进入批量选择，用方向键移动、空格勾选、回车确认，顶部 `All` 可全选或取消全选。`t` 切换平台，`s` 打开设置。
+
+选择页支持 `n/p` 翻页、`/关键词` 搜索，搜索后的 `all` 只选匹配项。`b` 返回上一步，`q` 退出；回车仅采用明确显示的默认值。导出和 AI 先选任务，再看执行摘要，回车开始或 `s` 修改设置。AI 默认答题并自动交卷，置信度默认为 **0.8**；全部题目通过校验才交卷，也可切换为仅生成本地答案。运行时显示进度和最近 8 行日志，结束后保留结果、文件位置和失败原因，可回到当前课程继续操作。无需登录可执行 `uv run python -m tools.ui_demo` 预览界面。
 
 首次使用 AI 时配置服务：自定义接口填写 URL、Key、Model；DeepSeek 填写 Key 并选择模型。之后自动复用有效登录与 AI 配置；登录确实过期时才重新打开浏览器。课程列表的 **s 设置** 可以修改或清除保存内容。
 
-配置保存在仓库外的用户目录（macOS / Linux 为 `~/.config/icve-ai-assistant/settings.json`），包含访问令牌和 Key。这是未加密的本地 JSON；macOS / Linux 新建目录权限为 `700`，文件权限为 `600`。不要分享该文件。常用平台、导出选项和置信度也会保存；自动交卷仍需当次选择。
+配置保存在仓库外的用户目录（macOS / Linux 为 `~/.config/icve-ai-assistant/settings.json`），包含访问令牌和 Key。这是未加密的本地 JSON；macOS / Linux 新建目录权限为 `700`，文件权限为 `600`。不要分享该文件。导出选项和置信度也会保存；每次进入 AI 答题默认答题并自动交卷，可在执行摘要中修改。
 
 ## 文件在哪里
 
