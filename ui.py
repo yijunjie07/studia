@@ -342,7 +342,7 @@ class TerminalUI:
                 line = Text(style="info")
             if line:
                 line.append(" · ")
-            key, separator, label = part.partition(" ")
+            key, separator, label = ("/", "", part[1:]) if part.startswith("/") else part.partition(" ")
             line.append(key, style="shortcut")
             line.append(separator + label)
         self.console.print(line)
@@ -445,7 +445,7 @@ class TerminalUI:
             if indexes and set(indexes) <= visible and (multiple or len(indexes) == 1):
                 self.note(f"已选择 {len(indexes)} 项。")
                 return [items[index - 1] for index in indexes]
-            self.note("请输入当前列表的编号。" + ("" if multiple else "批量操作请使用 m。"), "warning")
+            self.note("请输入当前列表的编号。" if multiple else "请输入一个课程编号。", "warning")
 
     def library(self, rows, platform, state):
         platform_name = "资源库" if platform == 1 else "MOOC / AI 优课"
@@ -453,7 +453,7 @@ class TerminalUI:
                            lambda x: x.get("courseName", "未知课程"),
                            self.course_details,
                            multiple=False, state=state,
-                           actions={"m": "批量选择", "s": "设置", "t": "切换平台", "r": "刷新"})
+                           actions={"s": "设置", "t": "切换平台", "r": "刷新"})
 
     def course_menu(self, courses, platform):
         title = courses[0].get("courseName", "未知课程") if len(courses) == 1 else f"已选 {len(courses)} 门课程"

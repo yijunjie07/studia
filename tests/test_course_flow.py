@@ -242,10 +242,11 @@ class WorkspaceTests(unittest.TestCase):
         self.assertIn("暂无作业", text)
         runner.assert_not_called()
 
-    def test_batch_courses_continue_in_same_workspace(self):
-        _, text, runs, _ = self.run_workspace(["m", "all", "1", "", "2", "q"])
-        self.assertEqual(runs, [COURSES])
-        self.assertIn("已选 2 门课程", text)
+    def test_courses_open_one_at_a_time_without_batch_shortcut(self):
+        _, text, runs, _ = self.run_workspace(["m", "1", "1", "", "2", "q"])
+        self.assertEqual(runs, [[COURSES[0]]])
+        self.assertNotIn("批量选择", text)
+        self.assertNotIn("批量操作请使用 m", text)
 
     def test_export_workspace_writes_only_chosen_paper_and_returns_to_course(self):
         from AIMoocMain.export_questions import QuizExportHandler

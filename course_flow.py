@@ -42,13 +42,8 @@ class CourseWorkspace:
                         continue
                 selected = self.view.library(self.rows, self.platform, self.library_state)
                 if isinstance(selected, str):
-                    if selected == "m":
-                        selected = self.view.courses(self.rows)
-                        if not selected:
-                            continue
-                    else:
-                        self.root_action(selected)
-                        continue
+                    self.root_action(selected)
+                    continue
                 if selected:
                     self.course_loop(selected)
             except Back:
