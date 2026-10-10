@@ -17,9 +17,7 @@ class CourseWorkspace:
         self.app = application
         self.view = application.view
         self.store = application.store
-        self.platform = self.store.get("platform", 0)
-        if self.platform not in (0, 1):
-            self.platform = 0
+        self.platform = 0
         self.client = None
         self.rows = []
         self.library_state = {}
@@ -67,7 +65,6 @@ class CourseWorkspace:
                 self.platform = platform
                 self.client, self.rows = None, []
                 self.library_state.clear()
-                self.app.remember(lambda: self.store.set("platform", platform))
         elif action == "r":
             self.client = None
 
