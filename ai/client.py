@@ -32,9 +32,11 @@ class AIConfig:
     model: str
     api_key: str = field(repr=False)
     timeout: int = 120
+    provider_name: str = ""
 
     def __post_init__(self):
         self.base_url = self.base_url.strip().rstrip("/")
+        self.provider_name = self.provider_name.strip()
         self.model = self.model.strip()
         self.api_key = self.api_key.strip()
         url = urlsplit(self.base_url)

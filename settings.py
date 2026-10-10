@@ -1,6 +1,7 @@
-"""User-local settings. Credentials never belong in the source checkout."""
+"""User-local settings. Private user credentials stay outside the checkout."""
 import json
 import hashlib
+from copy import deepcopy
 from datetime import datetime
 from dataclasses import dataclass
 import os
@@ -9,6 +10,7 @@ from uuid import uuid4
 from pathlib import Path
 
 from ai.client import AIConfig
+from ai.defaults import DEFAULT_PROFILE_ID, DEFAULT_PROVIDER_NAME
 
 
 class SettingsError(RuntimeError):
@@ -20,6 +22,10 @@ class ModelProfile:
     id: str
     config: AIConfig
     active: bool = False
+
+    @property
+    def builtin(self):
+        return self.id == DEFAULT_PROFILE_ID
 
 
 def config_directory():
@@ -93,7 +99,8 @@ class SettingsStore:
                 if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"] or item["id"] in ids:
                     raise ValueError()
                 ids.add(item["id"])
-                AIConfig(item["base_url"], item["model"], item["api_key"])
+                AIConfig(item["base_url"], item["model"], item["api_key"],
+                         provider_name=item.get("provider_name", ""))
             if profiles.get("active_id") is not None and profiles["active_id"] not in ids:
                 raise ValueError()
             return profiles
@@ -115,11 +122,41 @@ class SettingsStore:
 
     def ai_profiles(self):
         profiles = self._profiles(self._read())
-        return [ModelProfile(item["id"], AIConfig(item["base_url"], item["model"], item["api_key"]),
-                             profiles.get("active_id") == item["id"]) for item in profiles["items"]]
+        return [ModelProfile(item["id"], AIConfig(item["base_url"], item["model"], item["api_key"],
+                         provider_name=item.get("provider_name", "")),
+                             profiles.get("active_id") == item["id"])
+                for item in sorted(profiles["items"], key=lambda item: item["id"] != DEFAULT_PROFILE_ID)]
 
     def ai_config(self):
         return next((profile.config for profile in self.ai_profiles() if profile.active), None)
+
+    def ensure_default_model(self):
+        """Keep one locked built-in provider, migrating the earlier editable entry."""
+        from ai.defaults import default_config
+        data = self._read()
+        original = self._profiles(data)
+        profiles = deepcopy(original)
+        config = default_config()
+        matching = next((item for item in profiles["items"] if item["id"] == DEFAULT_PROFILE_ID), None)
+        if matching is None:
+            matching = next((item for item in profiles["items"]
+                         if (item["base_url"], item["model"], item["api_key"]) ==
+                         (config.base_url, config.model, config.api_key)), None)
+        if matching is None:
+            if not profiles["items"]:
+                profiles["active_id"] = DEFAULT_PROFILE_ID
+            matching = {}
+        else:
+            if profiles.get("active_id") == matching["id"]:
+                profiles["active_id"] = DEFAULT_PROFILE_ID
+            profiles["items"].remove(matching)
+        matching.update(id=DEFAULT_PROFILE_ID, base_url=config.base_url,
+                        model=config.model, api_key=config.api_key, provider_name=DEFAULT_PROVIDER_NAME)
+        profiles["items"].insert(0, matching)
+        if profiles == original and data.get("default_model_added"):
+            return
+        data["default_model_added"] = True
+        self._save_profiles(data, profiles)
 
     def save_ai_profile(self, config, profile_id=None):
         data = self._read()
@@ -132,7 +169,10 @@ class SettingsStore:
             profiles["items"].append(item)
         else:
             item = self._profile_item(profiles, profile_id)
-        item.update(base_url=config.base_url, model=config.model, api_key=config.api_key)
+            if profile_id == DEFAULT_PROFILE_ID:
+                raise SettingsError("默认供应商不可修改")
+        item.update(base_url=config.base_url, model=config.model, api_key=config.api_key,
+                    provider_name=config.provider_name)
         health = item.get("health", {})
         if not isinstance(health, dict) or health.get("config") != self.ai_fingerprint(config):
             item.pop("health", None)
@@ -149,6 +189,8 @@ class SettingsStore:
     def delete_ai_profile(self, profile_id):
         data = self._read()
         profiles = self._profiles(data)
+        if profile_id == DEFAULT_PROFILE_ID:
+            raise SettingsError("默认供应商不可删除")
         profiles["items"].remove(self._profile_item(profiles, profile_id))
         if profiles.get("active_id") == profile_id:
             profiles["active_id"] = None
@@ -156,7 +198,11 @@ class SettingsStore:
 
     def clear_ai(self):
         data = self._read()
-        self._save_profiles(data, {"active_id": None, "items": []})
+        profiles = self._profiles(data)
+        profiles["items"] = [item for item in profiles["items"] if item["id"] == DEFAULT_PROFILE_ID]
+        if profiles.get("active_id") != DEFAULT_PROFILE_ID:
+            profiles["active_id"] = None
+        self._save_profiles(data, profiles)
 
     def save_ai(self, config):
         current = next((profile.id for profile in self.ai_profiles() if profile.active), None)
@@ -180,7 +226,8 @@ class SettingsStore:
         profiles = self._profiles(data)
         fingerprint = self.ai_fingerprint(config)
         for item in profiles["items"]:
-            stored = AIConfig(item["base_url"], item["model"], item["api_key"])
+            stored = AIConfig(item["base_url"], item["model"], item["api_key"],
+                         provider_name=item.get("provider_name", ""))
             if self.ai_fingerprint(stored) == fingerprint:
                 item["health"] = {"config": fingerprint, "status": status, "message": message,
                                   "checked_at": datetime.now().isoformat(timespec="seconds")}

@@ -59,7 +59,10 @@ def safe_text(value):
 class CountColumn(ProgressColumn):
     def render(self, task):
         total = "?" if task.total is None else str(int(task.total))
-        return Text(f"{int(task.completed)}/{total}", style="muted", no_wrap=True)
+        count = f"{int(task.completed)}/{total}"
+        if task.fields.get("questions") and task.total:
+            count += f" · {task.percentage:.0f}%"
+        return Text(count, style="muted", no_wrap=True)
 
 
 class TaskColumn(ProgressColumn):
@@ -117,6 +120,7 @@ class TerminalUI:
             console=self.console, expand=True, auto_refresh=False,
         )
         self.task = self.progress.add_task("准备中", total=None)
+        self.question_task = self.progress.add_task("本卷题目", total=None, visible=False, questions=True)
         self.counts = Counter()
         self.unit = "项"
         self.started = clock()
@@ -162,7 +166,17 @@ class TerminalUI:
         with self.lock:
             if event.kind == "begin":
                 self.unit = event.unit
+                self.progress.update(self.question_task, visible=False)
                 self.progress.reset(self.task, total=event.total, description=safe_text(event.name))
+            elif event.kind == "questions":
+                if event.total is None:
+                    # Rich reset(total=None) retains the previous total.
+                    self.progress.remove_task(self.question_task)
+                    self.question_task = self.progress.add_task(safe_text(event.name), total=None,
+                                                                visible=True, questions=True)
+                else:
+                    self.progress.update(self.question_task, total=event.total, completed=event.completed or 0,
+                                         visible=True, description=safe_text(event.name))
             elif event.kind == "add_total":
                 task = self.progress.tasks[0]
                 self.progress.update(self.task, total=(task.total or 0) + (event.total or 0))
@@ -199,6 +213,7 @@ class TerminalUI:
         outer = self.depth == 0
         self.depth += 1
         if outer:
+            self.progress.update(self.question_task, visible=False)
             self.progress.reset(self.task, description=safe_text(name), total=None)
             self.live = Live(console=self.console, get_renderable=self.render, transient=True,
                              refresh_per_second=theme.REFRESH_PER_SECOND,
@@ -277,7 +292,7 @@ class TerminalUI:
             self.note(question["title"], "info")
             for option in question.get("options", []):
                 self.note(f"{option['label']}. {option['text']}", "info")
-            self.shortcuts("Esc 返回 · 已答题目会保留")
+            self.shortcuts("Esc 保存报告并返回 · 重新开始会全部重新答题")
 
             kind = question["type_id"]
             hints = {1: "输入选项字母，如 B", 2: "输入多个选项，如 AC 或 A,C",
@@ -549,14 +564,15 @@ class TerminalUI:
                 self.note(str(exc), "warning")
                 step = "url" if provider == 1 else "model"
 
-    def model_picker(self, rows, active_id=None, *, cursor_id=None, message=""):
+    def model_picker(self, rows, active_id=None, *, cursor_id=None, message="", locked_ids=()):
         from model_ui import choose_model, ModelChoice
         rows = [(row[0], *(safe_text(value) for value in row[1:])) for row in rows]
         if self.input_fn is None and self.console.is_terminal and sys.stdin.isatty():
-            return choose_model(rows, active_id, cursor_id=cursor_id, message=safe_text(message))
-        self.table("选择模型", ["编号", "模型", "接口", "状态"],
+            return choose_model(rows, active_id, cursor_id=cursor_id, message=safe_text(message),
+                                locked_ids=locked_ids)
+        self.table("选择模型", ["编号", "供应商", "模型", "状态"],
                    [(str(i), ("● " if row[0] == active_id else "○ ") + row[1], row[2], row[3])
-                    for i, row in enumerate(rows, 1)], "编号 使用 · a 添加 · e 编号 编辑 · Esc 返回")
+                    for i, row in enumerate(rows, 1)], "编号 使用 · a 添加 · e 编号 编辑自定义模型 · Esc 返回")
         if message:
             self.note(message)
         while True:
@@ -568,13 +584,18 @@ class TerminalUI:
                 return ModelChoice("add")
             action, index = ("edit", value[1:].strip()) if value.startswith("e") else ("select", value)
             if index.isdigit() and 1 <= int(index) <= len(rows):
-                return ModelChoice(action, rows[int(index) - 1][0])
+                profile_id = rows[int(index) - 1][0]
+                if action == "edit" and profile_id in locked_ids:
+                    self.note("默认供应商不可修改或删除。", "warning")
+                    continue
+                return ModelChoice(action, profile_id)
             self.note("请输入模型编号，或 a 添加、e 编号编辑。", "warning")
 
     def model_editor(self, current=None):
         from model_ui import edit_model, draft_config, ModelEdit
         if self.input_fn is None and self.console.is_terminal and sys.stdin.isatty():
             return edit_model(current)
+        provider_name = current.provider_name if current else ""
         url, model = (current.base_url, current.model) if current else ("", "")
         try:
             if current:
@@ -582,11 +603,12 @@ class TerminalUI:
                 if action == 2:
                     return ModelEdit("delete")
             while True:
-                url = self.ask("接口地址", url)
+                provider_name = self.ask("供应商名称（可留空）", provider_name)
+                url = self.ask("接口地址（OpenAI 兼容）", url)
                 model = self.ask("模型名称", model)
                 key = self.ask("API Key（隐藏输入，留空保留原 Key）" if current else "API Key", secret=True)
                 try:
-                    config = draft_config(url, model, key, current)
+                    config = draft_config(url, model, key, current, provider_name=provider_name)
                 except ValueError as exc:
                     self.note(str(exc), "warning")
                     continue
@@ -641,6 +663,7 @@ class TerminalUI:
         self.console.print(Text(text, style=style, no_wrap=True, overflow="ellipsis"))
 
     def begin_operation(self):
+        self.progress.update(self.question_task, visible=False)
         self.counts.clear()
         self.lines.clear()
         self.results.clear()
@@ -662,7 +685,7 @@ class TerminalUI:
         if self.counts["preview"]:
             self.note("本地答案未提交到平台，不会产生成绩。需要交卷时，在执行摘要按 s → 执行方式 → 答题并自动交卷。", "warning")
         if self.counts["paused"]:
-            self.note("答案已保留，重新选择此任务可继续补答。")
+            self.note("报告已保存；重新开始时全部由 AI 重新答题。")
         for error in self.errors:
             self.note(error, "warning")
         if self.pending_error:
@@ -742,6 +765,7 @@ class TerminalUI:
             connection = str(options.get("connection_status", ""))
             connection = "连接失败" if "失败" in connection else "已通过" if "通过" in connection else "未测试"
             self.table(f"AI 答题 · {len(selected)} 份任务", ["设置", "当前值"], [
+                ("供应商", (config.provider_name or "自定义供应商") if config else "未选择"),
                 ("模型", config.model if config else "未选择"),
                 ("连接状态", connection),
                 ("执行方式", "通过校验后自动交卷" if options["auto_submit"] else "仅生成答案（不交卷，无成绩）"),
@@ -874,7 +898,7 @@ class TerminalUI:
     def ai_plan(self, selected, auto_submit):
         self.note(f"准备开始：{len(selected)} 份任务 · " + ("通过校验后自动交卷" if auto_submit else "只生成本地报告"), "accent")
         self.note("题干和选项会发送给所选 AI 服务。打开试卷可能创建作答记录或开始计时。")
-        self.note("报告位置：ai_results/<课程名>/；已提交或状态未知的任务不会重新交卷。")
+        self.note("报告位置：ai_results/<课程名>/；已交卷任务可再次作答，是否开放由平台决定。")
 
 
 # Compatibility entry points for standalone scripts. All direct input lives here.

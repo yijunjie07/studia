@@ -70,16 +70,33 @@ class ManualAnswerTests(unittest.TestCase):
         self.assertEqual(self.ai.answer.call_count, 3)
         self.manual.assert_not_called()
 
-    def test_changed_options_invalidate_saved_answer(self):
+    def test_changed_options_still_regenerate_all_answers(self):
         self.run_paper(False)
         self.ai.answer.reset_mock()
         options = json.loads(self.api.paper.return_value["questions"][0]["dataJson"])
         options[0]["Content"] = "新选项"
         self.api.paper.return_value["questions"][0]["dataJson"] = json.dumps(options)
         self.assertEqual(self.run_paper()["status"], "submitted")
-        self.ai.answer.assert_called_once()
+        self.assertEqual(self.ai.answer.call_count, 3)
 
-    def test_parent_context_changes_invalidate_subquestion_cache(self):
+    def test_new_attempt_does_not_reuse_previous_draft_answers(self):
+        self.assertEqual(self.run_paper(False)['status'], 'preview')
+        self.api.paper.return_value['taskExamRecord']['id'] = 'new-task'
+        self.ai.answer.reset_mock()
+        self.assertEqual(self.run_paper()['status'], 'submitted')
+        self.assertEqual(self.ai.answer.call_count, 3)
+
+    def test_fresh_ai_answers_after_history_read_failure(self):
+        self.assertEqual(self.run_paper(False)['status'], 'preview')
+        self.api.records.side_effect = ExamError('读取历史失败')
+        self.assertEqual(self.run_paper()['status'], 'error')
+        self.api.records.side_effect = None
+        self.api.paper.return_value['taskExamRecord']['id'] = 'new-task'
+        self.ai.answer.reset_mock()
+        self.assertEqual(self.run_paper()['status'], 'submitted')
+        self.assertEqual(self.ai.answer.call_count, 3)
+
+    def test_new_subquestion_answer_uses_current_parent_context(self):
         self.api.paper.return_value["questions"] = [{"id": "parent", "title": "旧材料",
                                                    "questionSubList": [question(qid="child")]}]
         self.run_paper(False)
@@ -88,17 +105,16 @@ class ManualAnswerTests(unittest.TestCase):
         self.assertEqual(self.run_paper()["status"], "submitted")
         self.ai.answer.assert_called_once()
 
-    def test_pause_keeps_later_cached_answers_for_next_resume(self):
-        self.ai.answer.side_effect = [self.good, dict(self.good, confidence=.85), self.good]
-        self.run_paper(False)
-        self.ai.answer.reset_mock(side_effect=True)
-        self.manual.return_value = None
-        self.assertEqual(self.run_paper(threshold=.9)["status"], "paused")
-        self.manual.return_value = "B"
-        self.assertEqual(self.run_paper(threshold=.9)["status"], "submitted")
-        self.ai.answer.assert_not_called()
+    def test_preview_then_submit_uses_fresh_answers_even_for_unchanged_questions(self):
+        self.assertEqual(self.run_paper(False)["status"], "preview")
+        self.ai.answer.reset_mock()
+        self.ai.answer.return_value = dict(self.good, answer="B")
+        self.assertEqual(self.run_paper()["status"], "submitted")
+        self.assertEqual(self.ai.answer.call_count, 3)
+        entries = self.api.submit.call_args.args[0]["taskExamProblemRecordList"]
+        self.assertEqual([entry["answer"] for entry in entries], ["0", "0", "0"])
 
-    def test_pause_and_restart_preserve_completed_answers_and_pending_question(self):
+    def test_pause_and_restart_regenerate_completed_and_pending_answers(self):
         self.ai.answer.side_effect = [self.good] + [AIResponseError("bad JSON") for _ in range(3)]
         self.manual.return_value = None
         report = self.run_paper()
@@ -111,12 +127,12 @@ class ManualAnswerTests(unittest.TestCase):
         self.manual.return_value = "B"
         report = self.run_paper()
         self.assertEqual(report["status"], "submitted")
-        self.assertEqual(self.ai.answer.call_count, 1)
-        self.assertEqual(self.ai.answer.call_args.args[0]["title"], "题2")
-        self.manual.assert_called_once()
+        self.assertEqual(self.ai.answer.call_count, 3)
+        self.assertEqual([call.args[0]["title"] for call in self.ai.answer.call_args_list], ["题0", "题1", "题2"])
+        self.manual.assert_not_called()
         self.api.submit.assert_called_once()
 
-    def test_legacy_preview_report_reuses_valid_standalone_answers(self):
+    def test_legacy_preview_report_cannot_supply_answers(self):
         self.assertEqual(self.run_paper(False)["status"], "preview")
         path = next(Path(self.temp.name).rglob("*.json"))
         previous = json.loads(path.read_text())
@@ -125,24 +141,25 @@ class ManualAnswerTests(unittest.TestCase):
         path.write_text(json.dumps(previous))
         self.ai.answer.reset_mock()
         self.assertEqual(self.run_paper()["status"], "submitted")
-        self.ai.answer.assert_not_called()
+        self.assertEqual(self.ai.answer.call_count, 3)
         self.api.submit.assert_called_once()
 
-    def test_changed_question_invalidates_only_its_cached_answer(self):
+    def test_changed_question_still_regenerates_all_answers(self):
         self.run_paper(False)
         self.ai.answer.reset_mock()
         self.api.paper.return_value["questions"][1]["title"] = "改过的题干"
         self.assertEqual(self.run_paper()["status"], "submitted")
-        self.ai.answer.assert_called_once()
-        self.assertEqual(self.ai.answer.call_args.args[0]["title"], "改过的题干")
+        self.assertEqual(self.ai.answer.call_count, 3)
+        self.assertEqual(self.ai.answer.call_args_list[1].args[0]["title"], "改过的题干")
 
-    def test_higher_threshold_requires_manual_review_of_saved_low_confidence(self):
+    def test_higher_threshold_checks_new_answers_instead_of_saved_confidence(self):
         self.ai.answer.return_value = dict(self.good, confidence=.85)
         self.run_paper(False)
         self.ai.answer.reset_mock()
+        self.ai.answer.return_value = self.good
         self.assertEqual(self.run_paper(threshold=.9)["status"], "submitted")
-        self.ai.answer.assert_not_called()
-        self.assertEqual(self.manual.call_count, 3)
+        self.assertEqual(self.ai.answer.call_count, 3)
+        self.manual.assert_not_called()
 
     def test_time_expiry_during_manual_input_blocks_submission(self):
         clock = Mock(elapsed=30)

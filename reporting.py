@@ -11,16 +11,17 @@ class ProgressEvent:
     total: Optional[int] = None
     status: str = ""
     unit: str = "项"
+    completed: Optional[int] = None
 
 
 class Reporter:
     def __init__(self, on_progress=None):
         self.callback = on_progress
 
-    def emit(self, kind, name="", total=None, status="", unit="项"):
+    def emit(self, kind, name="", total=None, status="", unit="项", completed=None):
         if self.callback is not None:
             try:
-                self.callback(ProgressEvent(kind, str(name), total, status, unit))
+                self.callback(ProgressEvent(kind, str(name), total, status, unit, completed))
             except Exception:
                 # Rendering must not stop a course, retry a request or a submission.
                 logging.getLogger(__name__).debug("Progress observer failed", exc_info=True)
@@ -36,6 +37,9 @@ class Reporter:
 
     def result(self, name, status):
         self.emit("result", name, status=status)
+
+    def questions(self, name, completed, total=None):
+        self.emit("questions", name, total=total, completed=completed, unit="题")
 
 
 def log_callback(callback, message):

@@ -20,11 +20,56 @@ class ModelManagementTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.store = SettingsStore(Path(self.temp.name))
+        default_patch = patch('ai.defaults.default_config', return_value=AIConfig(
+            'https://mochif.com/v1', 'gemini-3.8-flash', 'test-shared-key'))
+        default_patch.start()
+        self.addCleanup(default_patch.stop)
         self.output = io.StringIO()
         self.view = TerminalUI(console=Console(file=self.output, theme=theme.THEME))
         self.app = Application(self.view, self.store)
         self.a = AIConfig('https://one.example/v1', 'first', 'key-one')
         self.b = AIConfig('https://two.example/v1', 'second', 'key-two')
+
+    def test_custom_provider_name_is_shown_in_picker_and_answer_summary(self):
+        config = AIConfig('https://private.example/v1', 'same-model', 'private-key',
+                          provider_name='课程供应商')
+        self.store.save_ai_profile(config)
+        self.view.input_fn = lambda: 'b'
+        self.app.manage_models()
+        self.view.input_fn = lambda: ''
+        self.view.review_ai([], config, {})
+        rendered = self.output.getvalue()
+        self.assertGreaterEqual(rendered.count('课程供应商'), 2)
+        self.assertIn('same-model', rendered)
+        self.assertNotIn('private.example', rendered)
+        self.assertNotIn('private-key', rendered)
+
+    def test_default_picker_hides_provider_url_and_blocks_editor(self):
+        self.store.save_ai_profile(self.a)
+        self.store.ensure_default_model()
+        default = next(p for p in self.store.ai_profiles() if p.config.model == 'gemini-3.8-flash')
+        inputs = iter(['e 1', 'b'])
+        self.view.input_fn = lambda: next(inputs)
+        with patch.object(self.view, 'model_editor', side_effect=AssertionError('default editor must not open')):
+            self.assertEqual(self.app.manage_models(), self.a)
+        rendered = self.output.getvalue()
+        self.assertIn('默认供应商', rendered)
+        self.assertNotIn(default.config.base_url.split('://', 1)[-1], rendered)
+        self.assertNotIn(default.config.api_key, rendered)
+        self.assertIn('自定义供应商', rendered)
+        self.assertIn('gemini-3.8-flash', rendered)
+        self.assertNotIn('one.example/v1', rendered)
+        self.assertLess(rendered.index('默认供应商'), rendered.index('自定义供应商'))
+
+    def test_application_rejects_default_edit_even_if_picker_requests_it(self):
+        self.store.ensure_default_model()
+        default = self.store.ai_profiles()[0]
+        before = self.store.path.read_bytes()
+        with patch.object(self.view, 'model_picker', side_effect=[ModelChoice('edit', default.id), ModelChoice('back')]), \
+             patch.object(self.view, 'model_editor', side_effect=AssertionError('default editor must not open')):
+            self.assertEqual(self.app.manage_models(), default.config)
+        self.assertEqual(self.store.path.read_bytes(), before)
+        self.assertIn('默认供应商', self.output.getvalue())
 
     def test_add_saves_tests_and_reuses_without_reentering_credentials(self):
         with patch.object(self.view, 'model_picker', side_effect=[ModelChoice('add'), ModelChoice('back')]), \

@@ -121,7 +121,7 @@ class CompactReviewTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertIn("失败 0", rendered)
         self.assertIn("待补答 1", rendered)
-        self.assertIn("答案已保留", rendered)
+        self.assertIn("重新开始时全部由 AI 重新答题", rendered)
         self.assertNotIn("paused", rendered)
 
     def test_connection_test_stays_available_without_verbose_summary(self):

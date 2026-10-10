@@ -79,7 +79,7 @@ class Application:
     def ai_configuration(self):
         config = self.store.ai_config()
         if config is not None:
-            self.view.note(f"AI：{config.model} · {self.ai_status_text(config)}")
+            self.view.note(f"AI：{config.provider_name or '自定义供应商'} · {config.model} · {self.ai_status_text(config)}")
             return config
         config = self.manage_models()
         if config is None:
@@ -90,24 +90,29 @@ class Application:
     def manage_models(self):
         """One picker from settings and summaries; only saved configs can activate."""
         from ui import Back
+        from ai.defaults import DEFAULT_PROVIDER_NAME
         cursor_id, message = None, ""
         while True:
             profiles = self.store.ai_profiles()
             active_id = next((profile.id for profile in profiles if profile.active), None)
+            locked_ids = {profile.id for profile in profiles if profile.builtin}
             rows = []
             for profile in profiles:
                 health = self.store.ai_health(profile.config)
                 status = {"ok": "✓ 上次通过", "error": "× 失败"}.get(health.get("status"), "? 未测试")
-                service = profile.config.base_url.split("://", 1)[-1]
-                rows.append((profile.id, profile.config.model, service, status))
+                name = DEFAULT_PROVIDER_NAME if profile.builtin else profile.config.provider_name or "自定义供应商"
+                rows.append((profile.id, name, profile.config.model, status))
             try:
-                choice = self.view.model_picker(rows, active_id, cursor_id=cursor_id, message=message)
+                choice = self.view.model_picker(rows, active_id, cursor_id=cursor_id,
+                                                message=message, locked_ids=locked_ids)
                 if choice.action == "back":
                     return self.store.ai_config()
                 cursor_id = choice.profile_id
                 if choice.action == "select":
                     self.store.activate_ai_profile(choice.profile_id)
                     return self.store.ai_config()
+                if choice.profile_id in locked_ids:
+                    raise SettingsError("默认供应商不可修改或删除")
                 current = next((p.config for p in profiles if p.id == choice.profile_id), None)
                 while True:
                     result = self.view.model_editor(current)
@@ -267,8 +272,6 @@ class Application:
                 status = result["status"]
                 if status == "ai_error":
                     self.remember(lambda: self.store.save_ai_health(config, "error", result.get("message", "AI 服务失败")))
-                if runner.reused and status == "submitted":
-                    status = "skipped"
                 self.progress.result(name, status)
                 if result["status"] in ("submission_unknown", "submitting", "error", "ai_error", "paused"):
                     if result["status"] != "paused":
@@ -278,6 +281,7 @@ class Application:
 
     def run(self):
         from course_flow import CourseWorkspace
+        self.remember(self.store.ensure_default_model)
         return CourseWorkspace(self).run()
 
     def manage_settings(self):
@@ -297,7 +301,7 @@ class Application:
                     self.view.note(str(exc), "error")
             elif action == 2:
                 if self.remember(self.store.clear_ai):
-                    self.view.note("已清除本机 AI 配置。")
+                    self.view.note("已清除本机自定义 AI 配置。")
             elif action == 5:
                 self.view.note(self.test_ai_connection())
                 try:

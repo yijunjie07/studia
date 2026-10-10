@@ -190,9 +190,23 @@ class WorkflowTests(unittest.TestCase):
         payload = self.api.submit.call_args.args[0]
         self.assertEqual(payload["taskExamProblemRecordList"][0]["answer"], "3")
         self.assertEqual(payload["examTime"], 12)
-        self.assertEqual(self.run_paper()["status"], "submitted")
         self.api.submit.assert_called_once()
         self.api.verify_submitted.assert_called_once_with("exam", "task")
+
+    def test_selecting_submitted_paper_starts_a_new_attempt_and_regenerates_answers(self):
+        first = self.run_paper()
+        self.api.records.return_value = [{"id": "task", "status": 2}]
+        self.api.paper.return_value["taskExamRecord"]["id"] = "next-task"
+        self.ai.answer.return_value = {"answer": "B", "confidence": .95, "explanation": "新一轮"}
+        second = self.run_paper()
+        self.assertEqual(second["status"], "submitted")
+        self.assertEqual(second["task_id"], "next-task")
+        self.assertEqual(self.ai.answer.call_count, 2)
+        self.assertEqual([call.args[0]["id"] for call in self.api.submit.call_args_list], ['task', 'next-task'])
+        self.assertEqual(second["answers"][0]["answer"], 'B')
+        archived = list((Path(self.temp.name) / self.course['courseName'] / 'history').rglob('*.json'))
+        self.assertEqual(len(archived), 1)
+        self.assertEqual(json.loads(archived[0].read_text()), first)
 
     def test_preview_does_not_submit(self):
         self.assertEqual(self.run_paper(False)["status"], "preview")
@@ -228,10 +242,46 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.run_paper()["status"], "error")
         self.api.submit.assert_not_called()
 
-    def test_existing_submission_does_not_open_paper(self):
+    def test_existing_submission_does_not_block_new_paper(self):
         self.api.records.return_value = [{"id": "previous", "status": 2}]
-        self.assertEqual(self.run_paper()["status"], "skipped")
-        self.api.paper.assert_not_called()
+        self.assertEqual(self.run_paper()["status"], "submitted")
+        self.api.paper.assert_called_once_with('exam')
+        self.api.submit.assert_called_once()
+
+    def test_stale_platform_response_cannot_resubmit_same_completed_attempt(self):
+        self.assertEqual(self.run_paper()['status'], 'submitted')
+        # Both remote reads are stale, but the first POST was already verified.
+        for _ in range(2):
+            report = self.run_paper()
+            self.assertEqual(report['status'], 'error')
+            self.assertIn('平台未提供新的可作答记录', report['message'])
+        self.api.submit.assert_called_once()
+        self.api.paper.return_value['taskExamRecord']['id'] = 'new-task'
+        self.assertEqual(self.run_paper()['status'], 'submitted')
+        self.assertEqual([call.args[0]['id'] for call in self.api.submit.call_args_list], ['task', 'new-task'])
+
+    def test_platform_returning_old_submitted_attempt_reports_reason_without_writing_it(self):
+        self.api.records.return_value = [{"id": "task", "status": 2}]
+        report = self.run_paper()
+        self.assertEqual(report["status"], "error")
+        self.assertIn('平台未提供新的可作答记录', report['message'])
+        self.ai.answer.assert_not_called()
+        self.api.submit.assert_not_called()
+
+    def test_platform_unavailable_attempt_is_error_instead_of_silent_skip(self):
+        self.api.paper.return_value['tjzt'] = 1
+        report = self.run_paper()
+        self.assertEqual(report['status'], 'error')
+        self.assertIn('无法再次作答', report['message'])
+        self.api.submit.assert_not_called()
+
+    def test_old_history_does_not_hide_current_attempt_submitted_in_browser(self):
+        self.api.records.side_effect = [[{'id': 'older', 'status': 2}],
+                                       [{'id': 'older', 'status': 2}, {'taskId': 'task', 'status': 2}]]
+        self.assertEqual(self.run_paper()['status'], 'error')
+        self.api.paper.assert_called_once()
+        self.ai.answer.assert_called_once()
+        self.api.submit.assert_not_called()
 
     def test_browser_submission_during_ai_stops_write(self):
         self.api.records.side_effect = [[], [{"status": 2, "id": "task"}]]
