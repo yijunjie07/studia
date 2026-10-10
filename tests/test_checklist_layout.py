@@ -19,7 +19,7 @@ class SizedOutput(DummyOutput):
         return Size(rows=18, columns=self.columns)
 
 
-def render(rows, columns, *, extra_headers=(), cursor=1, keys='q', account_name=''):
+def render(rows, columns, *, extra_headers=(), cursor=1, keys='q', account_name='', row_hints=()):
     screens = []
 
     def application(*args, **kwargs):
@@ -37,6 +37,7 @@ def render(rows, columns, *, extra_headers=(), cursor=1, keys='q', account_name=
         result = checklist.choose_many('选择任务', rows, cursor=cursor,
                                        extra_headers=extra_headers,
                                        account_name=account_name,
+                                       row_hints=row_hints,
                                        input=pipe, output=SizedOutput(columns))
     return screens[0], result
 
@@ -46,6 +47,15 @@ def cell_position(line, value):
 
 
 class ChecklistLayoutTests(unittest.TestCase):
+    def test_focused_task_displays_full_opening_window_in_narrow_and_wide_terminal(self):
+        for width in (52,80,120):
+            with self.subTest(width=width):
+                screen,_=render([('拓展测试1','未开始','考试')],width,
+                    row_hints=['未开始；北京时间：2026-12-28 00:00:00 至 2026-12-31 23:59:59'])
+                text='\n'.join(screen)
+                for value in ('未开始','2026-12-28','00:00:00','2026-12-31','23:59:59'):
+                    self.assertIn(value,text)
+
     def test_account_name_appears_once_on_first_footer_line(self):
         screen, _ = render([('任务', '未作答', '作业')], 80, account_name='张三')
         matches = [line for line in screen if '张三' in line]

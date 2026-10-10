@@ -7,14 +7,14 @@ import threading
 import time
 from pathlib import Path
 
-from AIMoocMain.exam_api import ExamError
+from AIMoocMain.exam_api import ExamError, ExamServiceError, TaskUnavailableError
 from AIMoocMain.export_questions import get_questions_from_paper, paper_display_name, paper_exam_id, safe_filename
 from reporting import Reporter, log_callback
 from ai.client import AIError, AIServiceError
 from ai.concurrency import ParallelAnswers, prepared_questions
 from base.concurrency import validate_workers
 from ai.questions import answer_record, model_question, prepare_question
-from task_capabilities import is_attachment_task
+from task_capabilities import task_availability
 
 
 class AttemptClock:
@@ -42,11 +42,13 @@ class AttemptClock:
                 self.api.heartbeat(self.course, self.exam_id, self.task_id, int(now - previous))
                 previous = now
             except ExamError as exc:
-                self.error = str(exc)
+                self.error = exc
                 return
 
     def check(self):
         if self.error:
+            if isinstance(self.error, ExamError):
+                raise self.error
             raise ExamError(self.error)
         if self.remaining is not None and self.elapsed >= self.remaining:
             raise ExamError("试卷剩余时间已用尽，停止交卷；请在网页核对状态")
@@ -60,7 +62,7 @@ class AttemptClock:
         if self.thread:
             self.thread.join(timeout=45)
             if self.thread.is_alive():
-                self.error = "计时请求未结束，停止交卷"
+                self.error = ExamServiceError("计时请求未结束，停止交卷")
 
 
 def report_path(root, user_id, course, exam_id):
@@ -133,8 +135,9 @@ class AnswerRunner:
                 time.sleep(attempt + 1)
 
     def run_paper(self, course, item, category):
-        if is_attachment_task(item, category):
-            raise ExamError("附件作业暂不支持，请在平台完成。")
+        availability = task_availability(item, category)
+        if not availability.available:
+            raise TaskUnavailableError(availability.reason)
         self.reused = False
         self.progress.detail("准备试卷：" + paper_display_name(item))
         self.progress.questions("读取试卷", 0)
@@ -183,12 +186,17 @@ class AnswerRunner:
                   "submitted_task_ids": submitted_task_ids}
         clock = None
         parallel = None
+        paper_opened = False
         completed, question_total = 0, None
         try:
             # The browser uses this same paper endpoint for '再次答题'. Older
             # submitted attempts must not prevent opening a fresh draft.
             records = self.api.records(exam_id)
+            availability = task_availability(item, category)
+            if not availability.available:
+                raise TaskUnavailableError(availability.reason)
             paper = self.api.paper(exam_id)
+            paper_opened = True
             task = paper.get("taskExamRecord") or {}
             if str(paper.get("tjzt")) == "1" or str(task.get("status")) != "0":
                 raise ExamError("平台未提供新的可作答记录，本次无法再次作答；请检查剩余次数和开放状态")
@@ -320,6 +328,9 @@ class AnswerRunner:
                 if attempt_not_draft(self.api.records(exam_id), task_id):
                     raise ExamError("本轮作答状态已变化，停止交卷")
                 clock.check()
+                availability = task_availability(item, category)
+                if not availability.available:
+                    raise TaskUnavailableError(availability.reason)
                 payload = {
                     "courseId": course["courseId"], "courseInfoId": course.get("id") or course.get("courseInfoId"),
                     "examId": exam_id, "examName": paper.get("name") or report["paper"],
@@ -338,20 +349,28 @@ class AnswerRunner:
                     report.update(status="submitted", message="平台作答记录已确认交卷")
                 else:
                     report.update(status="submission_unknown", message="请求已发送但未确认已交卷状态，请在网页核对；不会自动重发")
+        except TaskUnavailableError as exc:
+            report.update(status="skipped", message=str(exc))
         except (ExamError, ValueError, TypeError, KeyError) as exc:
             state = "submission_unknown" if report["status"] == "submitting" else "error"
             report.update(status=state, message=str(exc))
+            if isinstance(exc, ExamServiceError):
+                report["stop_queue"] = True
         finally:
             if parallel is not None:
                 parallel.close()
             if clock:
                 clock.stop()
-            write_report(path, report)
+            # A deadline crossed during history lookup must not erase an old
+            # draft when no new paper was opened.
+            if report["status"] != "skipped" or paper_opened:
+                write_report(path, report)
             stage = {"submitted": "已交卷", "preview": "答案已生成 · 未交卷", "paused": "待补答",
-                     "needs_review": "待人工检查", "submission_unknown": "交卷结果待确认"}.get(
+                     "needs_review": "待人工检查", "skipped": "已跳过", "submission_unknown": "交卷结果待确认"}.get(
                          report["status"], "处理停止")
             self.progress.questions(stage, completed, question_total)
-            self.output("%s：%s；报告 %s" % (report["paper"], report["status"], path))
+            report_location = "；报告 %s" % path if path.exists() else ""
+            self.output("%s：%s%s" % (report["paper"], report["status"], report_location))
             if report.get("message"):
                 self.output("原因：%s" % report["message"])
         return report

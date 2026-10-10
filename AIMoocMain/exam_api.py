@@ -16,6 +16,14 @@ class ExamError(RuntimeError):
     pass
 
 
+class ExamServiceError(ExamError):
+    """Authentication, rate limits or unavailable transport affect the queue."""
+
+
+class TaskUnavailableError(ExamError):
+    """The catalog window/type forbids opening this task; other tasks may run."""
+
+
 def checked_list(payload):
     """An unknown response structure must not mean 'no previous attempts'."""
     if isinstance(payload, list):
@@ -41,13 +49,17 @@ class ExamAPI:
         try:
             response = self.session.request(method, self.base_url + endpoint, timeout=(10, 30), allow_redirects=False, **kwargs)
         except requests.RequestException:
-            raise ExamError("平台请求超时或连接失败；写入结果可能未知，请在网页核对，程序不会自动重试") from None
+            raise ExamServiceError("平台请求超时或连接失败；写入结果可能未知，请在网页核对，程序不会自动重试") from None
+        if response.status_code in (401, 429) or response.status_code >= 500:
+            raise ExamServiceError("平台登录失效、请求受限或服务不可用（HTTP %s）" % response.status_code)
         if response.status_code != 200:
             raise ExamError("平台返回 HTTP %s" % response.status_code)
         try:
             payload = response.json()
         except ValueError:
             raise ExamError("平台返回非 JSON 数据") from None
+        if isinstance(payload, dict) and str(payload.get("code")) in ("401", "429"):
+            raise ExamServiceError("平台登录失效或请求受限（code=%s）" % payload["code"])
         # Unlike catalog/history/write endpoints, the current paper endpoint
         # returns the paper directly, without a code/data envelope. Limit this
         # exception to a validated GET paper shape; explicit error codes still fail.

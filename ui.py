@@ -453,7 +453,7 @@ class TerminalUI:
 
     def select(self, title, items, label, details=None, default=None, *,
                multiple=True, actions=None, filters=None, state=None, selected=None, status=None,
-               extra_columns=(), selectable=None):
+               extra_columns=(), selectable=None, item_hint=None):
         actions = actions or {}
         disabled = {i for i, item in enumerate(items) if selectable and not selectable(item)}
         if not items and not actions:
@@ -470,6 +470,7 @@ class TerminalUI:
                                  selected=[i for i, item in enumerate(items) if selected and item in selected],
                                  cursor=state.get("cursor", 1), refresh="r" in actions,
                                  disabled=disabled,
+                                 row_hints=[safe_text(item_hint(item)) for item in items] if item_hint else (),
                                  extra_headers=[name for name, _ in extra_columns])
             state["cursor"] = result.cursor
             state["selected"] = [items[i] for i in result.indexes if i not in disabled]
@@ -510,6 +511,10 @@ class TerminalUI:
             self.table(f"{title} · {len(filtered)} 项 · {page + 1}/{pages}", columns,
                        page_rows,
                        " · ".join(help_parts))
+            if item_hint:
+                for row in page_rows:
+                    if row[0] - 1 in disabled:
+                        self.note(f"{row[0]}. {label(items[row[0] - 1])} · {item_hint(items[row[0] - 1])}", "warning")
             if filters:
                 self.shortcuts(" · ".join(f"{key} {name}" + (" ✓" if key == category else "")
                                      for key, (name, _) in filters.items()), show_name=False)
@@ -542,7 +547,7 @@ class TerminalUI:
             else:
                 indexes = [row[0] for row in available_rows] if raw.lower() == "all" else parse_index_input(raw, len(items))
             if any(i - 1 in disabled for i in (indexes or ())) or (raw.lower() == "all" and not available_rows):
-                self.note("附件作业暂不支持，请在平台完成；请选择其他任务。", "warning")
+                self.note("所选任务暂不可选，请核对开放时间或任务类型；请选择其他任务。", "warning")
                 continue
             if indexes and set(indexes) <= visible and (multiple or len(indexes) == 1):
                 self.note(f"已选择 {len(indexes)} 项。")
@@ -728,16 +733,22 @@ class TerminalUI:
         success = sum(self.counts[s] for s in ("success", "submitted", "preview"))
         failures = sum(self.counts[s] for s in ("error", "needs_review", "submission_unknown", "submitting", "ai_error"))
         # Fatal errors before any task result must still be visible in the one-line summary.
-        if self.pending_error:
+        if self.pending_error and self.unit != "份试卷":
             failures += 1
         elapsed = max(0, int(self.clock() - self.started))
-        text = f"成功 {success} · 失败 {failures} · 总用时 {elapsed // 60:02d}:{elapsed % 60:02d}"
+        text = ("试卷汇总 · " if self.unit == "份试卷" else "") + f"成功 {success} · 失败 {failures}"
         if self.counts["skipped"]:
             text += f" · 跳过 {self.counts['skipped']}"
         if self.counts["needs_review"]:
             text += f" · 待人工 {self.counts['needs_review']}"
         if self.counts["paused"]:
             text += f" · 待补答 {self.counts['paused']}"
+        if self.unit == "份试卷":
+            total = self.progress.tasks[0].total
+            pending = max(0, int(total) - len(self.results)) if total is not None else 0
+            if pending:
+                text += f" · 未执行 {pending}"
+        text += f" · 总用时 {elapsed // 60:02d}:{elapsed % 60:02d}"
         unknown = self.counts["submission_unknown"] + self.counts["submitting"]
         if unknown:
             text += f" · 结果未知 {unknown}（先核对平台）"
@@ -745,10 +756,11 @@ class TerminalUI:
             text += " · 已取消"
         if self.pending_error:
             text += " · " + " ".join(safe_text(redact(self.pending_error)).split())
-        style = "error" if failures else "warning" if self.cancelled else "success"
+        style = "error" if failures or self.pending_error else "warning" if self.cancelled else "success"
         self.console.print(Text(text, style=style, no_wrap=True, overflow="ellipsis"))
 
     def begin_operation(self):
+        self.unit = "项"
         self.progress.update(self.question_task, visible=False)
         self.progress.update(self.resource_task, visible=False)
         self.counts.clear()
@@ -949,7 +961,7 @@ class TerminalUI:
     def papers(self, catalog, selected=None, state=None, refresh=False):
         from AIMoocMain.export_questions import CATEGORY_FALLBACK, paper_display_name
         from task_metrics import score_text, attempts_text
-        from task_capabilities import is_attachment_task, task_type_label
+        from task_capabilities import is_attachment_task, task_type_label, task_availability, task_time_hint
         filters = {"f0": ("全部", lambda x: True)}
         filters.update({f"f{category}": (CATEGORY_FALLBACK[category], lambda x, c=category: x[2] == c)
                         for category in (1, 2, 3)})
@@ -960,13 +972,22 @@ class TerminalUI:
         unsupported_count = sum(unsupported(task) for task in catalog)
         if unsupported_count:
             self.note(f"附件作业 {unsupported_count} 项暂不支持，请在平台完成；全选会自动排除。", "warning")
+        unavailable = Counter(task_availability(x[1], x[2]).label for x in catalog
+                              if not unsupported(x) and not task_availability(x[1], x[2]).available)
+        if unavailable:
+            self.note(" · ".join(f"{label} {count} 项" for label, count in unavailable.items()) +
+                      "；暂不可选，全选会排除。刷新可重新检查开放状态。", "warning")
+        def availability(task):
+            return task_availability(task[1], task[2])
+        def hint(task):
+            return availability(task).reason or task_time_hint(task[1])
         return self.select("选择任务", catalog,
                            lambda x: ("[附件作业] " if unsupported(x) else "") + paper_display_name(x[1]),
                            lambda x: task_type_label(x[1], x[2]) if single_course else
                            f"{x[0].get('courseName', '')} · {task_type_label(x[1], x[2])}",
                            filters=filters, selected=selected, state=state,
-                           status=lambda x: "暂不支持" if unsupported(x) else statuses.get(x[1].get("_completion_status"), "?"),
-                           selectable=lambda x: not unsupported(x),
+                           status=lambda x: availability(x).label or statuses.get(x[1].get("_completion_status"), "?"),
+                           selectable=lambda x: availability(x).available, item_hint=hint,
                            extra_columns=(("成绩", lambda x: score_text(x[1])),
                                           ("剩余次数", lambda x: attempts_text(x[1], x[2]))),
                            actions={"r": "刷新状态"} if refresh else None)

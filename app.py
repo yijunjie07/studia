@@ -3,7 +3,7 @@ from MoocMain.log import Logger
 
 from AIMoocMain.api import AIMoocApi
 from AIMoocMain.main import AIMoocHandler
-from AIMoocMain.exam_api import ExamAPI, ExamError
+from AIMoocMain.exam_api import ExamAPI, ExamError, ExamServiceError, TaskUnavailableError
 from AIMoocMain.export_questions import QuizExportHandler, collect_quiz_catalog, paper_display_name, paper_exam_id
 from ZYKMoocMain.api import ZYKMoocApi
 from ZYKMoocMain.main import ZYKMoocHandler
@@ -13,7 +13,7 @@ from ai.runner import AnswerRunner
 from reporting import Reporter
 from base.auth import AuthenticationExpired, PlatformUnavailable
 from settings import SettingsStore, SettingsError
-from task_capabilities import is_attachment_task
+from task_capabilities import task_availability
 
 logger = Logger(__name__).get_log()
 
@@ -251,7 +251,7 @@ class Application:
                 for category in (1, 2, 3):
                     for item in api.catalog(course, category):
                         exam_id = paper_exam_id(item)
-                        if is_attachment_task(item, category):
+                        if not task_availability(item, category).available:
                             catalog.append((course, dict(item, _completion_status="unsupported"), category))
                             continue
                         if exam_id not in statuses:
@@ -266,38 +266,45 @@ class Application:
         max_workers = self.store.concurrency().get("ai", 1)
         # Verify with synthetic material before paper() can start an attempt.
         runner = None
-        if any(not is_attachment_task(item, category) for _, item, category in selected):
-            ai_client = self.verify_ai(config)
-            api = api or ExamAPI(client)
-            runner = AnswerRunner(api, ai_client, auto_submit=auto_submit,
-                                  min_confidence=threshold, on_progress=self.view.on_progress,
-                                  manual_answer=self.view.manual_answer, max_workers=max_workers)
         results = []
         self.view.note(f"AI 答题并发：{max_workers}")
         with self.view.activity("AI 答题"):
             self.progress.begin("AI 答题", len(selected), "份试卷")
             for course, item, category in selected:
                 name = paper_display_name(item)
-                if is_attachment_task(item, category):
-                    message = "附件作业暂不支持，请在平台完成。"
+                availability = task_availability(item, category)
+                if not availability.available:
+                    message = availability.reason
                     logger.warning("%s：%s", name, message)
                     results.append({"paper": name, "status": "skipped", "message": message})
                     self.progress.result(name, "skipped")
                     continue
                 try:
+                    if runner is None:
+                        ai_client = self.verify_ai(config)
+                        api = api or ExamAPI(client)
+                        runner = AnswerRunner(api, ai_client, auto_submit=auto_submit,
+                                              min_confidence=threshold, on_progress=self.view.on_progress,
+                                              manual_answer=self.view.manual_answer, max_workers=max_workers)
                     result = runner.run_paper(course, item, category)
                     results.append(result)
+                except TaskUnavailableError as exc:
+                    results.append({"paper": name, "status": "skipped", "message": str(exc)})
+                    logger.warning("%s：%s", name, exc)
+                    self.progress.result(name, "skipped")
+                    continue
                 except ExamError as exc:
-                    logger.error("任务停止：%s", exc)
-                    self.progress.result(name, "error")
-                    break
+                    result = {"paper": name, "status": "error", "message": str(exc),
+                              "stop_queue": isinstance(exc, ExamServiceError)}
+                    results.append(result)
+                    logger.error("%s：%s", name, exc)
                 status = result["status"]
                 if status == "ai_error":
                     self.remember(lambda: self.store.save_ai_health(config, "error", result.get("message", "AI 服务失败")))
                 self.progress.result(name, status)
-                if result["status"] in ("submission_unknown", "submitting", "error", "ai_error", "paused"):
+                if result.get("stop_queue") or status in ("submission_unknown", "submitting", "ai_error", "paused"):
                     if result["status"] != "paused":
-                        logger.warning("队列停止，请检查报告和平台状态。")
+                        logger.warning("队列停止：服务不可用或交卷结果待确认；其余试卷未执行。")
                     break
         return results
 

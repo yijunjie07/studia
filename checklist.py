@@ -34,7 +34,7 @@ def fit(text, width):
 
 
 def choose_many(title, rows, *, selected=(), cursor=1, refresh=False, heading='',
-                extra_headers=(), account_name='', disabled=(), input=None, output=None):
+                extra_headers=(), account_name='', disabled=(), row_hints=(), input=None, output=None):
     """Rows are (label, status, detail, *extras); indexes refer to original rows."""
     disabled = set(disabled)
     available = set(range(len(rows))) - disabled
@@ -67,7 +67,7 @@ def choose_many(title, rows, *, selected=(), cursor=1, refresh=False, heading=''
             else:
                 checked.update(available)
         elif cursor - 1 in disabled:
-            message = '该任务暂不支持，请在平台完成。'
+            message = row_hints[cursor - 1] if cursor - 1 < len(row_hints) else '该任务暂不可选，请在平台核对。'
         elif cursor - 1 in checked:
             checked.remove(cursor - 1)
         else:
@@ -99,7 +99,7 @@ def choose_many(title, rows, *, selected=(), cursor=1, refresh=False, heading=''
 
     def header():
         text = (heading + '\n\n') if heading else ''
-        unavailable = f' · {len(rows) - len(available)} 项暂不支持' if disabled else ''
+        unavailable = f' · {len(rows) - len(available)} 项暂不可选' if disabled else ''
         return [('class:title', text + f'{title}  ·  已选 {len(checked)}/{len(available)} 项' + unavailable + '\n')]
 
     def columns():
@@ -160,7 +160,10 @@ def choose_many(title, rows, *, selected=(), cursor=1, refresh=False, heading=''
         hint = '↑↓ 移动 · 空格 勾选/取消 · Enter 确认'
         width = app.output.get_size().columns
         available = width - get_cwidth(hint) - 2
-        fragments = [('', '\n' + hint)]
+        fragments = []
+        if 0 < cursor <= len(row_hints) and row_hints[cursor - 1]:
+            fragments.append(('class:warning', '\n' + row_hints[cursor - 1] + '\n'))
+        fragments.append(('', '\n' + hint))
         if account_name and available >= 2:
             name = fit(account_name, available).rstrip()
             fragments.append(('', ' ' * (width - get_cwidth(hint) - get_cwidth(name))))

@@ -33,7 +33,7 @@
 
 `MoocMain/`、`NewMoocMain/` 仍被当前入口引用，不能仅凭名称删除。运行命令均从仓库根目录执行。
 
-版本变更需同步 `pyproject.toml` 与 `uv.lock` 中项目自身的版本（当前 4.1.0）。`StartWork.py` 源码模式从前者读取版本，不检查打包发布更新；发布构建显示 CI 注入的标签。修改源码本身不会自动增加版本号，源码用户按 README 的 Git 更新步骤更新。
+版本变更需同步 `pyproject.toml` 与 `uv.lock` 中项目自身的版本（当前 4.1.1）。`StartWork.py` 源码模式从前者读取版本，不检查打包发布更新；发布构建显示 CI 注入的标签。修改源码本身不会自动增加版本号，源码用户按 README 的 Git 更新步骤更新。
 
 ## 辅助工具
 
@@ -73,6 +73,10 @@ AI 配置与连接健康状态独立保存；健康记录绑定 endpoint、模�
 任务列表的列宽由全部行统一计算，按终端字符宽度处理中文，表头固定在滚动区域上方。成绩与次数的单位放在表头，`?` 表示未知、`--` 表示暂无成绩，真实零值必须保留。`task_metrics.py` 只读取平台目录中的成绩和剩余次数，不根据历史记录推算。
 
 `task_capabilities.py` 将目录字段 `typeId=3`（兼容字符串）识别为附件作业，与 `categoryId=3` 测验及 `questionSettingMethod=3` 文档试卷区分，依据见[公开前端核对记录](research/2026-10-10-attachment-homework.md)。UI 保留但禁选，业务的 AI 编排、runner 和统一导出读取入口再次拦截，不为分类调用试卷接口。普通任务中含附件的题目仍走原有题型校验。
+
+同模块的 `task_availability()` 统一检查目录开放状态与起止时间，依据见[时间字段核对记录](research/2026-10-10-task-availability.md)。`status=-1/-2` 分别禁选为未开始/已截止，独立于作答记录的提交状态。`startTime`、`endTime` 无时区时按 UTC+8 解析，带偏移时按实际时刻比较；时间边界包含起止时刻。缺失时间保留原行为，非空但非法或倒置的时间阻止执行。UI 使用快照，执行时重新检查日期；服务端状态仍需刷新目录才能更新。`TaskUnavailableError` 仅表示可安全跳过的目录限制，不用于吞掉任意平台错误，尤其不将所有 code=205 视为未开放。未知交卷结果的保护保持不变。
+
+AI 队列将普通 `ExamError` / `error` 视为单份失败，补齐该份结果后继续；`needs_review` 也计为失败并继续。`ExamServiceError` 专门表示 HTTP 401/429/5xx、业务 401/429 或网络故障，runner 通过 `stop_queue=true` 保留全局故障语义；计时线程必须保留异常类型，不能只转成字符串。普通 HTTP 403 与 code=205 仍按单份错误处理。`ai_error`、`submission_unknown`/`submitting` 和 `paused` 继续停止派发，且不重发提交。结果列表与已处理试卷按顺序对应，每份仅触发一次 result；结果页按份统计，预检错误及未派发任务不伪装成失败试卷。
 
 `Application.run()` 进入 `CourseWorkspace`：复用当前客户端和课程，按课程导航，执行结束后留在结果页。`Back` 表示返回上层，`Cancelled` 表示退出；二者不可混用。交互终端中的多选调用 `checklist.choose_many()`：返回原列表索引、光标和动作，状态持久化交由 `TerminalUI` 与工作区处理；刷新后按任务稳定标识恢复勾选。无 TTY 或注入行输入时沿用编号模式。摘要中的自动交卷只属于当次操作。导出器的 `selected_papers` 是精确 `(course, item, category)` 列表；传入空列表必须不导出，不能退回全量目录。`None` 保留旧调用方式。
 
