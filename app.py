@@ -4,11 +4,11 @@ from MoocMain.log import Logger
 from AIMoocMain.api import AIMoocApi
 from AIMoocMain.main import AIMoocHandler
 from AIMoocMain.exam_api import ExamAPI, ExamError
-from AIMoocMain.export_questions import QuizExportHandler, collect_quiz_catalog, paper_display_name
+from AIMoocMain.export_questions import QuizExportHandler, collect_quiz_catalog, paper_display_name, paper_exam_id
 from ZYKMoocMain.api import ZYKMoocApi
 from ZYKMoocMain.main import ZYKMoocHandler
 from NewMoocMain.oauth_login import oauth_login
-from ai.client import AIClient
+from ai.client import AIClient, AIError
 from ai.runner import AnswerRunner
 from reporting import Reporter
 from base.auth import AuthenticationExpired, PlatformUnavailable
@@ -47,7 +47,7 @@ class Application:
                 from ui import Cancelled
                 raise Cancelled()
 
-    def client_and_courses(self, api_class, login=None):
+    def client_and_courses(self, api_class, login=None, *, choose=True):
         platform = "zyk" if api_class is ZYKMoocApi else "mooc"
         saved = self.store.session(platform) if login is None else None
         if saved:
@@ -56,7 +56,7 @@ class Application:
                     client = api_class(access_token=saved["access_token"])
                     rows = self.read_courses(client)
                 self.view.note("已复用本机登录状态。")
-                return client, self.view.courses(rows)
+                return client, self.view.courses(rows) if choose else rows
             except AuthenticationExpired:
                 self.store.clear_session(platform)
                 self.view.note("保存的登录已过期，请重新登录；成功后自动保存。", "warning")
@@ -67,7 +67,7 @@ class Application:
                 raise PlatformUnavailable("未获取有效的平台登录状态，请重新登录或稍后重试")
             rows = self.read_courses(client)
         self.remember(lambda: self.store.save_session(platform, client))
-        return client, self.view.courses(rows)
+        return client, self.view.courses(rows) if choose else rows
 
     @staticmethod
     def read_courses(client):
@@ -79,16 +79,53 @@ class Application:
     def ai_configuration(self):
         config = self.store.ai_config()
         if config is not None:
-            self.view.note(f"使用已保存的 AI：{config.model} · {config.base_url}（可在本机设置修改）")
+            self.view.note(f"AI：{config.model} · {self.ai_status_text(config)}")
             return config
         config = self.view.ai_config()
         if self.remember(lambda: self.store.save_ai(config)):
-            self.view.note("AI 配置已保存，下次自动使用。")
+            self.view.note("AI 配置已保存；尚未测试连接，执行前会自动检查。")
         return config
 
-    def study(self, version):
+    def ai_status_text(self, config=None):
+        try:
+            config = config or self.store.ai_config()
+            if config is None:
+                return "未配置"
+            health = self.store.ai_health(config)
+        except SettingsError:
+            return "配置无效，请重新配置"
+        if not isinstance(health, dict) or not health:
+            return "已配置 · 未测试"
+        if health.get("status") == "ok":
+            return "上次连接通过 · " + str(health.get("checked_at", "")).replace("T", " ")
+        return "连接失败 · " + str(health.get("message", "请重新测试"))
+
+    def verify_ai(self, config, client=None):
+        client = client or AIClient(config)
+        try:
+            with self.view.activity("测试 AI 连接"):
+                client.check_connection()
+        except AIError as exc:
+            self.remember(lambda: self.store.save_ai_health(config, "error", str(exc)))
+            raise
+        self.remember(lambda: self.store.save_ai_health(config, "ok"))
+        return client
+
+    def test_ai_connection(self, config=None):
+        try:
+            config = config or self.store.ai_config()
+            if config is None:
+                self.view.note("请先配置 AI 服务。", "warning")
+                return "未配置"
+            self.verify_ai(config)
+        except (AIError, SettingsError) as exc:
+            self.view.note(str(exc), "error")
+        return self.ai_status_text(config)
+
+    def study(self, version, client=None, selected=None):
         api_class, handler = (ZYKMoocApi, ZYKMoocHandler) if version == 1 else (AIMoocApi, AIMoocHandler)
-        client, selected = self.client_and_courses(api_class)
+        if client is None:
+            client, selected = self.client_and_courses(api_class)
         if not selected:
             self.view.cancelled = True
             return
@@ -145,8 +182,32 @@ class Application:
         auto_submit, threshold = self.view.answer_settings(self.store.get("confidence", 0.8))
         self.remember(lambda: self.store.set("confidence", threshold))
         self.view.ai_plan(selected, auto_submit)
-        runner = AnswerRunner(api, AIClient(config), auto_submit=auto_submit,
-                              min_confidence=threshold, on_progress=self.view.on_progress)
+        return self.execute_ai(client, selected, config, auto_submit, threshold, api=api)
+
+    def task_catalog(self, client, courses):
+        api = ExamAPI(client)
+        catalog = []
+        statuses = {}
+        with self.view.activity("读取课程任务"):
+            for course in courses:
+                for category in (1, 2, 3):
+                    for item in api.catalog(course, category):
+                        exam_id = paper_exam_id(item)
+                        if exam_id not in statuses:
+                            try:
+                                statuses[exam_id] = api.completion_status(exam_id)
+                            except ExamError:
+                                statuses[exam_id] = "unknown"
+                        catalog.append((course, dict(item, _completion_status=statuses[exam_id]), category))
+        return catalog
+
+    def execute_ai(self, client, selected, config, auto_submit, threshold, api=None):
+        # Verify with synthetic material before paper() can start an attempt.
+        ai_client = self.verify_ai(config)
+        api = api or ExamAPI(client)
+        runner = AnswerRunner(api, ai_client, auto_submit=auto_submit,
+                              min_confidence=threshold, on_progress=self.view.on_progress,
+                              manual_answer=self.view.manual_answer)
         results = []
         with self.view.activity("AI 答题"):
             self.progress.begin("AI 答题", len(selected), "份试卷")
@@ -160,40 +221,50 @@ class Application:
                     self.progress.result(name, "error")
                     break
                 status = result["status"]
+                if status == "ai_error":
+                    self.remember(lambda: self.store.save_ai_health(config, "error", result.get("message", "AI 服务失败")))
                 if runner.reused and status == "submitted":
                     status = "skipped"
                 self.progress.result(name, status)
-                if result["status"] in ("submission_unknown", "submitting", "error"):
-                    logger.warning("队列停止，请检查报告和平台状态。")
+                if result["status"] in ("submission_unknown", "submitting", "error", "ai_error", "paused"):
+                    if result["status"] != "paused":
+                        logger.warning("队列停止，请检查报告和平台状态。")
                     break
         return results
 
     def run(self):
-        while True:
-            mode, platform = self.view.home(self.store.get("platform", 0))
-            if mode != 4:
-                break
-            self.manage_settings()
-        if mode == 1:
-            self.remember(lambda: self.store.set("platform", platform))
-            return self.study(platform)
-        if mode == 2:
-            return self.export()
-        return self.ai(platform)
+        from course_flow import CourseWorkspace
+        return CourseWorkspace(self).run()
 
     def manage_settings(self):
+        from ui import Back
+        login_changed = False
         while True:
-            action = self.view.settings_menu(self.store.path)
+            try:
+                action = self.view.settings_menu(self.store.path, self.ai_status_text())
+            except Back:
+                return login_changed
             if action == 0:
-                return
+                return login_changed
             if action == 1:
-                config = self.view.ai_config(self.store.ai_config())
+                try:
+                    try:
+                        current = self.store.ai_config()
+                    except SettingsError:
+                        current = None
+                    config = self.view.ai_config(current)
+                except Back:
+                    continue
                 if self.remember(lambda: self.store.save_ai(config)):
-                    self.view.note("AI 配置已保存。")
+                    self.view.note("AI 配置已保存；选择 5 测试连接。")
             elif action == 2:
                 if self.remember(lambda: self.store.set("ai", None)):
                     self.view.note("已清除本机 AI 配置。")
+            elif action == 5:
+                self.view.note(self.test_ai_connection())
+                self.view.ask("回车返回设置")
             elif action in (3, 4):
                 platform = "mooc" if action == 3 else "zyk"
                 if self.remember(lambda: self.store.clear_session(platform)):
+                    login_changed = True
                     self.view.note("已退出本机保存的登录，下次使用该平台时重新登录。")

@@ -10,7 +10,8 @@ from pathlib import Path
 from AIMoocMain.exam_api import ExamError
 from AIMoocMain.export_questions import get_questions_from_paper, paper_display_name, paper_exam_id, safe_filename
 from reporting import Reporter, log_callback
-from ai.client import AIError
+from ai.client import AIError, AIServiceError
+from ai.answer_cache import matching_answer, question_fingerprint, saved_answers
 from ai.questions import answer_record, model_question, prepare_question
 
 
@@ -78,14 +79,14 @@ def write_report(path, report):
         lines += ["## %d. %s" % (index, item.get("title", "无法解析的题目")), ""]
         for opt in item.get("options", []):
             lines.append("%s. %s" % (opt["label"], opt["text"]))
-        lines += ["", "AI 答案：" + json.dumps(item.get("answer"), ensure_ascii=False),
+        lines += ["", ("人工答案：" if item.get("source") == "manual" else "AI 答案：") + json.dumps(item.get("answer"), ensure_ascii=False),
                   "置信度：" + str(item.get("confidence", "")),
                   item.get("explanation", ""), item.get("error", ""), ""]
     path.with_suffix(".md").write_text("\n".join(lines), encoding="utf-8")
 
 
 class AnswerRunner:
-    def __init__(self, api, ai, output_dir="ai_results", auto_submit=False, min_confidence=0.8, output=None, clock_factory=AttemptClock, *, on_log=None, on_progress=None):
+    def __init__(self, api, ai, output_dir="ai_results", auto_submit=False, min_confidence=0.8, output=None, clock_factory=AttemptClock, *, on_log=None, on_progress=None, manual_answer=None):
         if not math.isfinite(min_confidence) or not 0 <= min_confidence <= 1:
             raise ValueError("置信度阈值必须在 0 到 1 之间")
         self.api, self.ai, self.output_dir = api, ai, output_dir
@@ -94,6 +95,21 @@ class AnswerRunner:
         self.clock_factory = clock_factory
         self.progress = Reporter(on_progress)
         self.reused = False
+        self.manual_answer = manual_answer
+
+    def answer_question(self, question, clock):
+        """Retry only AI generation, preserving the paper and completed answers."""
+        for attempt in range(3):
+            clock.check()
+            try:
+                return self.ai.answer(question)
+            except AIError as exc:
+                if not exc.retryable:
+                    raise
+                if attempt == 2:
+                    raise type(exc)("单题重试 2 次后仍失败：" + str(exc)) from None
+                self.output("本题重试 %s/2：%s" % (attempt + 1, exc))
+                time.sleep(attempt + 1)
 
     def run_paper(self, course, item, category):
         self.reused = False
@@ -119,6 +135,7 @@ class AnswerRunner:
         if not self.api.user_id or not course.get("courseId") or not (course.get("id") or course.get("courseInfoId")):
             raise ExamError("缺少账号或课程 ID")
         path = report_path(self.output_dir, self.api.user_id, course, exam_id)
+        previous = {}
         if path.exists():
             try:
                 previous = json.loads(path.read_text(encoding="utf-8"))
@@ -130,7 +147,8 @@ class AnswerRunner:
                 return previous
         report = {"course": course.get("courseName", ""), "paper": paper_display_name(item),
                   "exam_id": exam_id, "category": category, "status": "preparing", "answers": [],
-                  "auto_submit": self.auto_submit, "model": self.ai.config.model}
+                  "auto_submit": self.auto_submit, "model": self.ai.config.model,
+                  "resume_answers": saved_answers(previous)}
         clock = None
         try:
             # Query own attempt history before paper() can create a new attempt.
@@ -177,30 +195,72 @@ class AnswerRunner:
                 for value, parent, child_number in work:
                     clock.check()
                     item_report = {"title": str(value.get("title", "")) if isinstance(value, dict) else "无法解析的题目"}
+                    q = None
                     try:
-                        q = prepare_question(value, number, parent, child_number)
-                        identity = (q["paper_id"], q["paper_sub_id"])
+                        prepared = prepare_question(value, number, parent, child_number)
+                        identity = (prepared["paper_id"], prepared["paper_sub_id"])
                         if identity in identities:
                             raise ValueError("试卷包含重复试题 ID")
                         identities.add(identity)
-                        item_report.update(title=q["title"], options=model_question(q)["options"])
+                        q = prepared
+                        item_report.update(title=q["title"], options=model_question(q)["options"],
+                                           question_fingerprint=question_fingerprint(q))
                         self.progress.detail("%s · 题 %s/%s" % (report["paper"], number + 1, len(raw_questions)))
-                        self.output("AI 作答 %s / %s：%s" % (number + 1, len(raw_questions), q["title"][:70]))
-                        answer = self.ai.answer(model_question(q))
+                        saved = matching_answer(report["resume_answers"], q)
+                        if saved and saved.get("pending_manual") and self.manual_answer is not None:
+                            raise ValueError(saved["error"])
+                        if saved and not saved.get("error"):
+                            answer = {key: saved.get(key) for key in ("answer", "confidence", "explanation", "source")}
+                            self.output("沿用答案 %s / %s" % (number + 1, len(raw_questions)))
+                        else:
+                            self.output("AI 作答 %s / %s：%s" % (number + 1, len(raw_questions), q["title"][:70]))
+                            answer = self.answer_question(model_question(q), clock)
                         item_report.update(answer)
-                        if answer["confidence"] < self.min_confidence:
+                        if (answer.get("source") != "manual" and
+                                (not isinstance(answer.get("confidence"), (int, float)) or
+                                 isinstance(answer["confidence"], bool) or not math.isfinite(answer["confidence"]) or
+                                 not self.min_confidence <= answer["confidence"] <= 1)):
                             raise ValueError("置信度低于设置阈值，需要人工检查")
                         entry = answer_record(q, answer["answer"])
                         entries.append(entry)
                         item_report["record"] = entry
                     except (ValueError, TypeError, AIError) as exc:
-                        failures += 1
                         item_report["error"] = str(exc)
+                        if isinstance(exc, AIServiceError) and not (exc.retryable and self.manual_answer is not None):
+                            report["answers"].append(item_report)
+                            report.update(status="ai_error", message=str(exc))
+                            return report
+                        if q is not None and self.manual_answer is not None:
+                            # Persist before waiting for input, including EOF or Ctrl+C.
+                            item_report["pending_manual"] = True
+                            report["answers"].append(item_report)
+                            report.update(status="paused", message="答案已保留，待补答")
+                            write_report(path, report)
+                            clock.check()
+                            manual = self.manual_answer(q, str(exc))
+                            if manual is None:
+                                return report
+                            try:
+                                entry = answer_record(q, manual)
+                            except (ValueError, TypeError) as invalid:
+                                item_report["error"] = str(invalid)
+                                return report
+                            item_report.update(answer=manual, confidence=None, explanation="人工补答",
+                                               source="manual", record=entry)
+                            item_report.pop("error", None)
+                            item_report.pop("pending_manual", None)
+                            entries.append(entry)
+                            report.update(status="answering", message="")
+                            write_report(path, report)
+                            clock.check()
+                            continue
+                        failures += 1
                     report["answers"].append(item_report)
                     write_report(path, report)
                     clock.check()
             clock.stop()
             clock.check()
+            report.pop("resume_answers", None)
             if failures or not entries:
                 report.update(status="needs_review", message="存在未完成或不支持的题目，仅保存本地报告，未交卷")
             elif not self.auto_submit:

@@ -4,8 +4,10 @@ from rich.theme import Theme
 
 STYLES = {
     "title": "bold cyan",
-    "accent": "cyan",
-    "muted": "dim",
+    "accent": "bold cyan",
+    "muted": "default",
+    "table_header": "bold default",
+    "shortcut": "bold cyan",
     "info": "default",
     "success": "green",
     "warning": "yellow",
@@ -16,7 +18,8 @@ THEME = Theme(STYLES)
 ICONS = {"info": "·", "success": "✓", "warning": "!", "error": "×", "prompt": "›"}
 BORDER = box.ROUNDED
 TABLE_BORDER = box.SIMPLE
-SPINNER = "dots"
+SPINNER = "line"  # ASCII frames have stable width in macOS Terminal fonts.
+PROGRESS_ASCII = True
 LOG_LINES = 8
 PAGE_SIZE = 12
 REFRESH_PER_SECOND = 8

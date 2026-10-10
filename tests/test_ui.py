@@ -25,6 +25,17 @@ def view(width=100, **kwargs):
 
 
 class RenderingTests(unittest.TestCase):
+    def test_progress_does_not_wrap_with_wide_terminal_symbol_glyphs(self):
+        ui, output = view(120)
+        ui.on_progress(ProgressEvent("begin", "等待浏览器登录", total=None))
+        ui.console.print(ui.render())
+        row = output.getvalue().splitlines()[0]
+        # Some macOS fonts render braille/thick bar glyphs as two cells.
+        # One extra cell wraps the line and leaves a ghost on each refresh.
+        for double_width in ("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏", "━╸╺"):
+            physical_width = sum(2 if char in double_width else cell_len(char) for char in row)
+            self.assertLessEqual(physical_width, 120)
+
     def test_progress_keeps_readable_task_name_and_one_row(self):
         ui, output = view(80)
         ui.on_progress(ProgressEvent("begin", "音乐课程\n模拟任务", total=12))

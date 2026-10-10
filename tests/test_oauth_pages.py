@@ -1,5 +1,6 @@
 """Exercise the real local callback with synthetic credentials only."""
 import threading
+import socket
 import unittest
 from http.server import HTTPServer
 from unittest.mock import patch
@@ -41,8 +42,7 @@ class CallbackPageTests(unittest.TestCase):
         self.assertIn("history.replaceState", response.text)
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
-        timer.assert_called_once_with(2.0, self.handler.stop_server)
-        timer.return_value.start.assert_called_once()
+        timer.assert_not_called()  # The login owner, not a competing timer, cleans up.
 
     def test_missing_or_blank_token_does_not_complete_login(self):
         for query in ("", "?token=", "?token=%20%20"):
@@ -61,6 +61,47 @@ class CallbackPageTests(unittest.TestCase):
         self.assertIn("页面不存在", response.text)
         self.assertNotIn("synthetic-private-path", response.text)
         self.assertIsNone(self.handler.token)
+
+
+class LoginLifecycleTests(unittest.TestCase):
+    def test_success_with_idle_browser_connection_returns_and_closes(self):
+        handler = OAuthLoginHandler()
+        self.assertTrue(handler.start_server())
+        client = requests.Session()
+        client.trust_env = False
+        idle = None
+        try:
+            with patch("NewMoocMain.oauth_login.threading.Timer"):
+                client.get(f"http://127.0.0.1:{handler.port}/login", params={"token": "synthetic"}, timeout=2)
+            accepted = threading.Event()
+            original = handler.server.get_request
+            def accept():
+                connection = original()
+                accepted.set()
+                return connection
+            handler.server.get_request = accept
+            idle = socket.create_connection(("127.0.0.1", handler.port), timeout=2)
+            self.assertTrue(accepted.wait(2))
+            stop = threading.Thread(target=handler.stop_server, daemon=True)
+            stop.start()
+            stop.join(1)
+            self.assertFalse(stop.is_alive(), "login succeeds but cleanup hangs on browser preconnection")
+            self.assertEqual(handler.token, "synthetic")
+        finally:
+            if idle:
+                idle.close()
+            client.close()
+            handler.stop_server()
+
+    def test_ctrl_c_always_cleans_server(self):
+        handler = OAuthLoginHandler()
+        with patch.object(handler, "start_server", return_value=True), \
+             patch.object(handler, "open_login_page"), \
+             patch.object(handler, "wait_for_token", side_effect=KeyboardInterrupt), \
+             patch.object(handler, "stop_server") as stop:
+            with self.assertRaises(KeyboardInterrupt):
+                handler.login()
+            stop.assert_called_once()
 
 
 if __name__ == "__main__":

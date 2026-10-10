@@ -1027,13 +1027,15 @@ class QuizExportHandler:
         export_format: str = EXPORT_FORMAT_MD,
         include_my_answer: bool = False,
         on_progress=None,
+        selected_papers=None,
     ):
         self.progress = Reporter(on_progress)
         self._pending_outputs = []
         self.logging = Logger(__name__).get_log()
         self.client = client or AIMoocApi(token=token, username=username, password=password)
         self.category_ids = category_ids or [1, 2, 3]
-        self.quiz_mode = quiz_mode if 3 in self.category_ids else QUIZ_MODE_PER_CHAPTER
+        self.selected_papers = selected_papers
+        self.quiz_mode = quiz_mode if selected_papers is not None or 3 in self.category_ids else QUIZ_MODE_PER_CHAPTER
         self.selected_exam_ids = set(selected_exam_ids or [])
         # -dev：额外输出 summary / *.json / raw/；正式模式只写复习用文档
         self.dev_mode = bool(dev_mode)
@@ -1140,6 +1142,28 @@ class QuizExportHandler:
 
         course_dir = self.output_dir / safe_filename(course_name)
         course_dir.mkdir(parents=True, exist_ok=True)
+
+        if self.selected_papers is not None:
+            # Explicit selection is authoritative: do not fetch a broader catalog.
+            selected = [(item, category) for owner, item, category in self.selected_papers
+                        if str(owner.get("id") or owner.get("courseInfoId")) == str(course_info_id)
+                        and str(owner.get("courseId")) == str(course_id)]
+            if not selected:
+                return
+            self.progress.add_total(len(selected))
+            if self.quiz_mode == QUIZ_MODE_MERGED:
+                exported = self.export_merged_quizzes(
+                    [item for item, _ in selected], "题目", course_name, course_dir,
+                    course_info_id=str(course_info_id), categories=[category for _, category in selected],
+                )
+            else:
+                exported = False
+                for item, category in selected:
+                    exported = self.export_one_paper(item, category, course_name, course_dir,
+                                                     course_info_id=str(course_info_id)) or exported
+            if exported:
+                self.stats["courses"] += 1
+            return
 
         exported_any = False
         for category_id in self.category_ids:
@@ -1447,12 +1471,14 @@ class QuizExportHandler:
         course_name: str,
         course_dir: Path,
         course_info_id: str = "",
+        categories=None,
     ) -> bool:
         """把所选/全部章节测验合并为课程下的一个文件"""
         sections: List[Dict[str, Any]] = []
-        for item in items:
+        selection_name = "所选题目" if categories is not None else "全部章节测验"
+        for item, category in zip(items, categories if categories is not None else [3] * len(items)):
             data = self.load_paper_data(
-                item, 3, course_name, course_dir, course_info_id
+                item, category, course_name, course_dir, course_info_id
             )
             if not data:
                 continue
@@ -1489,12 +1515,12 @@ class QuizExportHandler:
         my_answered = sum(1 for q in merged_questions if q.get("my_answer"))
 
         exported_at = time.strftime("%Y-%m-%d %H:%M:%S")
-        base = f"{safe_filename(category_name)}_全部章节测验_{safe_filename(course_name)}"
+        base = f"{safe_filename(category_name)}_{selection_name}_{safe_filename(course_name)}"
         payload = {
             "course": course_name,
             "category": category_name,
             "category_id": 3,
-            "paper_name": "全部章节测验",
+            "paper_name": selection_name,
             "quiz_mode": QUIZ_MODE_MERGED,
             "section_count": len(sections),
             "question_count": total,
@@ -1511,7 +1537,7 @@ class QuizExportHandler:
                 json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
             )
 
-        title = f"{course_name} · 全部章节测验"
+        title = f"{course_name} · {selection_name}"
         meta_lines = [
             f"- 分类: {category_name}",
             f"- 章节数: {len(sections)}",
@@ -1563,7 +1589,7 @@ class QuizExportHandler:
         self.summary_rows.append({
             "course": course_name,
             "category": category_name,
-            "paper_name": "全部章节测验",
+            "paper_name": selection_name,
             "exam_id": "",
             "question_count": total,
             "answered_count": answered,
@@ -1574,7 +1600,7 @@ class QuizExportHandler:
             "docx": str(docx_path) if docx_path else "",
         })
         self._info(
-            f"     [{category_name}] 全部章节测验（{len(sections)}份）: "
+            f"     [{category_name}] {selection_name}（{len(sections)}份）: "
             f"{total} 题（答案 {answered}） → {', '.join(written) or '（无输出）'}"
         )
         for section in sections:

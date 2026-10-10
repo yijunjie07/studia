@@ -2,14 +2,17 @@
 from collections import Counter, deque
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import replace
 import getpass
 import logging
 import math
 import re
+import sys
 import threading
 import time
 
 from rich.console import Console, Group
+from rich.cells import cell_len
 from rich.live import Live
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, ProgressColumn, SpinnerColumn, TimeElapsedColumn
@@ -24,6 +27,10 @@ _active_ui = ContextVar("active_terminal_ui", default=None)
 
 class Cancelled(Exception):
     """User cancelled configuration; no queued work should begin."""
+
+
+class Back(Exception):
+    """Return to the preceding screen without ending the application."""
 
 
 def safe_text(value):
@@ -45,6 +52,23 @@ class TaskColumn(ProgressColumn):
 
     def render(self, task):
         return Text(" ".join(task.description.split()), style="accent", no_wrap=True, overflow="ellipsis")
+
+
+class CompatibleBar:
+    def __init__(self, bar):
+        self.bar = bar
+
+    def __rich_console__(self, console, options):
+        # Use Rich's single-cell bar glyphs only for this column. Keep CJK text,
+        # colors and the rest of the UI untouched.
+        if theme.PROGRESS_ASCII:
+            options = replace(options, legacy_windows=True)
+        yield from console.render(self.bar, options)
+
+
+class CompatibleBarColumn(BarColumn):
+    def render(self, task):
+        return CompatibleBar(super().render(task))
 
 
 class UILogHandler(logging.Handler):
@@ -71,7 +95,7 @@ class TerminalUI:
         self.depth = 0
         self.progress = Progress(
             SpinnerColumn(theme.SPINNER, style="accent"), TaskColumn(),
-            BarColumn(bar_width=None, style=theme.BAR_STYLE, complete_style=theme.BAR_COMPLETE,
+            CompatibleBarColumn(bar_width=None, style=theme.BAR_STYLE, complete_style=theme.BAR_COMPLETE,
                       finished_style=theme.BAR_FINISHED, table_column=Column(ratio=1)),
             CountColumn(), TimeElapsedColumn(),
             console=self.console, expand=True, auto_refresh=False,
@@ -85,6 +109,10 @@ class TerminalUI:
         self.pending_error = ""
         self.cancelled = False
         self.heading = "ICVE AI Assistant"
+        self.results = []
+        self.errors = []
+        self.workspace = False
+        self.operation_active = False
 
     @contextmanager
     def session(self):
@@ -110,6 +138,8 @@ class TerminalUI:
             for line in safe_text(redact(message)).splitlines():
                 if line.strip():
                     self.lines.append((line.expandtabs(4), level))
+                    if level in ("error", "warning") and line not in self.errors:
+                        self.errors.append(line)
         # Never write outside the dynamic region while a task is running.
 
     def on_progress(self, event: ProgressEvent):
@@ -124,11 +154,12 @@ class TerminalUI:
                 self.progress.update(self.task, description=safe_text(event.name))
             elif event.kind == "result":
                 self.counts[event.status] += 1
+                self.results.append((event.name, event.status))
                 self.progress.advance(self.task)
-                label = {"success": "成功", "submitted": "已交卷", "preview": "报告已生成",
-                         "skipped": "跳过", "needs_review": "待人工处理", "submission_unknown": "交卷结果未知",
-                         "submitting": "交卷结果未知", "error": "失败", "cancelled": "中断"}.get(event.status, event.status)
-                level = "success" if event.status in ("success", "submitted", "preview") else "warning" if event.status == "skipped" else "error"
+                label = {"success": "成功", "submitted": "已交卷", "preview": "答案已生成 · 未交卷",
+                         "skipped": "跳过", "paused": "待补答", "needs_review": "待人工处理", "submission_unknown": "交卷结果未知",
+                         "submitting": "交卷结果未知", "error": "失败", "ai_error": "AI 服务失败", "cancelled": "中断"}.get(event.status, event.status)
+                level = "success" if event.status in ("success", "submitted", "preview") else "info" if event.status == "paused" else "warning" if event.status == "skipped" else "error"
                 self.log(f"{event.name} · {label}", level)
 
     def render(self):
@@ -170,7 +201,7 @@ class TerminalUI:
         self.console.print(Panel(Text.assemble(("ICVE AI Assistant", "title"),
                                               (f"  {version}\n智慧职教 AI 助手", "muted")),
                                  box=theme.BORDER, border_style="border"))
-        self.note("按编号选择；q 取消。登录和 AI 配置自动保存，可在「本机设置」修改或清除。")
+        self.note("b 返回 · q 退出 · 运行时 Ctrl+C 停止")
 
     def note(self, message, level="muted"):
         if self.live:
@@ -178,7 +209,7 @@ class TerminalUI:
         else:
             self.console.print(Text(safe_text(message), style=level))
 
-    def ask(self, prompt, default=None, secret=False):
+    def ask(self, prompt, default=None, secret=False, *, navigation=True):
         if self.live:
             raise RuntimeError("输入必须在动态任务区域之外进行")
         suffix = f" [默认 {default}]" if default is not None else ""
@@ -188,23 +219,113 @@ class TerminalUI:
         else:
             self.console.print(Text(text, style="accent"), end="")
             value = (self.input_fn or input)()
-        if not secret and value.strip().lower() == "q":
+        if navigation and not secret and value.strip().lower() == "q":
             raise Cancelled()
+        if navigation and not secret and value.strip().lower() == "b":
+            raise Back()
         return value.strip() or (str(default) if default is not None else "")
+
+    def manual_answer(self, question, reason):
+        """Collect one local answer while the runner keeps the attempt alive."""
+        from ai.questions import answer_record
+
+        def read(prompt):
+            value = self.ask(prompt, navigation=False)
+            if value.lower() == ":q":
+                raise Cancelled()
+            return value
+
+        live = self.live
+        if live:
+            live.stop()
+            self.live = None
+        try:
+            heading = f"第 {question['number'] + 1} 题"
+            if question.get("child_number") is not None:
+                heading += f" · 第 {question['child_number'] + 1} 小题"
+            self.note(f"{heading} · {question['type']} · 手动补答", "title")
+            # Only display known reason categories, never provider response text.
+            reason = str(reason)
+            label = "AI 未能作答"
+            if "置信度" in reason:
+                label = "AI 把握不足"
+            elif "格式" in reason or "选项" in reason:
+                label = "AI 答案无效"
+            self.note(label)
+            if question.get("context"):
+                self.note(question["context"], "info")
+            self.note(question["title"], "info")
+            for option in question.get("options", []):
+                self.note(f"{option['label']}. {option['text']}", "info")
+            self.shortcuts(":q 暂停并保存")
+
+            kind = question["type_id"]
+            hints = {1: "输入选项字母，如 B", 2: "输入多个选项，如 AC 或 A,C",
+                     3: "输入对/错（或 true/false、1/0）", 6: "输入答案正文"}
+            while True:
+                if kind in (4, 5):
+                    answer = []
+                    for index in range(question["blank_count"]):
+                        while True:
+                            value = read(f"第 {index + 1} 空")
+                            if value:
+                                answer.append(value)
+                                break
+                            self.note("答案不能为空，请重新输入。", "warning")
+                else:
+                    raw = read(hints[kind])
+                    if kind == 1:
+                        answer = raw.upper()
+                    elif kind == 2:
+                        answer = list(re.sub(r"[\s,，、]+", "", raw.upper()))
+                    elif kind == 3:
+                        answer = {"对": True, "正确": True, "true": True, "1": True, "y": True,
+                                  "错": False, "错误": False, "false": False, "0": False, "n": False}.get(raw.lower())
+                    else:
+                        answer = raw
+                try:
+                    answer_record(question, answer)
+                except ValueError:
+                    self.note("答案无效，请按提示重新输入。", "warning")
+                    continue
+                return answer
+        except (Cancelled, EOFError, KeyboardInterrupt):
+            return None
+        finally:
+            if live:
+                self.live = live
+                live.start()
 
     def table(self, title, columns, rows, help_text=""):
         if self.console.is_terminal:
             self.console.clear()
             self.console.print(Text(self.heading, style="title"))
-        table = Table(box=theme.TABLE_BORDER, expand=True, show_edge=False, header_style="muted")
+        table = Table(box=theme.TABLE_BORDER, expand=True, show_edge=False, header_style="table_header")
         for i, column in enumerate(columns):
             table.add_column(column, style="accent" if i == 0 else "info",
-                             no_wrap=True, overflow="ellipsis", ratio=3 if i == 1 else None)
+                             no_wrap=True, overflow="ellipsis", ratio=3 if i == 1 else None,
+                             width={"状态": 8, "成绩(分)": 8, "剩余(次)": 8}.get(column))
         for row in rows:
             table.add_row(*(Text(safe_text(value), no_wrap=True, overflow="ellipsis") for value in row))
-        self.console.print(Panel(table, title=Text(title, style="title"),
-                                 subtitle=Text(help_text, style="muted") if help_text else None,
+        help_text = safe_text(help_text)
+        self.console.print(Panel(table, title=Text(safe_text(title), style="title"),
                                  box=theme.BORDER, border_style="border", padding=(0, 1)))
+        if help_text:
+            self.shortcuts(help_text)
+
+    def shortcuts(self, message):
+        """Keep controls outside border styling and wrap between complete hints."""
+        line = Text(style="info")
+        for part in safe_text(message).split(" · "):
+            if line and cell_len(line.plain) + 3 + cell_len(part) > self.console.width:
+                self.console.print(line)
+                line = Text(style="info")
+            if line:
+                line.append(" · ")
+            key, separator, label = part.partition(" ")
+            line.append(key, style="shortcut")
+            line.append(separator + label)
+        self.console.print(line)
 
     def choice(self, title, choices, default=None, help_text=""):
         self.table(title, ["编号", "选项", "说明"],
@@ -214,46 +335,144 @@ class TerminalUI:
             value = self.ask("选择", default)
             if value in values:
                 return values[value]
-            self.note("请输入表格中的编号，或 q 取消。", "warning")
+            self.note("请输入编号；b 返回，q 退出。", "warning")
 
-    def select(self, title, items, label, details=None, default=None):
-        if not items:
+    def select(self, title, items, label, details=None, default=None, *,
+               multiple=True, actions=None, filters=None, state=None, selected=None, status=None,
+               extra_columns=()):
+        actions = actions or {}
+        if not items and not actions:
             self.note("没有可选择的项目。", "warning")
             return []
+        if multiple and self.input_fn is None and self.console.is_terminal and sys.stdin.isatty():
+            from checklist import choose_many
+            state = state if state is not None else {}
+            rows = [(safe_text(label(item)), safe_text(status(item)) if status else "",
+                     safe_text(details(item)) if details else "",
+                     *(safe_text(value(item)) for _, value in extra_columns)) for item in items]
+            result = choose_many(safe_text(title), rows, heading=self.heading,
+                                 selected=[i for i, item in enumerate(items) if selected and item in selected],
+                                 cursor=state.get("cursor", 1), refresh="r" in actions,
+                                 extra_headers=[name for name, _ in extra_columns])
+            state["cursor"] = result.cursor
+            state["selected"] = [items[i] for i in result.indexes]
+            if result.action == "back":
+                raise Back()
+            if result.action == "quit":
+                raise Cancelled()
+            return result.action or state["selected"]
+        # Piped input and scripted clients retain a line-based fallback.
         from AIMoocMain.export_questions import parse_index_input
+        state = state if state is not None else {}
         rows = [(i, label(x), details(x) if details else "") for i, x in enumerate(items, 1)]
-        filtered, page = rows, 0
         while True:
+            query, category = state.get("query", ""), state.get("filter", "f0")
+            predicate = filters.get(category, ("全部", lambda x: True))[1] if filters else lambda x: True
+            filtered = [row for row in rows if predicate(items[row[0] - 1])
+                        and query in (str(row[1]) + " " + str(row[2])).casefold()]
             pages = max(1, (len(filtered) + theme.PAGE_SIZE - 1) // theme.PAGE_SIZE)
-            self.table(f"{title} · {page + 1}/{pages}", ["编号", "名称", "详情"],
-                       filtered[page * theme.PAGE_SIZE:(page + 1) * theme.PAGE_SIZE],
-                       "1,3 / 1-3 · all 全部项目 · n/p 翻页 · /关键词搜索 · q 取消")
-            self.note("编号始终对应原列表；all 包含全部项目。" +
-                      (f" 回车默认 {default}。" if default is not None else " 回车取消。"))
-            raw = self.ask("选择编号", default)
+            page = min(state.get("page", 0), pages - 1)
+            help_parts = (["1,3 / 1-3", f"all 全选 {len(filtered)} 项"] if multiple else ["编号进入"])
+            if pages > 1:
+                help_parts.append("n/p 翻页")
+            help_parts += ["/关键词搜索"] + [f"{key} {name}" for key, name in actions.items()]
+            page_rows = filtered[page * theme.PAGE_SIZE:(page + 1) * theme.PAGE_SIZE]
+            columns = ["编号", "名称", "详情"]
+            if status:
+                columns = ["编号", "名称", "状态", "详情"]
+                page_rows = [(i, name, status(items[i - 1]), detail) for i, name, detail in page_rows]
+            if extra_columns:
+                columns = columns[:-1] + [name for name, _ in extra_columns] + ["详情"]
+                columns = [{"成绩": "成绩(分)", "剩余次数": "剩余(次)"}.get(name, name) for name in columns]
+                page_rows = [(*row[:-1], *(value(items[row[0] - 1]) for _, value in extra_columns), row[-1])
+                             for row in page_rows]
+                if self.console.width < 80:
+                    columns = columns[:-1]
+                    page_rows = [row[:-1] for row in page_rows]
+            self.table(f"{title} · {len(filtered)} 项 · {page + 1}/{pages}", columns,
+                       page_rows,
+                       " · ".join(help_parts))
+            if filters:
+                self.shortcuts(" · ".join(f"{key} {name}" + (" ✓" if key == category else "")
+                                     for key, (name, _) in filters.items()))
+            if query:
+                self.note(f"搜索：{query} · / 清除搜索")
+            visible = {row[0] for row in filtered}
+            retained = [i for i, item in enumerate(items, 1) if selected and item in selected and i in visible]
+            effective_default = "保留" if retained else default
+            if retained:
+                self.note(f"已选 {len(retained)} 项 · 回车保留")
+            self.shortcuts("b 返回 · q 退出")
+            raw = self.ask("选择编号", effective_default)
+            if raw.lower() in actions:
+                return raw.lower()
             if raw.lower() in ("n", "p"):
-                page = min(pages - 1, page + 1) if raw.lower() == "n" else max(0, page - 1)
+                state["page"] = min(pages - 1, page + 1) if raw.lower() == "n" else max(0, page - 1)
+                continue
+            if filters and raw.lower() in filters:
+                state.update(filter=raw.lower(), page=0)
                 continue
             if raw.startswith("/"):
-                query = raw[1:].strip().casefold()
-                filtered = [row for row in rows if query in (str(row[1]) + " " + str(row[2])).casefold()]
-                page = 0
+                state.update(query=raw[1:].strip().casefold(), page=0)
                 continue
             if not raw:
-                return []
-            selected = parse_index_input(raw, len(items))
-            if selected:
-                self.note(f"已选择 {len(selected)} 项。")
-                return [items[index - 1] for index in selected]
-            self.note("编号无效，请输入 1、1,3、1-3 或 all。", "warning")
+                self.note("请输入编号。", "warning")
+                continue
+            if raw == "保留" and retained:
+                indexes = retained
+            else:
+                indexes = [row[0] for row in filtered] if raw.lower() == "all" else parse_index_input(raw, len(items))
+            if indexes and set(indexes) <= visible and (multiple or len(indexes) == 1):
+                self.note(f"已选择 {len(indexes)} 项。")
+                return [items[index - 1] for index in indexes]
+            self.note("请输入当前列表的编号。" + ("" if multiple else "批量操作请使用 m。"), "warning")
+
+    def library(self, rows, platform, state):
+        platform_name = "资源库" if platform == 1 else "MOOC / AI 优课"
+        return self.select(f"我的课程 · {platform_name}", rows,
+                           lambda x: x.get("courseName", "未知课程"),
+                           self.course_details,
+                           multiple=False, state=state,
+                           actions={"m": "批量选择", "s": "设置", "t": "切换平台", "r": "刷新"})
+
+    def course_menu(self, courses, platform):
+        title = courses[0].get("courseName", "未知课程") if len(courses) == 1 else f"已选 {len(courses)} 门课程"
+        choices = [(1, "继续学习", "处理课程学习进度")]
+        if platform == 0:
+            choices += [(2, "导出题目", "保存平台已有题目和答案"), (3, "AI 答题", "生成报告或当次选择交卷")]
+        return self.choice(title, choices, help_text="b 返回课程列表 · q 退出")
+
+    def choose_platform(self, current):
+        return self.choice("切换平台", [(0, "MOOC / AI 优课", "ai.icve.com.cn"),
+                                        (1, "资源库", "zyk.icve.com.cn")], default=current,
+                           help_text="b 返回 · q 退出")
+
+    def connection_problem(self, error):
+        from MoocMain.log import redact
+        return self.choice("尚未连接平台", [("r", "重试登录 / 读取课程", ""),
+                                            ("s", "本机设置", "修改配置或退出已保存的登录"),
+                                            ("t", "切换平台", "")],
+                           help_text=redact(str(error)) or "b 返回 · q 退出")
+
+    def empty_tasks(self):
+        self.table("课程任务", ["任务", "状态"], [("当前课程", "暂无作业、考试或测验")])
+        self.ask("回车返回课程，q 退出")
+
+    def review_study(self, courses):
+        self.table("继续学习", ["课程", "操作"], [(c.get("courseName", "未知课程"), "处理学习进度") for c in courses],
+                   "回车开始 · b 返回 · q 退出")
+        while self.ask("操作", "开始") != "开始":
+            self.note("回车开始；b 返回，q 退出。")
 
     def courses(self, rows):
-        def details(course):
-            parts = [str(course.get("courseInfoName") or "")]
-            if course.get("studySpeed") is not None:
-                parts.append(f"进度 {course['studySpeed']}%")
-            return " · ".join(x for x in parts if x)
-        return self.select("选择课程", rows, lambda x: x.get("courseName", "未知课程"), details)
+        return self.select("选择课程", rows, lambda x: x.get("courseName", "未知课程"), self.course_details)
+
+    @staticmethod
+    def course_details(course):
+        parts = [str(course.get("courseInfoName") or "")]
+        if course.get("studySpeed") is not None:
+            parts.append(f"进度 {course['studySpeed']}%")
+        return " · ".join(x for x in parts if x)
 
     def confirm(self, prompt, default=False):
         while True:
@@ -264,29 +483,51 @@ class TerminalUI:
 
     def ai_config(self, current=None):
         from ai.client import AIConfig
-        provider = self.choice("AI 服务", [(1, "自定义接口", "兼容 OpenAI Chat Completions"),
-                                              (2, "DeepSeek", "填写 Key 并选择模型")],
-                               default=2 if current and current.base_url == "https://api.deepseek.com" else 1)
+        provider = 2 if current and current.base_url == "https://api.deepseek.com" else 1
+        url, model = (current.base_url, current.model) if current else (None, None)
+        step = "provider"
         while True:
-            if provider == 1:
-                url = self.ask("API Base URL（含 /v1 等服务路径）", current.base_url if current else None)
-                model = self.ask("Model ID", current.model if current else None)
-            else:
-                url = "https://api.deepseek.com"
-                default_model = {"deepseek-chat": 1, "deepseek-reasoner": 2}.get(current.model, 3) if current and current.base_url == url else 1
-                value = self.choice("DeepSeek 模型", [(1, "deepseek-chat", ""), (2, "deepseek-reasoner", ""),
-                                                       (3, "自定义模型", "填写 Model ID")], default=default_model)
-                model = {1: "deepseek-chat", 2: "deepseek-reasoner"}.get(value)
-                if model is None:
-                    model = self.ask("DeepSeek Model ID", current.model if current and current.base_url == url else None)
-            reuse_key = current and url.strip().rstrip("/") == current.base_url
-            key = self.ask("API Key（隐藏输入，回车保留原 Key）" if reuse_key else "API Key（隐藏输入，将保存到本机）", secret=True)
-            if not key and reuse_key:
-                key = current.api_key
             try:
-                return AIConfig(url, model, key)
+                if step == "provider":
+                    provider = self.choice("AI 服务", [(1, "自定义接口", "兼容 OpenAI Chat Completions"),
+                                                        (2, "DeepSeek", "填写 Key 并选择模型")], default=provider,
+                                           help_text="b 返回 · q 退出")
+                    if provider == 2 and url != "https://api.deepseek.com":
+                        url, model = "https://api.deepseek.com", None
+                    step = "url" if provider == 1 else "model"
+                elif step == "url":
+                    url = self.ask("API Base URL（含 /v1 等服务路径）", url)
+                    step = "model"
+                elif step == "model":
+                    if provider == 1:
+                        model = self.ask("Model ID", model)
+                        step = "key"
+                    else:
+                        value = self.choice("DeepSeek 模型", [(1, "deepseek-chat", ""), (2, "deepseek-reasoner", ""),
+                                                               (3, "自定义模型", "填写 Model ID")],
+                                            default={"deepseek-chat": 1, "deepseek-reasoner": 2}.get(model, 3 if model else 1))
+                        if value == 3:
+                            step = "custom_model"
+                        else:
+                            model = {1: "deepseek-chat", 2: "deepseek-reasoner"}[value]
+                            step = "key"
+                elif step == "custom_model":
+                    model = self.ask("DeepSeek Model ID", model)
+                    step = "key"
+                else:
+                    reuse_key = current and url.strip().rstrip("/") == current.base_url
+                    key = self.ask("API Key（隐藏输入，回车保留原 Key）" if reuse_key else "API Key（隐藏输入，将保存到本机）", secret=True)
+                    if not key and reuse_key:
+                        key = current.api_key
+                    return AIConfig(url, model, key)
+            except Back:
+                if step == "provider":
+                    raise
+                step = {"url": "provider", "model": "url" if provider == 1 else "provider",
+                        "custom_model": "model", "key": "model"}[step]
             except ValueError as exc:
                 self.note(str(exc), "warning")
+                step = "url" if provider == 1 else "model"
 
     def confidence(self, default=0.8):
         if not isinstance(default, (int, float)) or not math.isfinite(default) or not 0 <= default <= 1:
@@ -305,8 +546,12 @@ class TerminalUI:
         if self.finished:
             return
         self.finished = True
+        if self.workspace and not self.operation_active and not self.pending_error:
+            if self.cancelled:
+                self.note("已退出。")
+            return
         success = sum(self.counts[s] for s in ("success", "submitted", "preview"))
-        failures = sum(self.counts[s] for s in ("error", "needs_review", "submission_unknown", "submitting"))
+        failures = sum(self.counts[s] for s in ("error", "needs_review", "submission_unknown", "submitting", "ai_error"))
         # Fatal errors before any task result must still be visible in the one-line summary.
         if self.pending_error:
             failures += 1
@@ -316,6 +561,8 @@ class TerminalUI:
             text += f" · 跳过 {self.counts['skipped']}"
         if self.counts["needs_review"]:
             text += f" · 待人工 {self.counts['needs_review']}"
+        if self.counts["paused"]:
+            text += f" · 待补答 {self.counts['paused']}"
         unknown = self.counts["submission_unknown"] + self.counts["submitting"]
         if unknown:
             text += f" · 结果未知 {unknown}（先核对平台）"
@@ -325,6 +572,141 @@ class TerminalUI:
             text += " · " + " ".join(safe_text(redact(self.pending_error)).split())
         style = "error" if failures else "warning" if self.cancelled else "success"
         self.console.print(Text(text, style=style, no_wrap=True, overflow="ellipsis"))
+
+    def begin_operation(self):
+        self.counts.clear()
+        self.lines.clear()
+        self.results.clear()
+        self.errors.clear()
+        self.started = self.clock()
+        self.finished = False
+        self.pending_error = ""
+        self.cancelled = False
+        self.operation_active = True
+
+    def operation_result(self, paths=()):
+        from MoocMain.log import redact
+        statuses = {"success": "完成", "submitted": "已交卷", "preview": "答案已生成 · 未交卷",
+                    "skipped": "已跳过", "paused": "待补答", "needs_review": "待人工处理", "error": "失败", "ai_error": "AI 服务失败",
+                    "submission_unknown": "交卷结果未知", "submitting": "交卷结果未知"}
+        self.table("执行结果", ["任务", "结果"],
+                   [(name, statuses.get(status, status)) for name, status in self.results])
+        self.finish()
+        if self.counts["preview"]:
+            self.note("本地答案未提交到平台，不会产生成绩。需要交卷时，在执行摘要按 s → 执行方式 → 答题并自动交卷。", "warning")
+        if self.counts["paused"]:
+            self.note("答案已保留，重新选择此任务可继续补答。")
+        for error in self.errors:
+            self.note(error, "warning")
+        if self.pending_error:
+            self.note(redact(self.pending_error), "error")
+        if not self.results and not self.pending_error:
+            self.note("本次没有处理任务。")
+        for path in dict.fromkeys(str(p) for p in paths):
+            self.note(f"文件：{path}")
+        self.note("回车返回本课程 · 2 切换课程 · b 返回本课程 · q 退出")
+        while True:
+            try:
+                action = self.ask("继续", "1")
+            except Back:
+                return 1
+            if action in ("1", "2"):
+                return int(action)
+            self.note("请输入 1 或 2。", "warning")
+
+    def selected_task_note(self, selected):
+        from AIMoocMain.export_questions import paper_display_name
+        for course, item, _ in selected[:5]:
+            self.note(f"  {course.get('courseName', '')} / {paper_display_name(item)}")
+        if len(selected) > 5:
+            self.note(f"  … 共 {len(selected)} 份，b 返回查看或修改选择")
+
+    def review_export(self, selected, options):
+        if options.get("export_format") not in ("md", "docx", "both"):
+            options["export_format"] = "md"
+        if options.get("quiz_mode") not in ("per_chapter", "merged"):
+            options["quiz_mode"] = "per_chapter"
+        options["include_my_answer"] = options.get("include_my_answer") is True
+        while True:
+            self.table(f"导出 {len(selected)} 份题目", ["设置", "当前值"], [
+                ("文件格式", {"md": "Markdown", "docx": "Word", "both": "Markdown + Word"}[options["export_format"]]),
+                ("文件组织", "按课程合并" if options["quiz_mode"] == "merged" else "每份一个文件"),
+                ("历史答案", "包含" if options["include_my_answer"] else "不包含"),
+                ("保存位置", "tiku/<课程名>/"),
+            ])
+            self.selected_task_note(selected)
+            self.note("回车开始 · s 修改设置 · b 返回选择 · q 退出")
+            action = self.ask("操作", "开始")
+            if action == "开始":
+                return options
+            if action.lower() == "s":
+                self.edit_export_options(options)
+
+    def edit_export_options(self, options):
+        while True:
+            try:
+                action = self.choice("导出设置", [(1, "文件格式", "Markdown / Word"),
+                                                  (2, "文件组织", "分开保存或按课程合并"),
+                                                  (3, "历史答案", "是否包含我的已有作答")],
+                                     help_text="b 返回摘要 · q 退出")
+            except Back:
+                return
+            try:
+                if action == 1:
+                    value = self.choice("文件格式", [(1, "Markdown", ".md"), (2, "Word", ".docx"),
+                                                     (3, "两种都导出", ".md + .docx")],
+                                        default={"md": 1, "docx": 2, "both": 3}[options["export_format"]])
+                    options["export_format"] = {1: "md", 2: "docx", 3: "both"}[value]
+                elif action == 2:
+                    value = self.choice("文件组织", [(1, "每份一个文件", ""), (2, "按课程合并", "仅合并所选内容")],
+                                        default=2 if options["quiz_mode"] == "merged" else 1)
+                    options["quiz_mode"] = "merged" if value == 2 else "per_chapter"
+                else:
+                    options["include_my_answer"] = self.confirm("包含我的历史答案", options["include_my_answer"])
+            except Back:
+                continue
+
+    def review_ai(self, selected, config, options, check_connection=None):
+        options.setdefault("auto_submit", True)
+        value = options.get("threshold", .8)
+        options["threshold"] = value if isinstance(value, (float, int)) and math.isfinite(value) and 0 <= value <= 1 else .8
+        while True:
+            connection = str(options.get("connection_status", ""))
+            connection = "连接失败" if "失败" in connection else "已通过" if "通过" in connection else "未测试"
+            self.table(f"AI 答题 · {len(selected)} 份任务", ["设置", "当前值"], [
+                ("模型", config.model),
+                ("连接状态", connection),
+                ("执行方式", "通过校验后自动交卷" if options["auto_submit"] else "仅生成答案（不交卷，无成绩）"),
+                ("最低置信度", str(options["threshold"])),
+            ])
+            self.selected_task_note(selected)
+            self.shortcuts("回车开始 · s 修改设置 · " + ("t 测试连接 · " if check_connection else "") + "b 返回选择 · q 退出")
+            action = self.ask("操作", "开始")
+            if action == "开始":
+                return options["auto_submit"], options["threshold"]
+            if action.lower() == "s":
+                self.edit_answer_options(options)
+            if action.lower() == "t" and check_connection:
+                options["connection_status"] = check_connection()
+
+    def edit_answer_options(self, options):
+        while True:
+            try:
+                action = self.choice("AI 答题设置", [(1, "执行方式", "仅本次操作有效"),
+                                                    (2, "最低置信度", "模型自报值不代表正确率")],
+                                     help_text="b 返回摘要 · q 退出")
+            except Back:
+                return
+            try:
+                if action == 1:
+                    mode = self.choice("执行方式", [(1, "仅生成答案", "不交卷，无平台成绩"),
+                                                    (2, "答题并自动交卷", "全部题目通过校验后提交")],
+                                       default=2 if options["auto_submit"] else 1)
+                    options["auto_submit"] = mode == 2
+                else:
+                    options["threshold"] = self.confidence(options["threshold"])
+            except Back:
+                continue
 
     def home(self, platform_default=0):
         mode = self.choice("1 / 选择功能", [
@@ -345,7 +727,7 @@ class TerminalUI:
 
     def login_hint(self):
         self.note("接下来在浏览器登录，支持扫码或短信；完成后自动返回。")
-        self.ask("回车打开浏览器，q 取消")
+        self.note("等待登录期间可按 Ctrl+C 退出。")
 
     def export_settings(self, defaults=None):
         defaults = defaults if isinstance(defaults, dict) else {}
@@ -377,19 +759,32 @@ class TerminalUI:
         from AIMoocMain.export_questions import CATEGORY_FALLBACK
         return self.select("AI / 题目范围", [1, 2, 3], lambda x: CATEGORY_FALLBACK[x])
 
-    def papers(self, catalog):
+    def papers(self, catalog, selected=None, state=None, refresh=False):
         from AIMoocMain.export_questions import CATEGORY_FALLBACK, paper_display_name
-        return self.select("AI / 选择具体任务", catalog, lambda x: paper_display_name(x[1]),
-                           lambda x: f"{x[0].get('courseName', '')} · {CATEGORY_FALLBACK[x[2]]}")
+        from task_metrics import score_text, attempts_text
+        filters = {"f0": ("全部", lambda x: True)}
+        filters.update({f"f{category}": (CATEGORY_FALLBACK[category], lambda x, c=category: x[2] == c)
+                        for category in (1, 2, 3)})
+        statuses = {"submitted": "已提交", "draft": "未提交", "not_started": "未作答"}
+        single_course = bool(catalog) and all(x[0] == catalog[0][0] for x in catalog)
+        return self.select("选择任务", catalog, lambda x: paper_display_name(x[1]),
+                           lambda x: CATEGORY_FALLBACK[x[2]] if single_course else
+                           f"{x[0].get('courseName', '')} · {CATEGORY_FALLBACK[x[2]]}",
+                           filters=filters, selected=selected, state=state,
+                           status=lambda x: statuses.get(x[1].get("_completion_status"), "?"),
+                           extra_columns=(("成绩", lambda x: score_text(x[1])),
+                                          ("剩余次数", lambda x: attempts_text(x[1], x[2]))),
+                           actions={"r": "刷新状态"} if refresh else None)
 
     def answer_settings(self, confidence_default=0.8):
-        mode = self.choice("AI / 执行方式", [(1, "仅生成答案报告", "不保存到平台，不交卷"),
-                                                  (2, "答题并自动交卷", "全部题目通过校验后提交")], default=1)
+        mode = self.choice("AI / 执行方式", [(1, "仅生成答案", "不交卷，无平台成绩"),
+                                                  (2, "答题并自动交卷", "全部题目通过校验后提交")], default=2)
         return mode == 2, self.confidence(confidence_default)
 
-    def settings_menu(self, path):
+    def settings_menu(self, path, ai_status="已配置 · 未测试"):
         return self.choice("本机设置", [
-            (1, "配置 AI 服务", "修改 URL / 模型 / Key；同一 URL 下回车保留 Key"),
+            (1, "配置 AI 服务", ai_status),
+            (5, "测试 AI 连接", "发送一条短测试消息，验证 Key、模型和接口"),
             (2, "清除 AI 配置", "删除已保存的 URL、模型和 Key"),
             (3, "退出 MOOC 登录", "下次打开浏览器重新登录，可切换账号"),
             (4, "退出资源库登录", "不影响 MOOC 登录"),
@@ -511,15 +906,26 @@ def demo(snapshot=None):
     from pathlib import Path
     console = Console(theme=theme.THEME, highlight=False, record=bool(snapshot),
                       width=100 if snapshot else None)
-    view = TerminalUI(console=console)
+    answers = iter(["1", "2", "f3", "all", "", ""])
+
+    def demo_input():
+        value = next(answers)
+        console.print(value)
+        return value
+
+    view = TerminalUI(console=console, input_fn=demo_input)
     with view.session():
         view.header("界面预览 · 模拟数据")
-        view.table("选择课程 · 1/1", ["编号", "名称", "详情"], [
-            ("1", "中外音乐与民族技艺实践", "2026 秋季 · 进度 36%"),
-            ("2", "大学英语", "2026 秋季 · 进度 82%"),
-            ("3", "计算机应用基础", "2026 秋季 · 进度 100%"),
-        ], "1,3 / 1-3 · all 全部项目 · n/p 翻页 · /关键词搜索 · q 取消")
-        view.note("以下演示 12 份模拟任务；只保留最近 8 行日志。")
+        courses = [{"id": "demo1", "courseName": "中外音乐与民族技艺实践", "studySpeed": 36},
+                   {"id": "demo2", "courseName": "大学英语", "studySpeed": 82},
+                   {"id": "demo3", "courseName": "计算机应用基础", "studySpeed": 100}]
+        selected_courses = view.library(courses, 0, {})
+        view.course_menu(selected_courses, 0)
+        catalog = [(courses[0], {"id": str(i), "name": f"第 {i} 章测验"}, 3) for i in range(1, 13)]
+        selected = view.papers(catalog)
+        view.review_export(selected, {"export_format": "docx", "quiz_mode": "merged"})
+        view.note("以下演示使用模拟任务，不写入题目文件。")
+        view.begin_operation()
 
         def step(index):
             view.on_progress(ProgressEvent("detail", f"音乐课程 · 模拟任务 {index + 1}"))
@@ -541,7 +947,7 @@ def demo(snapshot=None):
                     step(index)
                     view.log("处理详情：" + "课程资源名称 " * 20)
                     time.sleep(0.25)
-        view.finish()
+        view.operation_result(["tiku/中外音乐与民族技艺实践/题目_所选题目_中外音乐与民族技艺实践.docx（示例）"])
     if snapshot:
         path = Path(snapshot)
         path.parent.mkdir(parents=True, exist_ok=True)

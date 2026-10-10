@@ -11,7 +11,7 @@ import webbrowser
 import time
 import random
 from urllib.parse import urlparse, parse_qs
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from MoocMain.log import Logger
 from NewMoocMain.oauth_pages import render_oauth_page
 
@@ -26,6 +26,7 @@ class OAuthLoginHandler:
         self.server = None
         self.server_thread = None
         self.is_running = False
+        self._stop_lock = threading.Lock()
         
     def find_available_port(self, preferred_port=None, max_attempts=50):
         """
@@ -95,6 +96,12 @@ class OAuthLoginHandler:
         oauth_handler = self
 
         class RequestHandler(BaseHTTPRequestHandler):
+            def setup(self):
+                # Browsers may preconnect without sending a request. Bound each
+                # connection's lifetime, independently of the callback listener.
+                self.request.settimeout(5)
+                super().setup()
+
             def do_GET(self):
                 parsed_url = urlparse(self.path)
                 token = None
@@ -124,7 +131,6 @@ class OAuthLoginHandler:
                     # Deliver the whole response before waking the waiting application.
                     oauth_handler.token = token
                     logger.debug("登录回调成功（凭证已隐藏）")
-                    threading.Timer(2.0, oauth_handler.stop_server).start()
 
             def log_message(self, format, *args):
                 # Callback URLs contain credentials. Do not log request paths.
@@ -148,7 +154,7 @@ class OAuthLoginHandler:
                 self.port = self.find_available_port(self.port)
                 
                 # 创建HTTP服务器
-                self.server = HTTPServer(('', self.port), self.create_request_handler())
+                self.server = ThreadingHTTPServer(('127.0.0.1', self.port), self.create_request_handler())
                 self.is_running = True
                 
                 logger.info(f" OAuth服务已就绪，端口: {self.port}")
@@ -156,7 +162,8 @@ class OAuthLoginHandler:
                 logger.debug(f"   登录URL: https://sso.icve.com.cn/sso/auth?mode=simple&source=2&redirect=http://localhost:{self.port}/login")
                 
                 # 在新线程中运行服务器
-                self.server_thread = threading.Thread(target=self.server.serve_forever)
+                self.server_thread = threading.Thread(target=self.server.serve_forever,
+                                                      kwargs={"poll_interval": 0.05})
                 self.server_thread.daemon = True
                 self.server_thread.start()
                 
@@ -178,11 +185,16 @@ class OAuthLoginHandler:
     
     def stop_server(self):
         """停止HTTP服务器"""
-        if self.server and self.is_running:
-            self.server.shutdown()
-            self.server.server_close()
+        with self._stop_lock:
+            if not self.server or not self.is_running:
+                return
+            server = self.server
             self.is_running = False
-            logger.info(" OAuth登录服务器已停止")
+        # ThreadingHTTPServer has daemon request workers; idle browser sockets
+        # cannot block shutdown or keep the application alive on Ctrl+C.
+        server.shutdown()
+        server.server_close()
+        logger.info(" OAuth登录服务器已停止")
     
     def open_login_page(self):
         """打开登录页面"""
@@ -235,15 +247,14 @@ class OAuthLoginHandler:
             # 3. 等待token获取
             token = self.wait_for_token(timeout)
             
-            # 4. 清理资源
-            self.stop_server()
-            
             return token
             
         except Exception as e:
             logger.error(f" OAuth登录过程中发生异常: {e}")
-            self.stop_server()
             return None
+        finally:
+            # KeyboardInterrupt/SystemExit must take the same cleanup path.
+            self.stop_server()
     
     def __del__(self):
         """析构函数，确保服务器被正确关闭"""

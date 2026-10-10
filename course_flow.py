@@ -1,0 +1,189 @@
+"""Course workspace navigation; platform operations remain in Application."""
+from pathlib import Path
+
+from AIMoocMain.export_questions import QuizExportHandler, paper_exam_id
+from ai.runner import report_path
+from ui import Back, Cancelled
+
+
+def task_identity(task):
+    course, item, category = task
+    return (str(course.get("id") or course.get("courseInfoId") or ""),
+            str(course.get("courseId") or ""), paper_exam_id(item), category)
+
+
+class CourseWorkspace:
+    def __init__(self, application):
+        self.app = application
+        self.view = application.view
+        self.store = application.store
+        self.platform = self.store.get("platform", 0)
+        if self.platform not in (0, 1):
+            self.platform = 0
+        self.client = None
+        self.rows = []
+        self.library_state = {}
+
+    def run(self):
+        # Import here so the legacy entry points and dependency injection share
+        # the same client factories.
+        from app import AIMoocApi, ZYKMoocApi
+
+        self.view.workspace = True
+        while True:
+            try:
+                if self.client is None:
+                    try:
+                        cls = ZYKMoocApi if self.platform == 1 else AIMoocApi
+                        self.client, self.rows = self.app.client_and_courses(cls, choose=False)
+                    except Cancelled:
+                        raise
+                    except Exception as exc:
+                        action = self.view.connection_problem(exc)
+                        self.root_action(action)
+                        continue
+                selected = self.view.library(self.rows, self.platform, self.library_state)
+                if isinstance(selected, str):
+                    if selected == "m":
+                        selected = self.view.courses(self.rows)
+                        if not selected:
+                            continue
+                    else:
+                        self.root_action(selected)
+                        continue
+                if selected:
+                    self.course_loop(selected)
+            except Back:
+                continue
+
+    def root_action(self, action):
+        if action == "s":
+            if self.app.manage_settings():
+                self.client, self.rows = None, []
+                self.library_state.clear()
+        elif action == "t":
+            platform = self.view.choose_platform(self.platform)
+            if platform != self.platform:
+                self.platform = platform
+                self.client, self.rows = None, []
+                self.library_state.clear()
+                self.app.remember(lambda: self.store.set("platform", platform))
+        elif action == "r":
+            self.client = None
+
+    def course_loop(self, courses):
+        task_state = {}
+        while True:
+            try:
+                mode = self.view.course_menu(courses, self.platform)
+            except Back:
+                return
+            try:
+                if mode == 1:
+                    self.view.review_study(courses)
+                    result = self.execute(lambda: self.app.study(self.platform, self.client, courses))
+                else:
+                    result = self.tasks(courses, mode, task_state.setdefault(mode, {}))
+                if result == 2:
+                    return
+            except Back:
+                continue
+            except (Cancelled, EOFError):
+                raise
+            except Exception as exc:
+                self.view.begin_operation()
+                self.view.pending_error = str(exc)
+                if self.view.operation_result() == 2:
+                    return
+
+    def tasks(self, courses, mode, state):
+        try:
+            catalog = self.app.task_catalog(self.client, courses)
+        except Exception as exc:
+            self.view.begin_operation()
+            self.view.pending_error = str(exc)
+            return self.view.operation_result()
+        if not catalog:
+            self.view.empty_tasks()
+            return 1
+        saved = self.store.get("export", {})
+        export_options = {key: saved[key] for key in ("export_format", "quiz_mode", "include_my_answer")
+                          if isinstance(saved, dict) and key in saved}
+        answer_options = {"auto_submit": True, "threshold": self.store.get("confidence", .8)}
+        selected = state.get("selected", [])
+        while True:
+            # History/status fields can change between reads; selection belongs
+            # to the task identity, not the entire response dictionary.
+            selected_ids = {task_identity(task) for task in selected}
+            selected = [task for task in catalog if task_identity(task) in selected_ids]
+            choice = self.view.papers(catalog, selected=selected, state=state, refresh=True)
+            if choice == "r":
+                selected = state.get("selected", selected)
+                try:
+                    catalog = self.app.task_catalog(self.client, courses)
+                except Exception as exc:
+                    self.view.begin_operation()
+                    self.view.pending_error = str(exc)
+                    return self.view.operation_result()
+                if not catalog:
+                    self.view.empty_tasks()
+                    return 1
+                continue
+            selected = choice
+            state["selected"] = selected
+            if not selected:
+                return 1
+            try:
+                if mode == 2:
+                    options = self.view.review_export(selected, export_options)
+                    self.app.remember(lambda: self.store.set("export", options))
+                    def export():
+                        handler = QuizExportHandler(client=self.client, course_rows=courses,
+                                                    selected_papers=selected, **options,
+                                                    dev_mode=self.view.dev, on_progress=self.view.on_progress)
+                        return [row[key] for row in handler.summary_rows for key in ("markdown", "docx") if row.get(key)]
+                    result = self.execute(export, "导出题目")
+                else:
+                    config = self.app.ai_configuration()
+                    answer_options["connection_status"] = self.app.ai_status_text(config)
+                    auto_submit, threshold = self.view.review_ai(
+                        selected, config, answer_options,
+                        check_connection=lambda: self.app.test_ai_connection(config))
+                    self.app.remember(lambda: self.store.set("confidence", threshold))
+                    def answer():
+                        results = self.app.execute_ai(self.client, selected, config, auto_submit, threshold)
+                        for report in results:
+                            if report.get("status") in ("paused", "submitted", "preview"):
+                                continue
+                            if report.get("message"):
+                                self.view.log(report["message"], "warning")
+                            for entry in report.get("answers", []):
+                                if entry.get("error"):
+                                    self.view.log(f"{report['paper']}：{entry['error']}", "warning")
+                        paths = []
+                        for (course, item, _), report in zip(selected, results):
+                            path = report_path("ai_results", self.client.user_id, course, paper_exam_id(item)).with_suffix(".md")
+                            if path.exists():
+                                paths.append(str(path))
+                        return paths
+                    result = self.execute(answer, "AI 答题")
+                state.clear()
+                return result
+            except Back:
+                continue
+
+    def execute(self, operation, title=None):
+        self.view.begin_operation()
+        paths = []
+        try:
+            if title:
+                with self.view.activity(title):
+                    paths = operation() or []
+            else:
+                operation()
+        except KeyboardInterrupt:
+            self.view.cancelled = True
+            self.view.log("操作已中断；未确认的交卷结果请到平台核对。", "warning")
+        except Exception as exc:
+            self.view.pending_error = str(exc)
+        return self.view.operation_result([str(Path(path).resolve()) for path in paths])

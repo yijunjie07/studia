@@ -3,7 +3,7 @@ from unittest.mock import Mock, patch
 
 import io
 from rich.console import Console
-from ui import TerminalUI
+from ui import TerminalUI, Back
 from app import Application
 import theme
 from AIMoocMain.main import AIMoocHandler
@@ -24,9 +24,10 @@ class CourseSelectionTests(unittest.TestCase):
         with patch('builtins.input', return_value='2'):
             self.assertEqual(self.view().courses(self.courses), [self.courses[1]])
 
-    def test_empty_input_cancels_and_all_selects_all(self):
-        with patch('builtins.input', return_value=''):
-            self.assertEqual(self.view().courses(self.courses), [])
+    def test_back_returns_and_all_selects_all(self):
+        with patch('builtins.input', return_value='b'):
+            with self.assertRaises(Back):
+                self.view().courses(self.courses)
         with patch('builtins.input', return_value='all'):
             self.assertEqual(self.view().courses(self.courses), self.courses)
 

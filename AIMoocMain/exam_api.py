@@ -86,6 +86,21 @@ class ExamAPI:
         result = self.request("GET", "/course/exam/record/getStudentRecordByExamId", params={"examId": exam_id, "studentId": self.user_id})
         return checked_list(result)
 
+    def completion_status(self, exam_id):
+        """Read history only: fetching a paper can start an attempt/timer."""
+        if not exam_id:
+            return "unknown"
+        records = self.records(exam_id)
+        if not records:
+            return "not_started"
+        statuses = {str(record.get("status")) for record in records}
+        if "2" in statuses:
+            return "submitted"
+        if statuses == {"0"}:
+            return "draft"
+        # Other codes have no verified completion meaning in our protocol.
+        return "unknown"
+
     def paper(self, exam_id):
         return unwrap_paper(self.request("GET", "/course/exam/paper", params={"id": exam_id, "groupId": 0}))
 

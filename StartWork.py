@@ -46,6 +46,8 @@ def main(view=None):
             view.cancelled = True
         except Exception as exc:
             Logger(__name__).get_log().exception("运行失败")
+            if view.workspace:
+                view.begin_operation()
             view.pending_error = str(exc)
         finally:
             view.finish()

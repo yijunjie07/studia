@@ -1,5 +1,7 @@
 """User-local settings. Credentials never belong in the source checkout."""
 import json
+import hashlib
+from datetime import datetime
 import os
 import tempfile
 from pathlib import Path
@@ -75,6 +77,21 @@ class SettingsStore:
 
     def save_ai(self, config):
         self.set("ai", {"base_url": config.base_url, "model": config.model, "api_key": config.api_key})
+
+    @staticmethod
+    def ai_fingerprint(config):
+        identity = json.dumps([config.endpoint, config.model, config.api_key])
+        return hashlib.sha256(identity.encode()).hexdigest()
+
+    def ai_health(self, config):
+        health = self.get("ai_health", {})
+        if not isinstance(health, dict) or health.get("config") != self.ai_fingerprint(config):
+            return {}
+        return health
+
+    def save_ai_health(self, config, status, message=""):
+        self.set("ai_health", {"config": self.ai_fingerprint(config), "status": status,
+                               "message": message, "checked_at": datetime.now().isoformat(timespec="seconds")})
 
     def session(self, platform):
         data = self.get("session_" + platform)
