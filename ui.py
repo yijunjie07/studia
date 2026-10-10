@@ -395,7 +395,7 @@ class TerminalUI:
             help_parts = (["1,3 / 1-3", f"all 全选 {len(filtered)} 项"] if multiple else ["编号进入"])
             if pages > 1:
                 help_parts.append("n/p 翻页")
-            help_parts += ["/关键词搜索"] + [f"{key} {name}" for key, name in actions.items()]
+            help_parts += ["/ 关键词搜索"] + [f"{key} {name}" for key, name in actions.items()]
             page_rows = filtered[page * theme.PAGE_SIZE:(page + 1) * theme.PAGE_SIZE]
             columns = ["编号", "名称", "详情"]
             if status:
