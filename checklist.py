@@ -2,6 +2,8 @@
 from dataclasses import dataclass
 from typing import Optional
 
+from name_animation import NameAnimation, terminal_color_depth
+
 from prompt_toolkit.application import Application
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout, Window
@@ -32,11 +34,12 @@ def fit(text, width):
 
 
 def choose_many(title, rows, *, selected=(), cursor=1, refresh=False, heading='',
-                extra_headers=(), input=None, output=None):
+                extra_headers=(), account_name='', input=None, output=None):
     """Rows are (label, status, detail, *extras); indexes refer to original rows."""
     checked = {i for i in selected if 0 <= i < len(rows)}
     cursor = min(max(0, cursor), len(rows))
     message = ''
+    animation = NameAnimation()
     keys = KeyBindings()
 
     def finish(event, action=None):
@@ -149,10 +152,18 @@ def choose_many(title, rows, *, selected=(), cursor=1, refresh=False, heading=''
         return fragments
 
     def footer():
-        hint = '↑↓ 移动 · 空格 勾选/取消 · Enter 确认\nEsc 返回 · q 退出'
+        hint = '↑↓ 移动 · 空格 勾选/取消 · Enter 确认'
+        width = app.output.get_size().columns
+        available = width - get_cwidth(hint) - 2
+        fragments = [('', '\n' + hint)]
+        if account_name and available >= 2:
+            name = fit(account_name, available).rstrip()
+            fragments.append(('', ' ' * (width - get_cwidth(hint) - get_cwidth(name))))
+            fragments.extend((f'fg:{color} bold', char) for color, char in animation.colors(name))
+        hint = '\nEsc 返回 · q 退出'
         if refresh:
             hint += ' · r 刷新状态'
-        return [('', '\n' + hint), ('class:warning', '\n' + message if message else '')]
+        return fragments + [('', hint), ('class:warning', '\n' + message if message else '')]
 
     body = Window(FormattedTextControl(content, focusable=True), wrap_lines=False,
                   always_hide_cursor=True, dont_extend_height=True)
@@ -164,7 +175,7 @@ def choose_many(title, rows, *, selected=(), cursor=1, refresh=False, heading=''
     ]), focused_element=body), key_bindings=keys, full_screen=True,
         style=Style.from_dict({'title': 'ansicyan bold', 'columns': 'bold', 'checked': 'ansicyan bold',
                                'cursor': 'bg:ansicyan ansiblack bold', 'warning': 'ansiyellow'}),
-        input=input, output=output)
+        input=input, output=output, color_depth=terminal_color_depth(), refresh_interval=1 / 30 if account_name else None)
     try:
         return app.run()
     except EOFError:

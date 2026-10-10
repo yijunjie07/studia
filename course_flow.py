@@ -52,15 +52,18 @@ class CourseWorkspace:
     def root_action(self, action):
         if action == "s":
             if self.app.manage_settings():
+                self.view.set_user()
                 self.client, self.rows = None, []
                 self.library_state.clear()
         elif action == "t":
             platform = self.view.choose_platform(self.platform)
             if platform != self.platform:
+                self.view.set_user()
                 self.platform = platform
                 self.client, self.rows = None, []
                 self.library_state.clear()
         elif action == "r":
+            self.view.set_user()
             self.client = None
 
     def course_loop(self, courses):

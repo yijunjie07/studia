@@ -48,6 +48,7 @@ class Application:
                 raise Cancelled()
 
     def client_and_courses(self, api_class, login=None, *, choose=True):
+        self.view.set_user()
         platform = "zyk" if api_class is ZYKMoocApi else "mooc"
         saved = self.store.session(platform) if login is None else None
         if saved:
@@ -56,6 +57,7 @@ class Application:
                     client = api_class(access_token=saved["access_token"])
                     rows = self.read_courses(client)
                 self.view.note("已复用本机登录状态。")
+                self.view.set_user(getattr(client, "user_info", None))
                 return client, self.view.courses(rows) if choose else rows
             except AuthenticationExpired:
                 self.store.clear_session(platform)
@@ -67,6 +69,7 @@ class Application:
                 raise PlatformUnavailable("未获取有效的平台登录状态，请重新登录或稍后重试")
             rows = self.read_courses(client)
         self.remember(lambda: self.store.save_session(platform, client))
+        self.view.set_user(getattr(client, "user_info", None))
         return client, self.view.courses(rows) if choose else rows
 
     @staticmethod
@@ -314,4 +317,5 @@ class Application:
                 platform = "mooc" if action == 3 else "zyk"
                 if self.remember(lambda: self.store.clear_session(platform)):
                     login_changed = True
+                    self.view.set_user()
                     self.view.note("已退出本机保存的登录，下次使用该平台时重新登录。")

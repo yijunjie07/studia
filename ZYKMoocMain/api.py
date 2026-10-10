@@ -20,6 +20,7 @@ class ZYKMoocApi(BaseAPIClient):
         self.username = username
         self.password = password
         self.student_id = ''
+        self.user_info = {}
 
         self.token = token  # 如果提供了token，就使用OAuth登录
         self.access_token = None
@@ -82,6 +83,7 @@ class ZYKMoocApi(BaseAPIClient):
 
         # 获取 student_id
         self.student_id = user['userId']
+        self.user_info = user
 
         logging.info("登录成功：%s", user.get("nickName") or user.get("userName") or "当前账号")
 

@@ -19,7 +19,7 @@ class SizedOutput(DummyOutput):
         return Size(rows=18, columns=self.columns)
 
 
-def render(rows, columns, *, extra_headers=(), cursor=1, keys='q'):
+def render(rows, columns, *, extra_headers=(), cursor=1, keys='q', account_name=''):
     screens = []
 
     def application(*args, **kwargs):
@@ -36,6 +36,7 @@ def render(rows, columns, *, extra_headers=(), cursor=1, keys='q'):
         pipe.send_text(keys)
         result = checklist.choose_many('选择任务', rows, cursor=cursor,
                                        extra_headers=extra_headers,
+                                       account_name=account_name,
                                        input=pipe, output=SizedOutput(columns))
     return screens[0], result
 
@@ -45,6 +46,13 @@ def cell_position(line, value):
 
 
 class ChecklistLayoutTests(unittest.TestCase):
+    def test_account_name_appears_once_on_first_footer_line(self):
+        screen, _ = render([('任务', '未作答', '作业')], 80, account_name='张三')
+        matches = [line for line in screen if '张三' in line]
+        self.assertEqual(len(matches), 1)
+        self.assertIn('Enter 确认', matches[0])
+        self.assertTrue(matches[0].endswith('张三'))
+
     def test_headers_and_mixed_length_values_share_fixed_columns(self):
         rows = [
             ('中文标题很长' * 10, '已提交', '作业', '99.5', '9999'),

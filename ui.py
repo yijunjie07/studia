@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import replace
 import getpass
+import io
 import logging
 import math
 import re
@@ -20,6 +21,7 @@ from rich.table import Table, Column
 from rich.text import Text
 
 import theme
+from name_animation import NameAnimation, terminal_color_depth
 from reporting import ProgressEvent
 
 _active_ui = ContextVar("active_terminal_ui", default=None)
@@ -33,10 +35,11 @@ class Back(Exception):
     """Return to the preceding screen without ending the application."""
 
 
-def read_terminal_line(prompt, *, secret=False, input=None, output=None):
+def read_terminal_line(prompt, *, secret=False, input=None, output=None, above_prompt=None):
     """Read a native terminal field with immediate Esc navigation."""
     from prompt_toolkit import PromptSession
     from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.formatted_text import ANSI, to_formatted_text
     from prompt_toolkit.styles import Style
     keys = KeyBindings()
 
@@ -45,8 +48,22 @@ def read_terminal_line(prompt, *, secret=False, input=None, output=None):
         event.app.exit(exception=Back())
 
     session = PromptSession(input=input, output=output, key_bindings=keys,
-                            is_password=secret, style=Style.from_dict({'prompt': 'ansicyan bold'}))
-    return session.prompt([('class:prompt', prompt)])
+                            color_depth=terminal_color_depth(),
+                            is_password=secret, style=Style.from_dict({'input-prompt': 'ansicyan bold'}))
+    def message():
+        fragments = []
+        if above_prompt:
+            width = session.app.output.get_size().columns
+            stream = io.StringIO()
+            console = Console(file=stream, width=width, theme=theme.THEME,
+                              force_terminal=True, color_system="truecolor", no_color=False, highlight=False)
+            for row in above_prompt(width):
+                console.print(row)
+            fragments.extend(to_formatted_text(ANSI(stream.getvalue())))
+        fragments.append(('class:input-prompt', prompt))
+        return fragments
+
+    return session.prompt(message, refresh_interval=1 / 30 if above_prompt else None)
 
 
 def safe_text(value):
@@ -129,6 +146,9 @@ class TerminalUI:
         self.pending_error = ""
         self.cancelled = False
         self.heading = "ICVE AI Assistant"
+        self.account_name = ""
+        self.name_animation = NameAnimation()
+        self._prompt_rows = []
         self.results = []
         self.errors = []
         self.workspace = False
@@ -235,7 +255,10 @@ class TerminalUI:
         self.note("Esc 返回 · q 退出 · 运行时 Ctrl+C 停止")
 
     def note(self, message, level="muted"):
-        if self.live:
+        if self._prompt_rows and not self.live:
+            row = Text(safe_text(message), style=level)
+            self._prompt_rows.append(lambda width: [row])
+        elif self.live:
             self.log(message, "info" if level == "muted" else level)
         else:
             self.console.print(Text(safe_text(message), style=level))
@@ -246,7 +269,9 @@ class TerminalUI:
         suffix = f" [默认 {default}]" if default is not None else ""
         text = f"{prompt}{suffix} {theme.ICONS['prompt']} "
         if self.input_fn is None and self.console.is_terminal and sys.stdin.isatty() and (not secret or self.secret_fn is None):
-            value = read_terminal_line(text, secret=secret)
+            rows, self._prompt_rows = self._prompt_rows, []
+            above = (lambda width: [line for render in rows for line in render(width)]) if rows else None
+            value = read_terminal_line(text, secret=secret, above_prompt=above)
         elif secret:
             value = (self.secret_fn or getpass.getpass)(text)
         else:
@@ -332,6 +357,7 @@ class TerminalUI:
                 live.start()
 
     def table(self, title, columns, rows, help_text=""):
+        self._prompt_rows.clear()
         if self.console.is_terminal:
             self.console.clear()
             self.console.print(Text(self.heading, style="title"))
@@ -348,29 +374,65 @@ class TerminalUI:
         if help_text:
             self.shortcuts(help_text)
 
-    def shortcuts(self, message):
-        """Keep controls outside border styling and wrap between complete hints."""
-        line = Text(style="info")
-        for part in safe_text(message).split(" · "):
-            if line and cell_len(line.plain) + 3 + cell_len(part) > self.console.width:
+    def set_user(self, user=None):
+        """Display names only; never substitute login IDs or phone numbers."""
+        self._prompt_rows.clear()
+        self.account_name = ""
+        if isinstance(user, dict):
+            for key in ("displayName", "realName", "nickName"):
+                value = user.get(key)
+                if isinstance(value, str) and value.strip():
+                    self.account_name = " ".join(safe_text(value).split())
+                    if self.account_name:
+                        break
+
+    def shortcuts(self, message, *, show_name=True):
+        """Let the input renderer own animated rows, so it also owns the cursor."""
+        if self.account_name and self.input_fn is None and self.console.is_terminal and sys.stdin.isatty():
+            self._prompt_rows.append(lambda width: self._shortcut_lines(message, width, show_name, animated=True))
+        else:
+            for line in self._shortcut_lines(message, self.console.width, show_name):
                 self.console.print(line)
+
+    def _shortcut_lines(self, message, width, show_name, animated=False):
+        lines = []
+        line = Text(style="info")
+        name_space = min(cell_len(self.account_name), 12) + 2 if show_name and self.account_name else 0
+        first_width = max(width // 2, width - name_space) if cell_len(safe_text(message)) > width else width
+        for part in safe_text(message).split(" · "):
+            if line and cell_len(line.plain) + 3 + cell_len(part) > (width if lines else first_width):
+                lines.append(line)
                 line = Text(style="info")
             if line:
                 line.append(" · ")
             key, separator, label = ("/", "", part[1:]) if part.startswith("/") else part.partition(" ")
             line.append(key, style="shortcut")
             line.append(separator + label)
-        self.console.print(line)
+        lines.append(line)
+        line = lines[0]
+        available = width - cell_len(line.plain) - 2
+        if show_name and self.account_name and available >= 2:
+            name = Text(self.account_name, style="info", no_wrap=True)
+            name.truncate(available, overflow="ellipsis")
+            if animated:
+                for index, (color, _) in enumerate(self.name_animation.colors(name.plain)):
+                    name.stylize(f"bold {color}", index, index + 1)
+            line.append(" " * (width - cell_len(line.plain) - cell_len(name.plain)))
+            line.append_text(name)
+        return lines
 
     def choice(self, title, choices, default=None, help_text=""):
-        self.table(title, ["编号", "选项", "说明"],
-                   [(str(key), name, description) for key, name, description in choices], help_text)
         values = {str(key): key for key, _, _ in choices}
+        warning = ""
         while True:
+            self.table(title, ["编号", "选项", "说明"],
+                       [(str(key), name, description) for key, name, description in choices], help_text)
+            if warning:
+                self.note(warning, "warning")
             value = self.ask("选择", default)
             if value in values:
                 return values[value]
-            self.note("请输入编号；Esc 返回，q 退出。", "warning")
+            warning = "请输入编号；Esc 返回，q 退出。"
 
     def select(self, title, items, label, details=None, default=None, *,
                multiple=True, actions=None, filters=None, state=None, selected=None, status=None,
@@ -386,6 +448,7 @@ class TerminalUI:
                      safe_text(details(item)) if details else "",
                      *(safe_text(value(item)) for _, value in extra_columns)) for item in items]
             result = choose_many(safe_text(title), rows, heading=self.heading,
+                                 account_name=self.account_name,
                                  selected=[i for i, item in enumerate(items) if selected and item in selected],
                                  cursor=state.get("cursor", 1), refresh="r" in actions,
                                  extra_headers=[name for name, _ in extra_columns])
@@ -429,7 +492,7 @@ class TerminalUI:
                        " · ".join(help_parts))
             if filters:
                 self.shortcuts(" · ".join(f"{key} {name}" + (" ✓" if key == category else "")
-                                     for key, (name, _) in filters.items()))
+                                     for key, (name, _) in filters.items()), show_name=False)
             if query:
                 self.note(f"搜索：{query} · / 清除搜索")
             visible = {row[0] for row in filtered}
@@ -437,7 +500,7 @@ class TerminalUI:
             effective_default = "保留" if retained else default
             if retained:
                 self.note(f"已选 {len(retained)} 项 · 回车保留")
-            self.shortcuts("Esc 返回 · q 退出")
+            self.shortcuts("Esc 返回 · q 退出", show_name=False)
             raw = self.ask("选择编号", effective_default)
             if raw.lower() in actions:
                 return raw.lower()
