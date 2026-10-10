@@ -196,7 +196,7 @@ class ObservationTests(unittest.TestCase):
         course = {"id": "ci", "courseId": "c", "courseName": "课程"}
         selected = [(course, {"id": "a", "name": "A"}, 1), (course, {"id": "b", "name": "B"}, 1)]
         store = Mock()
-        store.ai_config.return_value = None
+        store.ai_config.return_value = Mock(model='test-model')
         app = Application(ui, store=store)
         runner = Mock(reused=True)
         runner.run_paper.return_value = {"status": "submission_unknown", "paper": "A"}

@@ -87,7 +87,7 @@ class ManualAnswerTests(unittest.TestCase):
                 self.assertEqual(view.manual_answer(question(6), ""), text)
 
     def test_live_is_paused_during_input_and_restored_on_answer_or_cancel(self):
-        for value, expected in (("b", "B"), (":q", None), (EOFError(), None), (KeyboardInterrupt(), None)):
+        for value, expected in (("b", "B"), ("\x1b", None), (":q", None), (EOFError(), None), (KeyboardInterrupt(), None)):
             with self.subTest(value=value):
                 view, output = make_view([])
                 with view.activity("正在答题"):
@@ -138,7 +138,7 @@ class CompactReviewTests(unittest.TestCase):
         self.assertEqual(result, (True, .8))
         self.assertEqual(checks, [True])
         rendered = output.getvalue()
-        for shortcut in ("回车开始", "s 修改设置", "t 测试连接", "b 返回选择", "q 退出"):
+        for shortcut in ("回车开始", "s 答题设置", "t 测试连接", "Esc 返回选择", "q 退出"):
             self.assertIn(shortcut, rendered)
         self.assertIn("通过", rendered)
         for clutter in ("ai_results/", "12:34:56", "题干和选项将发送", "开始前自动测试", "secret"):

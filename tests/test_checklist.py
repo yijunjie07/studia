@@ -41,6 +41,7 @@ class ChecklistTests(unittest.TestCase):
         self.assertEqual(result.cursor, 2)
 
     def test_back_and_quit_are_distinct(self):
+        self.assertEqual(self.choose('\x1b').action, 'back')
         self.assertEqual(self.choose('b').action, 'back')
         self.assertEqual(self.choose('q').action, 'quit')
         self.assertEqual(self.choose('\x03').action, 'quit')
@@ -71,7 +72,7 @@ class ChecklistTests(unittest.TestCase):
             native = partial(checklist.choose_many, input=pipe, output=DummyOutput())
             with patch('checklist.choose_many', side_effect=native), \
                  patch('sys.stdin.isatty', return_value=True), \
-                 patch('builtins.input', return_value='q'), \
+                 patch('ui.read_terminal_line', return_value='q'), \
                  patch.object(app, 'task_catalog', side_effect=[initial, updated]):
                 with self.assertRaises(Cancelled):
                     CourseWorkspace(app).tasks([course], 2, state)

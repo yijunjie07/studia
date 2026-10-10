@@ -2,8 +2,10 @@
 import json
 import hashlib
 from datetime import datetime
+from dataclasses import dataclass
 import os
 import tempfile
+from uuid import uuid4
 from pathlib import Path
 
 from ai.client import AIConfig
@@ -11,6 +13,13 @@ from ai.client import AIConfig
 
 class SettingsError(RuntimeError):
     pass
+
+
+@dataclass
+class ModelProfile:
+    id: str
+    config: AIConfig
+    active: bool = False
 
 
 def config_directory():
@@ -47,6 +56,9 @@ class SettingsStore:
             data.pop(key, None)
         else:
             data[key] = value
+        self._write(data)
+
+    def _write(self, data):
         data["version"] = 1
         temporary = None
         try:
@@ -64,19 +76,91 @@ class SettingsStore:
             if temporary and os.path.exists(temporary):
                 os.unlink(temporary)
 
-    def ai_config(self):
-        data = self.get("ai")
-        if data is None:
-            return None
+    def _profiles(self, data):
+        """Validate or expose legacy data without writing during a read."""
         try:
-            if not isinstance(data, dict):
+            profiles = data.get("ai_profiles")
+            if profiles is None:
+                old = data.get("ai")
+                if old is None:
+                    return {"active_id": None, "items": []}
+                profiles = {"active_id": "legacy", "items": [dict(old, id="legacy",
+                              health=data.get("ai_health", {}))]}
+            if not isinstance(profiles, dict) or not isinstance(profiles.get("items"), list):
                 raise ValueError()
-            return AIConfig(data["base_url"], data["model"], data["api_key"])
+            ids = set()
+            for item in profiles["items"]:
+                if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"] or item["id"] in ids:
+                    raise ValueError()
+                ids.add(item["id"])
+                AIConfig(item["base_url"], item["model"], item["api_key"])
+            if profiles.get("active_id") is not None and profiles["active_id"] not in ids:
+                raise ValueError()
+            return profiles
         except (KeyError, TypeError, ValueError, AttributeError):
-            raise SettingsError("保存的 AI 配置无效，请在本机设置中重新配置或清除") from None
+            raise SettingsError("保存的模型配置无效，原文件未修改，请检查本机配置") from None
+
+    def _save_profiles(self, data, profiles):
+        data["ai_profiles"] = profiles
+        data.pop("ai", None)
+        data.pop("ai_health", None)
+        self._write(data)
+
+    @staticmethod
+    def _profile_item(profiles, profile_id):
+        item = next((item for item in profiles["items"] if item["id"] == profile_id), None)
+        if item is None:
+            raise SettingsError("模型配置已不存在，请重新选择")
+        return item
+
+    def ai_profiles(self):
+        profiles = self._profiles(self._read())
+        return [ModelProfile(item["id"], AIConfig(item["base_url"], item["model"], item["api_key"]),
+                             profiles.get("active_id") == item["id"]) for item in profiles["items"]]
+
+    def ai_config(self):
+        return next((profile.config for profile in self.ai_profiles() if profile.active), None)
+
+    def save_ai_profile(self, config, profile_id=None):
+        data = self._read()
+        profiles = self._profiles(data)
+        if profile_id is None:
+            profile_id = uuid4().hex
+            item = {"id": profile_id}
+            if not profiles["items"]:
+                profiles["active_id"] = profile_id
+            profiles["items"].append(item)
+        else:
+            item = self._profile_item(profiles, profile_id)
+        item.update(base_url=config.base_url, model=config.model, api_key=config.api_key)
+        health = item.get("health", {})
+        if not isinstance(health, dict) or health.get("config") != self.ai_fingerprint(config):
+            item.pop("health", None)
+        self._save_profiles(data, profiles)
+        return profile_id
+
+    def activate_ai_profile(self, profile_id):
+        data = self._read()
+        profiles = self._profiles(data)
+        self._profile_item(profiles, profile_id)
+        profiles["active_id"] = profile_id
+        self._save_profiles(data, profiles)
+
+    def delete_ai_profile(self, profile_id):
+        data = self._read()
+        profiles = self._profiles(data)
+        profiles["items"].remove(self._profile_item(profiles, profile_id))
+        if profiles.get("active_id") == profile_id:
+            profiles["active_id"] = None
+        self._save_profiles(data, profiles)
+
+    def clear_ai(self):
+        data = self._read()
+        self._save_profiles(data, {"active_id": None, "items": []})
 
     def save_ai(self, config):
-        self.set("ai", {"base_url": config.base_url, "model": config.model, "api_key": config.api_key})
+        current = next((profile.id for profile in self.ai_profiles() if profile.active), None)
+        return self.save_ai_profile(config, current)
 
     @staticmethod
     def ai_fingerprint(config):
@@ -84,14 +168,23 @@ class SettingsStore:
         return hashlib.sha256(identity.encode()).hexdigest()
 
     def ai_health(self, config):
-        health = self.get("ai_health", {})
-        if not isinstance(health, dict) or health.get("config") != self.ai_fingerprint(config):
-            return {}
-        return health
+        profiles = self._profiles(self._read())
+        for item in profiles["items"]:
+            health = item.get("health", {})
+            if isinstance(health, dict) and health.get("config") == self.ai_fingerprint(config):
+                return health
+        return {}
 
     def save_ai_health(self, config, status, message=""):
-        self.set("ai_health", {"config": self.ai_fingerprint(config), "status": status,
-                               "message": message, "checked_at": datetime.now().isoformat(timespec="seconds")})
+        data = self._read()
+        profiles = self._profiles(data)
+        fingerprint = self.ai_fingerprint(config)
+        for item in profiles["items"]:
+            stored = AIConfig(item["base_url"], item["model"], item["api_key"])
+            if self.ai_fingerprint(stored) == fingerprint:
+                item["health"] = {"config": fingerprint, "status": status, "message": message,
+                                  "checked_at": datetime.now().isoformat(timespec="seconds")}
+        self._save_profiles(data, profiles)
 
     def session(self, platform):
         data = self.get("session_" + platform)

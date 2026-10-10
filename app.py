@@ -81,10 +81,54 @@ class Application:
         if config is not None:
             self.view.note(f"AI：{config.model} · {self.ai_status_text(config)}")
             return config
-        config = self.view.ai_config()
-        if self.remember(lambda: self.store.save_ai(config)):
-            self.view.note("AI 配置已保存；尚未测试连接，执行前会自动检查。")
+        config = self.manage_models()
+        if config is None:
+            from ui import Back
+            raise Back()
         return config
+
+    def manage_models(self):
+        """One picker from settings and summaries; only saved configs can activate."""
+        from ui import Back
+        cursor_id, message = None, ""
+        while True:
+            profiles = self.store.ai_profiles()
+            active_id = next((profile.id for profile in profiles if profile.active), None)
+            rows = []
+            for profile in profiles:
+                health = self.store.ai_health(profile.config)
+                status = {"ok": "✓ 上次通过", "error": "× 失败"}.get(health.get("status"), "? 未测试")
+                service = profile.config.base_url.split("://", 1)[-1]
+                rows.append((profile.id, profile.config.model, service, status))
+            try:
+                choice = self.view.model_picker(rows, active_id, cursor_id=cursor_id, message=message)
+                if choice.action == "back":
+                    return self.store.ai_config()
+                cursor_id = choice.profile_id
+                if choice.action == "select":
+                    self.store.activate_ai_profile(choice.profile_id)
+                    return self.store.ai_config()
+                current = next((p.config for p in profiles if p.id == choice.profile_id), None)
+                while True:
+                    result = self.view.model_editor(current)
+                    if result.action == "delete":
+                        try:
+                            if self.view.confirm("删除这份模型配置", default=False):
+                                self.store.delete_ai_profile(choice.profile_id)
+                                cursor_id, message = None, "已删除"
+                        except Back:
+                            continue
+                    elif result.action == "save":
+                        cursor_id = self.store.save_ai_profile(result.config, choice.profile_id)
+                        message = self.test_ai_connection(result.config)
+                    break
+                if message:
+                    self.view.note(message)
+            except Back:
+                continue
+            except SettingsError as exc:
+                message = str(exc)
+                self.view.note(message, "error")
 
     def ai_status_text(self, config=None):
         try:
@@ -248,21 +292,18 @@ class Application:
                 return login_changed
             if action == 1:
                 try:
-                    try:
-                        current = self.store.ai_config()
-                    except SettingsError:
-                        current = None
-                    config = self.view.ai_config(current)
-                except Back:
-                    continue
-                if self.remember(lambda: self.store.save_ai(config)):
-                    self.view.note("AI 配置已保存；选择 5 测试连接。")
+                    self.manage_models()
+                except SettingsError as exc:
+                    self.view.note(str(exc), "error")
             elif action == 2:
-                if self.remember(lambda: self.store.set("ai", None)):
+                if self.remember(self.store.clear_ai):
                     self.view.note("已清除本机 AI 配置。")
             elif action == 5:
                 self.view.note(self.test_ai_connection())
-                self.view.ask("回车返回设置")
+                try:
+                    self.view.ask("回车或 Esc 返回设置")
+                except Back:
+                    pass
             elif action in (3, 4):
                 platform = "mooc" if action == 3 else "zyk"
                 if self.remember(lambda: self.store.clear_session(platform)):

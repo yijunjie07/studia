@@ -33,6 +33,22 @@ class Back(Exception):
     """Return to the preceding screen without ending the application."""
 
 
+def read_terminal_line(prompt, *, secret=False, input=None, output=None):
+    """Read a native terminal field with immediate Esc navigation."""
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.styles import Style
+    keys = KeyBindings()
+
+    @keys.add('escape')
+    def back(event):
+        event.app.exit(exception=Back())
+
+    session = PromptSession(input=input, output=output, key_bindings=keys,
+                            is_password=secret, style=Style.from_dict({'prompt': 'ansicyan bold'}))
+    return session.prompt([('class:prompt', prompt)])
+
+
 def safe_text(value):
     # Treat course names, model text and exceptions as literal, untrusted text.
     value = re.sub(r"\x1b\][^\x07]*(?:\x07|\x1b\\)", "", str(value))
@@ -201,7 +217,7 @@ class TerminalUI:
         self.console.print(Panel(Text.assemble(("ICVE AI Assistant", "title"),
                                               (f"  {version}\n智慧职教 AI 助手", "muted")),
                                  box=theme.BORDER, border_style="border"))
-        self.note("b 返回 · q 退出 · 运行时 Ctrl+C 停止")
+        self.note("Esc 返回 · q 退出 · 运行时 Ctrl+C 停止")
 
     def note(self, message, level="muted"):
         if self.live:
@@ -214,11 +230,15 @@ class TerminalUI:
             raise RuntimeError("输入必须在动态任务区域之外进行")
         suffix = f" [默认 {default}]" if default is not None else ""
         text = f"{prompt}{suffix} {theme.ICONS['prompt']} "
-        if secret:
+        if self.input_fn is None and self.console.is_terminal and sys.stdin.isatty() and (not secret or self.secret_fn is None):
+            value = read_terminal_line(text, secret=secret)
+        elif secret:
             value = (self.secret_fn or getpass.getpass)(text)
         else:
             self.console.print(Text(text, style="accent"), end="")
             value = (self.input_fn or input)()
+        if value == "\x1b":
+            raise Back()
         if navigation and not secret and value.strip().lower() == "q":
             raise Cancelled()
         if navigation and not secret and value.strip().lower() == "b":
@@ -257,7 +277,7 @@ class TerminalUI:
             self.note(question["title"], "info")
             for option in question.get("options", []):
                 self.note(f"{option['label']}. {option['text']}", "info")
-            self.shortcuts(":q 暂停并保存")
+            self.shortcuts("Esc 返回 · 已答题目会保留")
 
             kind = question["type_id"]
             hints = {1: "输入选项字母，如 B", 2: "输入多个选项，如 AC 或 A,C",
@@ -289,7 +309,7 @@ class TerminalUI:
                     self.note("答案无效，请按提示重新输入。", "warning")
                     continue
                 return answer
-        except (Cancelled, EOFError, KeyboardInterrupt):
+        except (Back, Cancelled, EOFError, KeyboardInterrupt):
             return None
         finally:
             if live:
@@ -335,7 +355,7 @@ class TerminalUI:
             value = self.ask("选择", default)
             if value in values:
                 return values[value]
-            self.note("请输入编号；b 返回，q 退出。", "warning")
+            self.note("请输入编号；Esc 返回，q 退出。", "warning")
 
     def select(self, title, items, label, details=None, default=None, *,
                multiple=True, actions=None, filters=None, state=None, selected=None, status=None,
@@ -402,7 +422,7 @@ class TerminalUI:
             effective_default = "保留" if retained else default
             if retained:
                 self.note(f"已选 {len(retained)} 项 · 回车保留")
-            self.shortcuts("b 返回 · q 退出")
+            self.shortcuts("Esc 返回 · q 退出")
             raw = self.ask("选择编号", effective_default)
             if raw.lower() in actions:
                 return raw.lower()
@@ -440,19 +460,19 @@ class TerminalUI:
         choices = [(1, "继续学习", "处理课程学习进度")]
         if platform == 0:
             choices += [(2, "导出题目", "保存平台已有题目和答案"), (3, "AI 答题", "生成报告或当次选择交卷")]
-        return self.choice(title, choices, help_text="b 返回课程列表 · q 退出")
+        return self.choice(title, choices, help_text="Esc 返回课程列表 · q 退出")
 
     def choose_platform(self, current):
         return self.choice("切换平台", [(0, "MOOC / AI 优课", "ai.icve.com.cn"),
                                         (1, "资源库", "zyk.icve.com.cn")], default=current,
-                           help_text="b 返回 · q 退出")
+                           help_text="Esc 返回 · q 退出")
 
     def connection_problem(self, error):
         from MoocMain.log import redact
         return self.choice("尚未连接平台", [("r", "重试登录 / 读取课程", ""),
                                             ("s", "本机设置", "修改配置或退出已保存的登录"),
                                             ("t", "切换平台", "")],
-                           help_text=redact(str(error)) or "b 返回 · q 退出")
+                           help_text=redact(str(error)) or "Esc 返回 · q 退出")
 
     def empty_tasks(self):
         self.table("课程任务", ["任务", "状态"], [("当前课程", "暂无作业、考试或测验")])
@@ -460,9 +480,9 @@ class TerminalUI:
 
     def review_study(self, courses):
         self.table("继续学习", ["课程", "操作"], [(c.get("courseName", "未知课程"), "处理学习进度") for c in courses],
-                   "回车开始 · b 返回 · q 退出")
+                   "回车开始 · Esc 返回 · q 退出")
         while self.ask("操作", "开始") != "开始":
-            self.note("回车开始；b 返回，q 退出。")
+            self.note("回车开始；Esc 返回，q 退出。")
 
     def courses(self, rows):
         return self.select("选择课程", rows, lambda x: x.get("courseName", "未知课程"), self.course_details)
@@ -491,7 +511,7 @@ class TerminalUI:
                 if step == "provider":
                     provider = self.choice("AI 服务", [(1, "自定义接口", "兼容 OpenAI Chat Completions"),
                                                         (2, "DeepSeek", "填写 Key 并选择模型")], default=provider,
-                                           help_text="b 返回 · q 退出")
+                                           help_text="Esc 返回 · q 退出")
                     if provider == 2 and url != "https://api.deepseek.com":
                         url, model = "https://api.deepseek.com", None
                     step = "url" if provider == 1 else "model"
@@ -528,6 +548,53 @@ class TerminalUI:
             except ValueError as exc:
                 self.note(str(exc), "warning")
                 step = "url" if provider == 1 else "model"
+
+    def model_picker(self, rows, active_id=None, *, cursor_id=None, message=""):
+        from model_ui import choose_model, ModelChoice
+        rows = [(row[0], *(safe_text(value) for value in row[1:])) for row in rows]
+        if self.input_fn is None and self.console.is_terminal and sys.stdin.isatty():
+            return choose_model(rows, active_id, cursor_id=cursor_id, message=safe_text(message))
+        self.table("选择模型", ["编号", "模型", "接口", "状态"],
+                   [(str(i), ("● " if row[0] == active_id else "○ ") + row[1], row[2], row[3])
+                    for i, row in enumerate(rows, 1)], "编号 使用 · a 添加 · e 编号 编辑 · Esc 返回")
+        if message:
+            self.note(message)
+        while True:
+            try:
+                value = self.ask("模型")
+            except Back:
+                return ModelChoice("back")
+            if value == "a":
+                return ModelChoice("add")
+            action, index = ("edit", value[1:].strip()) if value.startswith("e") else ("select", value)
+            if index.isdigit() and 1 <= int(index) <= len(rows):
+                return ModelChoice(action, rows[int(index) - 1][0])
+            self.note("请输入模型编号，或 a 添加、e 编号编辑。", "warning")
+
+    def model_editor(self, current=None):
+        from model_ui import edit_model, draft_config, ModelEdit
+        if self.input_fn is None and self.console.is_terminal and sys.stdin.isatty():
+            return edit_model(current)
+        url, model = (current.base_url, current.model) if current else ("", "")
+        try:
+            if current:
+                action = self.choice("编辑模型", [(1, "编辑", ""), (2, "删除", "")], default=1)
+                if action == 2:
+                    return ModelEdit("delete")
+            while True:
+                url = self.ask("接口地址", url)
+                model = self.ask("模型名称", model)
+                key = self.ask("API Key（隐藏输入，留空保留原 Key）" if current else "API Key", secret=True)
+                try:
+                    config = draft_config(url, model, key, current)
+                except ValueError as exc:
+                    self.note(str(exc), "warning")
+                    continue
+                if self.confirm("保存并测试", default=True):
+                    return ModelEdit("save", config)
+                return ModelEdit("back")
+        except Back:
+            return ModelEdit("back")
 
     def confidence(self, default=0.8):
         if not isinstance(default, (int, float)) or not math.isfinite(default) or not 0 <= default <= 1:
@@ -604,7 +671,7 @@ class TerminalUI:
             self.note("本次没有处理任务。")
         for path in dict.fromkeys(str(p) for p in paths):
             self.note(f"文件：{path}")
-        self.note("回车返回本课程 · 2 切换课程 · b 返回本课程 · q 退出")
+        self.note("回车返回本课程 · 2 切换课程 · Esc 返回本课程 · q 退出")
         while True:
             try:
                 action = self.ask("继续", "1")
@@ -619,7 +686,7 @@ class TerminalUI:
         for course, item, _ in selected[:5]:
             self.note(f"  {course.get('courseName', '')} / {paper_display_name(item)}")
         if len(selected) > 5:
-            self.note(f"  … 共 {len(selected)} 份，b 返回查看或修改选择")
+            self.note(f"  … 共 {len(selected)} 份，Esc 返回查看或修改选择")
 
     def review_export(self, selected, options):
         if options.get("export_format") not in ("md", "docx", "both"):
@@ -635,7 +702,7 @@ class TerminalUI:
                 ("保存位置", "tiku/<课程名>/"),
             ])
             self.selected_task_note(selected)
-            self.note("回车开始 · s 修改设置 · b 返回选择 · q 退出")
+            self.note("回车开始 · s 修改设置 · Esc 返回选择 · q 退出")
             action = self.ask("操作", "开始")
             if action == "开始":
                 return options
@@ -648,7 +715,7 @@ class TerminalUI:
                 action = self.choice("导出设置", [(1, "文件格式", "Markdown / Word"),
                                                   (2, "文件组织", "分开保存或按课程合并"),
                                                   (3, "历史答案", "是否包含我的已有作答")],
-                                     help_text="b 返回摘要 · q 退出")
+                                     help_text="Esc 返回摘要 · q 退出")
             except Back:
                 return
             try:
@@ -666,7 +733,8 @@ class TerminalUI:
             except Back:
                 continue
 
-    def review_ai(self, selected, config, options, check_connection=None):
+    def review_ai(self, selected, config, options, check_connection=None, manage_models=None, connection_status=None):
+        options["config"] = config
         options.setdefault("auto_submit", True)
         value = options.get("threshold", .8)
         options["threshold"] = value if isinstance(value, (float, int)) and math.isfinite(value) and 0 <= value <= 1 else .8
@@ -674,27 +742,35 @@ class TerminalUI:
             connection = str(options.get("connection_status", ""))
             connection = "连接失败" if "失败" in connection else "已通过" if "通过" in connection else "未测试"
             self.table(f"AI 答题 · {len(selected)} 份任务", ["设置", "当前值"], [
-                ("模型", config.model),
+                ("模型", config.model if config else "未选择"),
                 ("连接状态", connection),
                 ("执行方式", "通过校验后自动交卷" if options["auto_submit"] else "仅生成答案（不交卷，无成绩）"),
                 ("最低置信度", str(options["threshold"])),
             ])
             self.selected_task_note(selected)
-            self.shortcuts("回车开始 · s 修改设置 · " + ("t 测试连接 · " if check_connection else "") + "b 返回选择 · q 退出")
+            self.shortcuts("回车开始 · " + ("m 模型配置 · " if manage_models else "") +
+                           "s 答题设置 · " + ("t 测试连接 · " if check_connection else "") + "Esc 返回选择 · q 退出")
             action = self.ask("操作", "开始")
             if action == "开始":
+                if config is None:
+                    self.note("请按 m 选择模型。", "warning")
+                    continue
                 return options["auto_submit"], options["threshold"]
             if action.lower() == "s":
                 self.edit_answer_options(options)
             if action.lower() == "t" and check_connection:
                 options["connection_status"] = check_connection()
+            if action.lower() == "m" and manage_models:
+                config = manage_models()
+                options["config"] = config
+                options["connection_status"] = connection_status(config) if connection_status else "未测试"
 
     def edit_answer_options(self, options):
         while True:
             try:
                 action = self.choice("AI 答题设置", [(1, "执行方式", "仅本次操作有效"),
                                                     (2, "最低置信度", "模型自报值不代表正确率")],
-                                     help_text="b 返回摘要 · q 退出")
+                                     help_text="Esc 返回摘要 · q 退出")
             except Back:
                 return
             try:
@@ -783,9 +859,8 @@ class TerminalUI:
 
     def settings_menu(self, path, ai_status="已配置 · 未测试"):
         return self.choice("本机设置", [
-            (1, "配置 AI 服务", ai_status),
+            (1, "模型配置", "添加、编辑、切换 · " + ai_status),
             (5, "测试 AI 连接", "发送一条短测试消息，验证 Key、模型和接口"),
-            (2, "清除 AI 配置", "删除已保存的 URL、模型和 Key"),
             (3, "退出 MOOC 登录", "下次打开浏览器重新登录，可切换账号"),
             (4, "退出资源库登录", "不影响 MOOC 登录"),
             (0, "返回", "回到功能选择"),

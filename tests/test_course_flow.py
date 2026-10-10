@@ -203,7 +203,7 @@ class WorkspaceTests(unittest.TestCase):
 
     def test_back_from_ai_summary_preserves_selected_papers(self):
         catalog = [(COURSES[0], {"id": "a", "name": "第一章"}, 3)]
-        _, text, _, runner = self.run_workspace(["1", "3", "1", "b", "", "", "", "q"], catalog)
+        _, text, _, runner = self.run_workspace(["1", "3", "1", "\x1b", "", "", "", "q"], catalog)
         self.assertIn("回车保留", text)
         self.assertEqual(runner.return_value.run_paper.call_count, 1)
 
@@ -227,7 +227,7 @@ class WorkspaceTests(unittest.TestCase):
         self.assertNotIn("bad JSON", text)
 
     def test_settings_logout_invalidates_live_client(self):
-        _, text, _, _ = self.run_workspace(["s", "3", "b", "q"])
+        _, text, _, _ = self.run_workspace(["s", "3", "\x1b", "q"])
         self.assertIsNone(self.store.session("mooc"))
         self.assertTrue("登录" in text)
 

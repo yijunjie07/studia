@@ -15,6 +15,7 @@ from ai.client import AIConfig
 from app import Application
 from settings import SettingsStore, SettingsError
 from ui import TerminalUI
+from model_ui import ModelChoice, ModelEdit
 from base.auth import AuthenticationExpired, PlatformUnavailable, authenticated_get
 from AIMoocMain.api import AIMoocApi
 from ZYKMoocMain.api import ZYKMoocApi
@@ -65,18 +66,21 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(self.store.path.read_text(), "secret-key BROKEN")
 
     def test_first_ai_configuration_saved_then_reused_without_prompt(self):
-        with patch.object(self.ui, "ai_config", return_value=self.config) as prompt:
+        with patch.object(self.ui, "model_picker", side_effect=[ModelChoice('add'), ModelChoice('back')]), \
+             patch.object(self.ui, "model_editor", return_value=ModelEdit('save', self.config)), \
+             patch('app.AIClient.check_connection', return_value=None):
             self.assertEqual(self.app.ai_configuration(), self.config)
             restarted = Application(self.ui, SettingsStore(self.store.directory))
             self.assertEqual(restarted.ai_configuration(), self.config)
-            prompt.assert_called_once()
         self.assertNotIn("secret-key", self.output.getvalue())
 
-    def test_storage_failure_does_not_stop_current_ai_config(self):
-        with patch.object(self.ui, "ai_config", return_value=self.config), \
-             patch.object(self.store, "save_ai", side_effect=SettingsError("无法保存")):
-            self.assertEqual(self.app.ai_configuration(), self.config)
-        self.assertIn("未持久化", self.output.getvalue())
+    def test_storage_failure_keeps_previously_saved_model_usable(self):
+        self.store.save_ai(self.config)
+        with patch.object(self.ui, "model_picker", side_effect=[ModelChoice('add'), ModelChoice('back')]), \
+             patch.object(self.ui, "model_editor", return_value=ModelEdit('save', self.config)), \
+             patch.object(self.store, "save_ai_profile", side_effect=SettingsError("无法保存")):
+            self.assertEqual(self.app.manage_models(), self.config)
+        self.assertIn("无法保存", self.output.getvalue())
 
     def client(self):
         client = Mock(access_token="new-secret")

@@ -145,7 +145,10 @@ class CourseWorkspace:
                     answer_options["connection_status"] = self.app.ai_status_text(config)
                     auto_submit, threshold = self.view.review_ai(
                         selected, config, answer_options,
-                        check_connection=lambda: self.app.test_ai_connection(config))
+                        check_connection=lambda: self.app.test_ai_connection(answer_options.get("config")),
+                        manage_models=self.app.manage_models,
+                        connection_status=self.app.ai_status_text)
+                    config = answer_options["config"]
                     self.app.remember(lambda: self.store.set("confidence", threshold))
                     def answer():
                         results = self.app.execute_ai(self.client, selected, config, auto_submit, threshold)
