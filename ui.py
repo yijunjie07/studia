@@ -421,12 +421,14 @@ class TerminalUI:
             line.append_text(name)
         return lines
 
-    def choice(self, title, choices, default=None, help_text=""):
+    def choice(self, title, choices, default=None, help_text="", *, message=""):
         values = {str(key): key for key, _, _ in choices}
         warning = ""
         while True:
             self.table(title, ["编号", "选项", "说明"],
                        [(str(key), name, description) for key, name, description in choices], help_text)
+            if message:
+                self.note(message)
             if warning:
                 self.note(warning, "warning")
             value = self.ask("选择", default)
@@ -943,14 +945,14 @@ class TerminalUI:
                                                   (2, "答题并自动交卷", "全部题目通过校验后提交")], default=2)
         return mode == 2, self.confidence(confidence_default)
 
-    def settings_menu(self, path, ai_status="已配置 · 未测试"):
+    def settings_menu(self, path, ai_status="已配置 · 未测试", *, message=""):
         return self.choice("本机设置", [
             (1, "模型配置", "添加、编辑、切换 · " + ai_status),
             (5, "测试 AI 连接", "发送一条短测试消息，验证 Key、模型和接口"),
-            (3, "退出 MOOC 登录", "下次打开浏览器重新登录，可切换账号"),
+            (3, "退出 MOOC 登录", "当前平台退出后立即重新登录，可切换账号"),
             (4, "退出资源库登录", "不影响 MOOC 登录"),
             (0, "返回", "回到功能选择"),
-        ], default=0, help_text=f"配置含凭证，请勿分享：{path}")
+        ], default=0, help_text=f"配置含凭证，请勿分享：{path}", message=message)
 
     def plan(self, name, courses, options=None):
         self.note(f"准备开始：{name} · {len(courses)} 门课程", "accent")

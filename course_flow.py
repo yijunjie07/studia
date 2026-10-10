@@ -51,7 +51,7 @@ class CourseWorkspace:
 
     def root_action(self, action):
         if action == "s":
-            if self.app.manage_settings():
+            if self.app.manage_settings(current_platform="zyk" if self.platform == 1 else "mooc"):
                 self.view.set_user()
                 self.client, self.rows = None, []
                 self.library_state.clear()

@@ -140,6 +140,77 @@ class PersistenceTests(unittest.TestCase):
         self.assertIsNone(self.store.session("mooc"))
         self.assertIsNotNone(self.store.session("zyk"))
 
+    def test_logout_returns_immediately_without_escape(self):
+        self.store.save_session("mooc", Mock(access_token="m"))
+        self.ui.set_user({'displayName': '张三'})
+        self.ui.input_fn = Mock(side_effect=['3', 'q'])
+        self.assertTrue(self.app.manage_settings())
+        self.assertIsNone(self.store.session('mooc'))
+        self.assertEqual(self.ui.account_name, '')
+        self.assertIn('正在打开浏览器', self.output.getvalue())
+
+    def test_other_platform_logout_keeps_current_identity_and_visible_notice(self):
+        from course_flow import CourseWorkspace
+        self.store.save_session('mooc', Mock(access_token='m'))
+        self.store.save_session('zyk', Mock(access_token='z'))
+        self.ui.set_user({'displayName': '张三'})
+        workspace = CourseWorkspace(self.app)
+        client = workspace.client = object()
+        workspace.rows = [{'courseName': '当前课程'}]
+        self.ui.input_fn = Mock(side_effect=['4', '0'])
+        workspace.root_action('s')
+        self.assertIs(workspace.client, client)
+        self.assertEqual(self.ui.account_name, '张三')
+        self.assertIsNotNone(self.store.session('mooc'))
+        self.assertIsNone(self.store.session('zyk'))
+        self.assertIn('已退出资源库登录', self.output.getvalue())
+
+    def test_resource_library_logout_returns_immediately(self):
+        from course_flow import CourseWorkspace
+        workspace = CourseWorkspace(self.app)
+        workspace.platform = 1
+        workspace.client = object()
+        self.store.save_session('zyk', Mock(access_token='z'))
+        self.ui.input_fn = Mock(side_effect=['4', 'q'])
+        workspace.root_action('s')
+        self.assertIsNone(workspace.client)
+        self.assertIsNone(self.store.session('zyk'))
+
+    def test_logout_opens_login_before_any_further_menu_input(self):
+        from ui import Cancelled
+        self.store.save_session('mooc', Mock(access_token='old'))
+        self.ui.input_fn = Mock(side_effect=['s', '3', 'q'])
+        old = Mock(access_token='old', user_info={'displayName': '旧账号'})
+        new = Mock(access_token='new', user_info={'displayName': '新账号'})
+        for client in (old, new):
+            client.my_course_list.return_value = {'rows': []}
+        def browser_login(**kwargs):
+            self.assertEqual(self.ui.input_fn.call_count, 2)
+            self.assertIsNone(self.store.session('mooc'))
+            self.assertEqual(self.ui.account_name, '')
+            return 'fresh-sso'
+        with patch('app.AIMoocApi', side_effect=[old, new]), \
+             patch('app.oauth_login', side_effect=browser_login) as login:
+            with self.assertRaises(Cancelled):
+                self.app.run()
+        login.assert_called_once()
+        self.assertEqual(self.store.session('mooc')['access_token'], 'new')
+        self.assertEqual(self.ui.account_name, '新账号')
+
+    def test_failed_logout_keeps_session_and_identity(self):
+        from course_flow import CourseWorkspace
+        self.store.save_session('mooc', Mock(access_token='old'))
+        self.ui.set_user({'displayName': '张三'})
+        self.ui.input_fn = Mock(side_effect=['3', '0'])
+        workspace = CourseWorkspace(self.app)
+        client = workspace.client = object()
+        with patch.object(self.store, 'clear_session', side_effect=SettingsError('写入失败')):
+            workspace.root_action('s')
+        self.assertIs(workspace.client, client)
+        self.assertEqual(self.ui.account_name, '张三')
+        self.assertIsNotNone(self.store.session('mooc'))
+        self.assertIn('退出失败', self.output.getvalue())
+
     def test_edit_config_keeps_key_only_for_same_service(self):
         self.ui.input_fn = Mock(side_effect=["1", "", "new-model"])
         self.ui.secret_fn = Mock(return_value="")

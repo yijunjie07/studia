@@ -289,16 +289,17 @@ class Application:
         self.remember(self.store.ensure_default_model)
         return CourseWorkspace(self).run()
 
-    def manage_settings(self):
+    def manage_settings(self, current_platform="mooc"):
         from ui import Back
-        login_changed = False
+        message = ""
         while True:
             try:
-                action = self.view.settings_menu(self.store.path, self.ai_status_text())
+                action = self.view.settings_menu(self.store.path, self.ai_status_text(), message=message)
+                message = ""
             except Back:
-                return login_changed
+                return False
             if action == 0:
-                return login_changed
+                return False
             if action == 1:
                 try:
                     self.manage_models()
@@ -316,6 +317,11 @@ class Application:
             elif action in (3, 4):
                 platform = "mooc" if action == 3 else "zyk"
                 if self.remember(lambda: self.store.clear_session(platform)):
-                    login_changed = True
-                    self.view.set_user()
-                    self.view.note("已退出本机保存的登录，下次使用该平台时重新登录。")
+                    label = "MOOC" if platform == "mooc" else "资源库"
+                    if platform == current_platform:
+                        self.view.set_user()
+                        self.view.note(f"已退出{label}登录，正在打开浏览器重新登录。", "success")
+                        return True
+                    message = f"已退出{label}登录。"
+                else:
+                    message = "退出失败，登录状态未更改，请重试。"
