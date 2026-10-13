@@ -572,11 +572,36 @@ class TerminalUI:
 
     def library(self, rows, platform, state):
         platform_name = "资源库" if platform == 1 else "MOOC / AI 优课"
+        if not rows:
+            return self.empty_library(platform_name)
         return self.select(f"我的课程 · {platform_name}", rows,
                            lambda x: x.get("courseName", "未知课程"),
                            self.course_details,
                            multiple=False, state=state,
                            actions={"s": "设置", "t": "切换平台", "r": "刷新"})
+
+    def empty_library(self, platform_name):
+        """A readable homepage when the signed-in account has no courses."""
+        lines = ["当前平台暂无可显示的课程",
+                 "可先到平台网页核对或加入课程，",
+                 "加入课程后可刷新；已有课程请核对账号/平台/开放情况。"]
+        actions = {"r": "刷新课程", "t": "切换平台", "s": "设置"}
+        help_text = "Enter/r 刷新 · t 切换平台 · s 设置 · Esc 返回 · q 退出"
+        if self.native_enabled():
+            from native_ui import action_page
+            result = action_page(
+                f"我的课程 · {platform_name}", lambda: list(lines), actions, default="r",
+                help_text=help_text, heading=self.heading,
+                status="已登录 · 课程列表已读取",
+                account_name=self.account_name, output=self.terminal_output())
+            if result.kind == "back":
+                raise Back()
+            if result.kind == "quit":
+                raise Cancelled()
+            return result.action
+        self.table(f"我的课程 · {platform_name}", ["说明"], [(line,) for line in lines], help_text)
+        raw = self.ask("操作", "r")
+        return {"": "r", "q": "quit"}.get(raw.strip().lower(), raw.strip().lower())
 
     def course_menu(self, courses, platform):
         title = courses[0].get("courseName", "未知课程") if len(courses) == 1 else f"已选 {len(courses)} 门课程"
@@ -592,7 +617,7 @@ class TerminalUI:
 
     def connection_problem(self, error):
         from MoocMain.log import redact
-        return self.choice("尚未连接平台", [("r", "重试登录 / 读取课程", ""),
+        return self.choice("登录或课程加载失败", [("r", "重试登录 / 读取课程", ""),
                                             ("s", "本机设置", "修改配置或退出已保存的登录"),
                                             ("t", "切换平台", "")],
                            help_text=redact(str(error)) or "Esc 返回 · q 退出")

@@ -515,5 +515,41 @@ class ConnectionProblemRouteTests(unittest.TestCase):
             route(ESC, call=lambda view: view.connection_problem('登录已过期'))
 
 
+class EmptyLibraryRouteTests(unittest.TestCase):
+    """The real empty-library page keeps its keys, account and explanation."""
+
+    def test_empty_page_shows_body_account_actions_at_52x20(self):
+        import ui
+
+        def open_page(view):
+            view.account_name = '张三'
+            try:
+                view.library([], 0, {})
+            except ui.Cancelled:
+                pass
+
+        _, frames = route('q', call=open_page, columns=52, rows=20)
+        text = '\n'.join(line for frame in frames for line in frame)
+        self.assertIn('当前平台暂无可显示的课程', text)
+        self.assertIn('刷新课程', text)
+        self.assertIn('切换平台', text)
+        self.assertIn('设置', text)
+        self.assertIn('张三', text)
+        self.assertNotIn('选择编号', text)
+
+    def test_keys_return_their_action_and_navigation_still_translates(self):
+        import ui
+        for keys, expected in ((ENTER, 'r'), ('r', 'r'), ('t', 't'), ('s', 's')):
+            with self.subTest(keys=keys):
+                value, _ = route(keys, call=lambda view: view.library([], 0, {}),
+                                 columns=52, rows=20)
+                self.assertEqual(value, expected)
+        for keys, expected in ((ESC, ui.Back), ('q', ui.Cancelled)):
+            with self.subTest(keys=keys):
+                with self.assertRaises(expected):
+                    route(keys, call=lambda view: view.library([], 0, {}),
+                          columns=52, rows=20)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -9,6 +9,7 @@ from rich.console import Console
 
 import theme
 import ui as ui_module
+from base.auth import PlatformUnavailable
 from ui import TerminalUI, Cancelled
 from app import Application
 from settings import SettingsStore
@@ -86,6 +87,86 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(view.library(courses, 0, {}), [courses[1]])
         self.assertIn("2026 秋季", output.getvalue())
         self.assertIn("2025 秋季", output.getvalue())
+
+
+EMPTY_BODY = "当前平台暂无可显示的课程"
+
+
+class EmptyLibraryTests(unittest.TestCase):
+    """An empty account gets an explained homepage, not a course-number prompt."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.store = SettingsStore(Path(self.temp.name) / "settings")
+        self.store.save_session("mooc", Mock(access_token="cached"))
+
+    def test_line_mode_empty_page_explains_every_platform(self):
+        for platform, platform_name in ((0, "MOOC / AI 优课"), (1, "资源库")):
+            with self.subTest(platform=platform):
+                view, output = make_view(["q"], width=52)
+                view.account_name = "张三"
+                with self.assertRaises(Cancelled):
+                    view.library([], platform, {})
+                text = output.getvalue()
+                self.assertIn(f"我的课程 · {platform_name}", text)
+                self.assertIn(EMPTY_BODY, text)
+                self.assertIn("加入课程后可刷新", text)
+                self.assertIn("张三", text)
+                self.assertNotIn("选择编号", text)
+                self.assertNotIn("关键词搜索", text)
+
+    def test_line_mode_enter_refreshes_and_shortcuts_still_route(self):
+        for answer, expected in (("", "r"), ("r", "r"), ("t", "t"), ("s", "s")):
+            with self.subTest(answer=answer):
+                view, _ = make_view([answer])
+                self.assertEqual(view.library([], 0, {}), expected)
+        view, _ = make_view(["q"])
+        with self.assertRaises(Cancelled):
+            view.library([], 0, {})
+
+    def test_workspace_empty_refresh_keeps_session_and_reads_courses(self):
+        client = Mock(access_token="cached", user_id="user", default_base_url="https://platform.invalid")
+        client.my_course_list.side_effect = [{"rows": []}, {"rows": COURSES}]
+        view, output = make_view(["", "q"])
+        app = Application(view, self.store)
+        with patch("app.AIMoocApi", return_value=client) as api, \
+             patch("app.oauth_login") as oauth, \
+             patch.object(app, "login") as login:
+            with self.assertRaises(Cancelled):
+                app.run()
+        text = output.getvalue()
+        self.assertEqual([call.kwargs.get("access_token") for call in api.call_args_list],
+                         ["cached", "cached"])
+        login.assert_not_called()
+        oauth.assert_not_called()
+        self.assertIsNotNone(self.store.session("mooc"))
+        self.assertIn(EMPTY_BODY, text)
+        self.assertIn("英语", text)
+
+    def test_offline_error_keeps_its_own_title_and_reason(self):
+        view, output = make_view(["q"])
+        with self.assertRaises(Cancelled):
+            view.connection_problem(PlatformUnavailable("课程列表读取失败，登录缓存未清除，请稍后重试"))
+        text = output.getvalue()
+        self.assertIn("登录或课程加载失败", text)
+        self.assertIn("课程列表读取失败", text)
+        self.assertNotIn(EMPTY_BODY, text)
+
+    def test_workspace_offline_read_shows_reason_without_clearing_session(self):
+        client = Mock(access_token="cached", user_id="user", default_base_url="https://platform.invalid")
+        client.my_course_list.return_value = {"unexpected": True}
+        view, output = make_view(["q"])
+        app = Application(view, self.store)
+        with patch("app.AIMoocApi", return_value=client), \
+             patch.object(app, "login") as login:
+            with self.assertRaises(Cancelled):
+                app.run()
+        text = output.getvalue()
+        self.assertIn("登录或课程加载失败", text)
+        self.assertIn("课程列表读取失败", text)
+        self.assertIsNotNone(self.store.session("mooc"))
+        login.assert_not_called()
 
 
 class SummaryTests(unittest.TestCase):
