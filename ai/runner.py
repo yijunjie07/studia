@@ -410,7 +410,7 @@ class AnswerRunner:
                     self.progress.detail("人工补答：" + q["title"][:70])
                     clock.check()
                     try:
-                        answer = self.manual_answer(model_question(q), reason)
+                        answer = self.manual_answer(q, reason)
                     except (EOFError, KeyboardInterrupt):
                         report.update(status="paused", message="已保存本地报告，未交卷；下次运行可继续补答")
                         write_report(path, report)

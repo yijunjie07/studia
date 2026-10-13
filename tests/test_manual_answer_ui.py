@@ -1,12 +1,14 @@
 """The terminal prompt shows the unresolved question and reads B as a choice, not as Back."""
 import io
+import tempfile
 import unittest
 from contextlib import contextmanager
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from ai.questions import prepare_question
+from ai.runner import AnswerRunner
 from rich.console import Console
-from tests.test_ai import question
+from tests.test_ai import FakeClock, question
 from ui import Back, TerminalUI
 
 
@@ -130,6 +132,45 @@ class PausedStatusTests(unittest.TestCase):
         self.assertIn("失败 1", text)
         self.assertIn("待补答 1", text)
         self.assertEqual(style, "error")
+
+
+class LiveHandoffTests(unittest.TestCase):
+    """The real view prompts must survive the runner's handoff, not just a Mock lambda."""
+
+    def test_real_terminal_prompt_answers_and_confirms_a_live_paper(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        course = {"id": "ci", "courseId": "c", "courseName": "课程"}
+        item = {"id": "exam", "name": "测验"}
+        api = Mock(user_id="user")
+        api.records.return_value = []
+        api.verify_submitted.return_value = True
+        api.paper.return_value = {"questions": [dict(question(qid=str(i)), title="题%s" % i) for i in range(3)],
+                                  "taskExamRecord": {"id": "task", "status": 0}}
+        ai = Mock()
+        ai.config.model = "model"
+        ai.answer.side_effect = [{"answer": "A", "confidence": .9, "explanation": ""},
+                                 {"answer": None, "confidence": .9, "explanation": "缺少材料"},
+                                 {"answer": "A", "confidence": .9, "explanation": ""}]
+        view, output = ManualPromptTests().make_view(["B", "y"])
+        runner = AnswerRunner(api, ai, temp.name, auto_submit=True, clock_factory=FakeClock, output=Mock(),
+                              manual_answer=view.manual_answer, confirm_submit=view.confirm_submit)
+        with patch("ai.runner.time.sleep"):
+            report = None
+            try:
+                with view.activity("AI 答题"):
+                    report = runner.run_paper(course, item, 3)
+            except RuntimeError as exc:
+                self.fail("the live handoff broke the real prompt: %s" % exc)
+        self.assertEqual(report["status"], "submitted")
+        self.assertEqual([row["source"] for row in report["answers"]], ["ai", "manual", "ai"])
+        self.assertEqual(report["answers"][1]["answer"], "B")
+        self.assertIn("题干：题1", output.getvalue())
+        self.assertIn("3/3 题已完成，交卷提交整份试卷？", output.getvalue())
+        api.submit.assert_called_once()
+        entries = api.submit.call_args.args[0]["taskExamProblemRecordList"]
+        self.assertEqual(len(entries), 3)
+        self.assertEqual(entries[1]["answer"], "0")
 
 
 if __name__ == "__main__":
