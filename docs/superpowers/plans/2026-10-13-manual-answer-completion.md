@@ -40,11 +40,11 @@
 **Interfaces:**
 - Produces: `question_fingerprint(q) -> dict`; `manual_answer_value(q, text) -> value` (raises `ValueError` with a Chinese reason).
 
-- [ ] **Step 1: Write failing tests** for: fingerprint equal for the same question and different when title/options/context/type/blank count change; `manual_answer_value` returns `"B"` for a single choice (B is a legal choice), `["B","A"]` for multi `"ab"`, `True/False` for judgement `y/n`, a list of `blank_count` strings for `"a | b"`, the raw text for an essay; `ValueError` for empty input, unknown label, wrong blank count, multi-letter on a single choice.
-- [ ] **Step 2: Run** `... -m unittest tests.test_manual_answer_input -v`; expect FAIL (`ImportError`).
-- [ ] **Step 3: Implement** both helpers in `ai/questions.py`. `manual_answer_value` builds the typed value then calls the existing `answer_record(q, value)` as the final gate and returns the value.
-- [ ] **Step 4: Run** the test; expect PASS. Read the output.
-- [ ] **Step 5: Commit.**
+- [x] **Step 1: Write failing tests** for: fingerprint equal for the same question and different when title/options/context/type/blank count change; `manual_answer_value` returns `"B"` for a single choice (B is a legal choice), `["B","A"]` for multi `"ab"`, `True/False` for judgement `y/n`, a list of `blank_count` strings for `"a | b"`, the raw text for an essay; `ValueError` for empty input, unknown label, wrong blank count, multi-letter on a single choice.
+- [x] **Step 2: Run** `... -m unittest tests.test_manual_answer_input -v`; expect FAIL (`ImportError`).
+- [x] **Step 3: Implement** both helpers in `ai/questions.py`. `manual_answer_value` builds the typed value then calls the existing `answer_record(q, value)` as the final gate and returns the value.
+- [x] **Step 4: Run** the test; expect PASS. Read the output.
+- [x] **Step 5: Commit.**
 
 ### Task 2: Runner reuses validated answers from the same draft
 
@@ -58,11 +58,11 @@
 
 Reuse a previous row only when the report identity matches (`exam_id`, `task_id`, and `category` when present), the question is prepared, the fingerprint is equal, or (legacy rows without a fingerprint) the row's `record.paperId` equals the fresh `paper_id`, the row has no child mapping, title and option label/text lists are identical, `record.optionSort` (when present) equals the fresh `raw_options`, and `answer_record(q, row["answer"])` succeeds. Every submission record is rebuilt with `answer_record`.
 
-- [ ] **Step 1: Write failing tests**: 20-question paper, 19 previous valid rows + one null/no-record row of the same task → 1 AI call at most, 19 reused; a changed option list / title / blank count / parent context regenerates only that question; a different `task_id` reuses nothing; a row whose title differs is not reused; `source` is written (`ai`) and a row without `source` for a legacy report is not labelled `manual`.
-- [ ] **Step 2: Run**; expect FAIL.
-- [ ] **Step 3: Implement** the reuse phase before the AI loop; skip reused positions in both serial and parallel paths; store `source`/`question_fingerprint`; print `人工答案`/`AI 答案`/`待补答` in the markdown.
-- [ ] **Step 4: Run**; expect PASS plus the existing suite still green.
-- [ ] **Step 5: Commit.**
+- [x] **Step 1: Write failing tests**: 20-question paper, 19 previous valid rows + one null/no-record row of the same task → 1 AI call at most, 19 reused; a changed option list / title / blank count / parent context regenerates only that question; a different `task_id` reuses nothing; a row whose title differs is not reused; `source` is written (`ai`) and a row without `source` for a legacy report is not labelled `manual`.
+- [x] **Step 2: Run**; expect FAIL.
+- [x] **Step 3: Implement** the reuse phase before the AI loop; skip reused positions in both serial and parallel paths; store `source`/`question_fingerprint`; print `人工答案`/`AI 答案`/`待补答` in the markdown.
+- [x] **Step 4: Run**; expect PASS plus the existing suite still green.
+- [x] **Step 5: Commit.**
 
 ### Task 3: Manual completion phase, pause/resume and submission confirmation
 
@@ -74,11 +74,11 @@ Reuse a previous row only when the report identity matches (`exam_id`, `task_id`
 - Consumes: `manual_answer_value` (via the injected callback's view), `answer_record`.
 - Produces: `AnswerRunner(..., manual_answer=None, confirm_submit=None)`; status `paused` with `pending_manual` rows; confirmation before POST when manual completion was involved.
 
-- [ ] **Step 1: Write failing tests**: an unresolved supported question calls `manual_answer` once with the prepared question and a non-empty reason, then submits `N/N` records exactly once after `confirm_submit` returns True; `confirm_submit` False → `preview`, no POST, answers saved; declining then resuming (same task) posts once with 0 AI calls; `manual_answer` returning None → `paused`, `pending_manual` on disk, no POST; a service error still returns `ai_error` and never prompts; an unsupported (media) question is never prompted and blocks submission; `max_workers=2` keeps every AI answer in the report before the prompt; a deadline raised while prompting gives `error` with no POST; a pure-AI run never calls confirm.
-- [ ] **Step 2: Run**; expect FAIL.
-- [ ] **Step 3: Implement** the manual phase after the AI loop (checkpoint `paused` before calling the callback, clear `pending_manual` after a valid answer, `EOFError`/`KeyboardInterrupt` mean save-and-exit), and the confirm-before-submit branch.
-- [ ] **Step 4: Run**; expect PASS.
-- [ ] **Step 5: Commit.**
+- [x] **Step 1: Write failing tests**: an unresolved supported question calls `manual_answer` once with the prepared question and a non-empty reason, then submits `N/N` records exactly once after `confirm_submit` returns True; `confirm_submit` False → `preview`, no POST, answers saved; declining then resuming (same task) posts once with 0 AI calls; `manual_answer` returning None → `paused`, `pending_manual` on disk, no POST; a service error still returns `ai_error` and never prompts; an unsupported (media) question is never prompted and blocks submission; `max_workers=2` keeps every AI answer in the report before the prompt; a deadline raised while prompting gives `error` with no POST; a pure-AI run never calls confirm.
+- [x] **Step 2: Run**; expect FAIL.
+- [x] **Step 3: Implement** the manual phase after the AI loop (checkpoint `paused` before calling the callback, clear `pending_manual` after a valid answer, `EOFError`/`KeyboardInterrupt` mean save-and-exit), and the confirm-before-submit branch.
+- [x] **Step 4: Run**; expect PASS.
+- [x] **Step 5: Commit.**
 
 ### Task 4: Terminal UI prompt, confirmation and `paused` status
 
@@ -90,11 +90,11 @@ Reuse a previous row only when the report identity matches (`exam_id`, `task_id`
 - Consumes: `manual_answer_value`.
 - Produces: `TerminalUI.manual_answer(question, reason) -> value|None`; `TerminalUI.confirm_submit(paper, completed, total) -> bool`; `paused` label `待补答`.
 
-- [ ] **Step 1: Write failing tests**: the prompt shows number/type/reason/context/title/options; `b` is parsed as choice B (not Back); an invalid line re-prompts and the valid one is returned; `:s` and EOF return None; the confirm prompt defaults to cancel and `Back`/`Cancelled` return False.
-- [ ] **Step 2: Run**; expect FAIL.
-- [ ] **Step 3: Implement** the prompt inside a `prompt_region()` context (stops the transient Live, suspends raw input, restarts after), and wire both callbacks in `app.execute_ai` via `getattr(view, ...)`.
-- [ ] **Step 4: Run**; expect PASS.
-- [ ] **Step 5: Commit.**
+- [x] **Step 1: Write failing tests**: the prompt shows number/type/reason/context/title/options; `b` is parsed as choice B (not Back); an invalid line re-prompts and the valid one is returned; `:s` and EOF return None; the confirm prompt defaults to cancel and `Back`/`Cancelled` return False.
+- [x] **Step 2: Run**; expect FAIL.
+- [x] **Step 3: Implement** the prompt inside a `prompt_region()` context (stops the transient Live, suspends raw input, restarts after), and wire both callbacks in `app.execute_ai` via `getattr(view, ...)`.
+- [x] **Step 4: Run**; expect PASS.
+- [x] **Step 5: Commit.**
 
 ### Task 5: Reconcile older tests, docs and full suite
 
@@ -102,7 +102,7 @@ Reuse a previous row only when the report identity matches (`exam_id`, `task_id`
 - Modify: `tests/test_fully_ai_answers.py` (approved behavior changes only), `README.md`, `docs/USAGE.md`
 - Test: full suite
 
-- [ ] **Step 1: Update only the conflicting tests**: same-task verifiable answers are now reused; a changed question regenerates alone; the runner now exposes `manual_answer` (but still no `min_confidence`).
-- [ ] **Step 2: Run** `... -m unittest discover -s tests -v`; expect the whole suite green, output written to `/tmp/mooc-manual-green.log`.
-- [ ] **Step 3: Document** saving/resuming in `README.md` and `docs/USAGE.md`; run `git diff --check`.
-- [ ] **Step 4: Commit** and write `/tmp/mooc-manual-implementation-report.md`.
+- [x] **Step 1: Update only the conflicting tests**: same-task verifiable answers are now reused; a changed question regenerates alone; the runner now exposes `manual_answer` (but still no `min_confidence`).
+- [x] **Step 2: Run** `... -m unittest discover -s tests -v`; expect the whole suite green, output written to `/tmp/mooc-manual-green.log`.
+- [x] **Step 3: Document** saving/resuming in `README.md` and `docs/USAGE.md`; run `git diff --check`.
+- [x] **Step 4: Commit** and write `/tmp/mooc-manual-implementation-report.md`.
