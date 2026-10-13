@@ -40,7 +40,7 @@
 **Interfaces:**
 - Produces: `question_fingerprint(q) -> dict`; `manual_answer_value(q, text) -> value` (raises `ValueError` with a Chinese reason).
 
-- [x] **Step 1: Write failing tests** for: fingerprint equal for the same question and different when title/options/context/type/blank count change; `manual_answer_value` returns `"B"` for a single choice (B is a legal choice), `["B","A"]` for multi `"ab"`, `True/False` for judgement `y/n`, a list of `blank_count` strings for `"a | b"`, the raw text for an essay; `ValueError` for empty input, unknown label, wrong blank count, multi-letter on a single choice.
+- [x] **Step 1: Write failing tests** for: fingerprint equal for the same question and different when title/options/context/type/blank count change; `manual_answer_value` returns `"B"` for a single choice (B is a legal choice), `["A","B"]` for multi `"ab"`, `True/False` for judgement `y/n`, a list of `blank_count` strings for `"a | b"`, the raw text for an essay; `ValueError` for empty input, unknown label, wrong blank count, multi-letter on a single choice.
 - [x] **Step 2: Run** `... -m unittest tests.test_manual_answer_input -v`; expect FAIL (`ImportError`).
 - [x] **Step 3: Implement** both helpers in `ai/questions.py`. `manual_answer_value` builds the typed value then calls the existing `answer_record(q, value)` as the final gate and returns the value.
 - [x] **Step 4: Run** the test; expect PASS. Read the output.
@@ -76,7 +76,7 @@ Reuse a previous row only when the report identity matches (`exam_id`, `task_id`
 
 - [x] **Step 1: Write failing tests**: an unresolved supported question calls `manual_answer` once with the prepared question and a non-empty reason, then submits `N/N` records exactly once after `confirm_submit` returns True; `confirm_submit` False → `preview`, no POST, answers saved; declining then resuming (same task) posts once with 0 AI calls; `manual_answer` returning None → `paused`, `pending_manual` on disk, no POST; a service error still returns `ai_error` and never prompts; an unsupported (media) question is never prompted and blocks submission; `max_workers=2` keeps every AI answer in the report before the prompt; a deadline raised while prompting gives `error` with no POST; a pure-AI run never calls confirm.
 - [x] **Step 2: Run**; expect FAIL.
-- [x] **Step 3: Implement** the manual phase after the AI loop (checkpoint `paused` before calling the callback, clear `pending_manual` after a valid answer, `EOFError`/`KeyboardInterrupt` mean save-and-exit), and the confirm-before-submit branch.
+- [x] **Step 3: Implement** the manual phase after the AI loop (checkpoint `paused` before calling the callback, clear `pending_manual` after a valid answer, `EOFError`/`KeyboardInterrupt` propagate out of the runner after the checkpoint so the queue stops), and the confirm-before-submit branch (`True` submits, `False` declines this paper, `None` saves and stops the queue).
 - [x] **Step 4: Run**; expect PASS.
 - [x] **Step 5: Commit.**
 
@@ -88,9 +88,9 @@ Reuse a previous row only when the report identity matches (`exam_id`, `task_id`
 
 **Interfaces:**
 - Consumes: `manual_answer_value`.
-- Produces: `TerminalUI.manual_answer(question, reason) -> value|None`; `TerminalUI.confirm_submit(paper, completed, total) -> bool`; `paused` label `待补答`.
+- Produces: `TerminalUI.manual_answer(question, reason) -> value|None`; `TerminalUI.confirm_submit(paper, completed, total) -> bool|None` (True submits, False declines this paper, None is an explicit cancellation that stops the queue); `paused` label `待补答`.
 
-- [x] **Step 1: Write failing tests**: the prompt shows number/type/reason/context/title/options; `b` is parsed as choice B (not Back); an invalid line re-prompts and the valid one is returned; `:s` and EOF return None; the confirm prompt defaults to cancel and `Back`/`Cancelled` return False.
+- [x] **Step 1: Write failing tests**: the prompt shows number/type/reason/context/title/options; `b` is parsed as choice B (not Back); an invalid line re-prompts and the valid one is returned; `:s` returns None and EOF propagates after the runner checkpoints; confirmation defaults to False and explicit `Back`/`Cancelled` returns None to stop the queue.
 - [x] **Step 2: Run**; expect FAIL.
 - [x] **Step 3: Implement** the prompt inside a `prompt_region()` context (stops the transient Live, suspends raw input, restarts after), and wire both callbacks in `app.execute_ai` via `getattr(view, ...)`.
 - [x] **Step 4: Run**; expect PASS.
@@ -106,3 +106,16 @@ Reuse a previous row only when the report identity matches (`exam_id`, `task_id`
 - [x] **Step 2: Run** `... -m unittest discover -s tests -v`; expect the whole suite green, output written to `/tmp/mooc-manual-green.log`.
 - [x] **Step 3: Document** saving/resuming in `README.md` and `docs/USAGE.md`; run `git diff --check`.
 - [x] **Step 4: Commit** and write `/tmp/mooc-manual-implementation-report.md`.
+
+## Review fixes
+
+Fix list agreed in review (product behaviour unchanged). The runner-side items are handled in `ai/runner.py`; the full suite and the final review are still pending — this section does not claim either has passed.
+
+- The attempt heartbeat stays alive through both the human prompt and the whole-paper confirmation, so time spent waiting on the human still counts against the deadline; the clock is stopped only immediately before the confirmed POST.
+- A valid typed human answer is saved to the report before the deadline is re-checked, so a prompt that ends near the deadline cannot drop the answer it just accepted.
+- Failures while re-reading the paper (or any pre-read step) keep the previous report untouched instead of replacing it with an empty checkpoint; a new attempt only overwrites once the fresh checkpoint is ready.
+- Cached rows and `pending_manual` rows are seeded into the report before parallel AI dispatch starts, so `max_workers > 1` never loses an already-computed answer or a known pending row.
+- `reuse_identity` matches `exam_id` and `task_id`, and also `category` when the previous report records one, so an old answer can never attach to a different paper.
+- Manual-input `EOFError` / `KeyboardInterrupt` are handled inside the runner: it checkpoints `paused` and then re-raises instead of returning an answer, so the confirmation/queue logic stops rather than posting.
+
+`TerminalUI.confirm_submit` returns `bool | None`: `True` submits, `False` declines this paper only, `None` is an explicit cancellation (`Esc` / `q` / `Ctrl-C` / EOF) that saves and stops the remaining queue. A verified same-draft pending question is handed straight back to the human prompt without calling AI again.
