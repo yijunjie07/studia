@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from ai.client import AIClient, AIConfig, AIServiceError
-from ai.questions import answer_record, model_question, prepare_question
+from ai.questions import answer_record, model_question, prepare_question, question_fingerprint
 from ai.runner import AnswerRunner, report_path
 from AIMoocMain.exam_api import ExamError, ExamServiceError
 from app import Application
@@ -589,6 +589,140 @@ class ClockLifetimeTests(RunnerMixin, unittest.TestCase):
         self.assertEqual(saved["answers"][1]["source"], "manual")
         self.assertEqual(saved["answers"][1]["answer"], "B")
         self.assertNotIn(2, [row["question_number"] for row in saved.get("pending_manual", [])])
+
+
+class ExplodingClock(FakeClock):
+    """A clock that fails before any answer could be generated."""
+
+    def start(self):
+        raise ExamError("计时启动失败")
+
+
+def unanswered(position):
+    """A previous row that never got an answer."""
+    return {"title": "题%s" % position, "question_number": position + 1, "error": "AI 未提供答案"}
+
+
+class PreseedTests(RunnerMixin, unittest.TestCase):
+    """Cached rows of the same task are in the report before any clock or AI call."""
+
+    def ai_client(self):
+        return AIClient(AIConfig("https://example.org/v1", "model", "fake-key",
+                                 api_format="chat_completions"), session=Mock())
+
+    def run_parallel(self, workers, rows, **options):
+        self.paper = [self.q(i) for i in range(len(rows))]
+        self.api.paper.return_value["questions"] = self.paper
+        self.write_previous(rows)
+        runner = AnswerRunner(self.api, self.ai_client(), self.temp.name, clock_factory=FakeClock,
+                              output=Mock(), max_workers=workers, **options)
+        # Any dispatch of a cached question reaches this patched worker client.
+        with patch("ai.concurrency.AIClient") as client:
+            report = runner.run_paper(self.course, self.item, 3)
+        return report, client
+
+    def test_complete_cache_is_reported_without_any_ai_call(self):
+        rows = [self.row(i, source="manual" if i == 2 else "ai") for i in range(4)]
+        for workers in (2, 8):
+            with self.subTest(workers=workers):
+                self.setUp()
+                report, client = self.run_parallel(workers, rows, auto_submit=False)
+                client.assert_not_called()
+                self.assertEqual(report["status"], "preview")
+                self.assertEqual([row["question_number"] for row in report["answers"]], [1, 2, 3, 4])
+                self.assertEqual([row["source"] for row in report["answers"]], ["ai", "ai", "manual", "ai"])
+                self.assertEqual([row["answer"] for row in report["answers"]], ["A"] * 4)
+                self.assertEqual(report["answers"][3]["question_fingerprint"],
+                                 question_fingerprint(prepare_question(self.paper[3], 3)))
+                saved = json.loads(report_path(self.temp.name, "user", self.course, "exam").read_text(encoding="utf-8"))
+                self.assertEqual(len(saved["answers"]), 4)
+                for existing in Path(self.temp.name).rglob("*.json"):
+                    existing.unlink()
+
+    def test_seeded_rows_are_already_written_when_the_clock_fails(self):
+        rows = [self.row(i) for i in range(3)]
+        self.paper = [self.q(i) for i in range(3)]
+        self.api.paper.return_value["questions"] = self.paper
+        self.write_previous(rows)
+        runner = AnswerRunner(self.api, self.ai_client(), self.temp.name, auto_submit=False,
+                              clock_factory=lambda *args: ExplodingClock(), output=Mock())
+        report = runner.run_paper(self.course, self.item, 3)
+        self.assertEqual(report["status"], "error")
+        saved = self.saved_report()
+        self.assertEqual([row["question_number"] for row in saved["answers"]], [1, 2, 3])
+        self.assertEqual([row["source"] for row in saved["answers"]], ["ai", "ai", "ai"])
+
+    def test_only_the_third_cached_row_is_kept_and_a_fatal_error_does_not_lose_it(self):
+        rows = [unanswered(0), unanswered(1), self.row(2, source="manual")]
+        self.paper = [self.q(i) for i in range(4)]
+        self.api.paper.return_value["questions"] = self.paper
+        self.write_previous(rows)
+        asked = []
+        self.ai.answer.side_effect = lambda q: asked.append(q["title"]) or (
+            (_ for _ in ()).throw(AIServiceError("HTTP 401")) if q["title"] == "题0"
+            else {"answer": "A", "confidence": .9, "explanation": ""})
+        report = self.run_paper(False)
+        self.assertEqual(report["status"], "ai_error")
+        self.assertEqual(asked, ["题0"])
+        saved = self.saved_report()
+        # The failed question is kept too, and the cached row is intact.
+        self.assertEqual([row["question_number"] for row in saved["answers"]], [1, 3])
+        self.assertEqual((saved["answers"][1]["source"], saved["answers"][1]["answer"]), ("manual", "A"))
+        # A healthy retry generates the three AI questions and keeps the cached one.
+        asked.clear()
+        self.ai.answer.side_effect = lambda q: asked.append(q["title"]) or {
+            "answer": "A", "confidence": .9, "explanation": ""}
+        report = self.run_paper(False)
+        self.assertEqual(report["status"], "preview")
+        self.assertEqual(asked, ["题0", "题1", "题3"])
+        self.assertEqual([row["question_number"] for row in report["answers"]], [1, 2, 3, 4])
+        self.assertEqual((report["answers"][2]["source"], report["answers"][2]["answer"]), ("manual", "A"))
+
+    def test_a_parallel_run_asks_only_the_questions_without_a_cached_row(self):
+        from tests.test_ai_retry import response
+        from tests.test_ai_concurrency import Transport
+        self.paper = [self.q(i) for i in range(4)]
+        self.api.paper.return_value["questions"] = self.paper
+        self.write_previous([unanswered(0), self.row(1, source="manual"), unanswered(2), unanswered(3)])
+        transport = Transport(lambda q: response())
+        runner = AnswerRunner(self.api, self.ai_client(), self.temp.name, auto_submit=False,
+                              clock_factory=FakeClock, output=Mock(), max_workers=2)
+        with patch("ai.client.requests.Session", side_effect=transport.session):
+            report = runner.run_paper(self.course, self.item, 3)
+        self.assertEqual(sorted(transport.calls), ["题0", "题2", "题3"])
+        self.assertEqual(report["status"], "preview")
+        self.assertEqual((report["answers"][1]["source"], report["answers"][1]["answer"]), ("manual", "A"))
+        self.api.submit.assert_not_called()
+
+    def test_positions_come_from_the_row_number_and_legacy_rows_fall_back_to_the_index(self):
+        legacy = self.row(0)
+        legacy.pop("question_number")
+        duplicate = dict(self.row(0), question_number=1, answer="B",
+                         record=answer_record(prepare_question(self.q(0), 0), "B"))
+        beyond = dict(self.row(1), question_number=99)
+        self.paper = [self.q(0), self.q(1)]
+        self.api.paper.return_value["questions"] = self.paper
+        self.write_previous([legacy, duplicate, beyond])
+        report = self.run_paper(False)
+        # The index fallback wins; the duplicate and the out-of-range number are ignored.
+        self.assertEqual(report["answers"][0]["answer"], "A")
+        self.assertEqual(self.ai.answer.call_count, 1)
+        self.assertEqual(self.ai.answer.call_args.args[0]["title"], "题1")
+
+    def test_a_parallel_fatal_service_error_still_keeps_the_cached_row_on_disk(self):
+        self.paper = [self.q(i) for i in range(3)]
+        self.api.paper.return_value["questions"] = self.paper
+        self.write_previous([unanswered(0), unanswered(1), self.row(2, source="manual")])
+        worker = Mock()
+        worker.return_value.answer.side_effect = AIServiceError("HTTP 401")
+        runner = AnswerRunner(self.api, self.ai_client(), self.temp.name, auto_submit=False,
+                              clock_factory=FakeClock, output=Mock(), max_workers=2)
+        with patch("ai.concurrency.AIClient", return_value=worker.return_value):
+            report = runner.run_paper(self.course, self.item, 3)
+        self.assertEqual(report["status"], "ai_error")
+        saved = self.saved_report()
+        self.assertEqual([row["question_number"] for row in saved["answers"]], [1, 3])
+        self.assertEqual((saved["answers"][1]["source"], saved["answers"][1]["answer"]), ("manual", "A"))
 
 
 class ParallelManualTests(RunnerMixin, unittest.TestCase):

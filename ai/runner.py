@@ -310,6 +310,54 @@ class AnswerRunner:
             report["task_id"] = str(task_id)
             items = prepared_items(raw_questions)
             report["status"] = "answering"
+            entries, saved_answers = {}, {}
+            question_total = len(items)
+
+            def save_answer(position, item_report):
+                saved_answers[position] = item_report
+                report["answers"] = [saved_answers[i] for i in sorted(saved_answers)]
+
+            # A previous attempt of this same task may already hold valid answers.
+            # Every reusable row enters the report before the first clock or AI
+            # call, so a deadline or service failure cannot lose it.
+            reuse_count = 0
+            manual_used = 0
+            reusing = reuse_identity(previous, exam_id, task_id, category)
+            previous_rows = previous.get("answers") if reusing else None
+            cached = {}
+            if isinstance(previous_rows, list):
+                for index, old in enumerate(previous_rows):
+                    if not isinstance(old, dict):
+                        continue
+                    # A legacy row may carry no number; its list index is then its position.
+                    number = old.get("question_number")
+                    position = number - 1 if isinstance(number, int) and not isinstance(number, bool) else index
+                    if not 0 <= position < question_total or position in cached:
+                        continue
+                    cached[position] = old
+            for position, (_, q, preparation_error) in enumerate(items):
+                if preparation_error is not None or position not in cached:
+                    continue
+                reused = reusable_row(cached[position], q, q["paper_id"])
+                if reused is None:
+                    continue
+                entry = answer_record(q, reused)
+                source = "manual" if cached[position].get("source") == "manual" else "ai"
+                entries[position] = entry
+                manual_used += 1 if source == "manual" else 0
+                item_report = {"title": q["title"], "question_number": position + 1,
+                               "options": model_question(q)["options"],
+                               "answer": reused, "confidence": cached[position].get("confidence"),
+                               "explanation": cached[position].get("explanation", ""),
+                               "record": entry, "source": source,
+                               "question_fingerprint": question_fingerprint(q)}
+                save_answer(position, item_report)
+                reuse_count += 1
+            completed = len(entries)
+            if reusing:
+                self.progress.detail("复用上一轮答案：" + report["paper"])
+                if reuse_count:
+                    self.output("复用上一轮已校验答案 %s 题" % reuse_count)
             # A new valid paper task replaces the old draft: keep the previous
             # completed attempt only now, when the fresh checkpoint is ready.
             if previous:
@@ -317,35 +365,17 @@ class AnswerRunner:
             fresh_checkpoint_ready = True
             write_report(path, report)
             clock = self.clock_factory(self.api, course, exam_id, task_id, remaining, self.auto_submit).start()
-            entries, saved_answers = {}, {}
-            question_total = len(items)
-            if reuse_identity(previous, exam_id, task_id, category):
-                self.progress.detail("复用上一轮答案：" + report["paper"])
             if self.max_workers > 1 and question_total > 1:
-                parallel = ParallelAnswers(self.ai, [q for _, q, _ in items], self.max_workers, clock)
+                parallel = ParallelAnswers(self.ai, [None if position in entries else q for position, (_, q, _) in enumerate(items)],
+                                           self.max_workers, clock)
                 parallel.cooldown_until = self.service_cooldown_until
-            self.progress.questions("AI 生成 · 等待答案", 0, question_total)
+            self.progress.questions("AI 生成 · 等待答案", completed, question_total)
             results = parallel.answers() if parallel is not None else ((i, None) for i in range(len(items)))
 
-            def save_answer(position, item_report):
-                saved_answers[position] = item_report
-                report["answers"] = [saved_answers[i] for i in sorted(saved_answers)]
-
-            def saved_value(position, q):
-                """Validated answer of an unchanged question from the same draft, with its source."""
-                rows = previous.get("answers") if reuse_identity(previous, exam_id, task_id, category) else None
-                if not isinstance(rows, list) or position >= len(rows):
-                    return None
-                answer = reusable_row(rows[position], q, q["paper_id"])
-                if answer is None:
-                    return None
-                row = rows[position]
-                return answer, "manual" if isinstance(row, dict) and row.get("source") == "manual" else "ai"
-
-            reuse_count = 0
-            manual_used = 0
             for position, generated in results:
                 value, prepared, preparation_error = items[position]
+                if position in entries:
+                    continue
                 clock.check()
                 stage = "第 %s 题" % (position + 1)
                 self.progress.questions(stage + " · 解析题目", completed, question_total)
@@ -358,22 +388,6 @@ class AnswerRunner:
                     q = prepared
                     item_report.update(title=q["title"], options=model_question(q)["options"])
                     self.progress.detail(report["paper"])
-                    reused = saved_value(position, q)
-                    if reused is not None:
-                        reused_value, source = reused
-                        self.progress.questions(stage + " · 复用已校验答案", completed, question_total)
-                        entry = answer_record(q, reused_value)
-                        entries[position] = entry
-                        item_report.update(answer=reused_value, record=entry, source=source,
-                                           question_fingerprint=question_fingerprint(q))
-                        manual_used += 1 if source == "manual" else 0
-                        reuse_count += 1
-                        completed += 1
-                        self.progress.questions("已处理题目", completed, question_total)
-                        self.output("复用答案 %s / %s：%s" % (position + 1, question_total, q["title"][:70]))
-                        save_answer(position, item_report)
-                        write_report(path, report)
-                        continue
                     self.progress.questions(stage + " · AI 生成", completed, question_total)
                     self.output("AI 作答 %s / %s：%s" % (position + 1, question_total, q["title"][:70]))
                     if parallel is not None:
