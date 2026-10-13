@@ -12,7 +12,7 @@ from reporting import Reporter, log_callback
 from ai.client import AIError, AIServiceError
 from ai.concurrency import ParallelAnswers, prepared_items
 from base.concurrency import validate_workers
-from ai.questions import answer_record, model_question
+from ai.questions import answer_record, model_question, question_fingerprint
 from task_capabilities import task_availability
 
 
@@ -82,7 +82,8 @@ def write_report(path, report):
         lines += ["## %d. %s" % (item.get("question_number", index), item.get("title", "无法解析的题目")), ""]
         for opt in item.get("options", []):
             lines.append("%s. %s" % (opt["label"], opt["text"]))
-        lines += ["", "AI 答案：" + json.dumps(item.get("answer"), ensure_ascii=False),
+        label = "人工答案：" if item.get("source") == "manual" else "AI 答案：" if item.get("answer") is not None else "待补答："
+        lines += ["", label + json.dumps(item.get("answer"), ensure_ascii=False),
                   "置信度：" + str(item.get("confidence", "")),
                   item.get("explanation", ""), item.get("error", ""), ""]
     path.with_suffix(".md").write_text("\n".join(lines), encoding="utf-8")
@@ -104,8 +105,47 @@ def attempt_not_draft(records, task_id):
                for record in records)
 
 
+def reuse_identity(report, exam_id, task_id):
+    """A previous report may supply answers only for this exact paper attempt."""
+    if not isinstance(report, dict) or not task_id:
+        return False
+    return (str(report.get("exam_id") or "") == str(exam_id)
+            and str(report.get("task_id")) == str(task_id))
+
+
+def reusable_row(row, q, paper_id):
+    """Return the validated answer of an unchanged question, or None."""
+    if not isinstance(row, dict) or row.get("error") or row.get("answer") is None:
+        return None
+    fingerprint = row.get("question_fingerprint")
+    if fingerprint:
+        if fingerprint != question_fingerprint(q):
+            return None
+    else:
+        record = row.get("record")
+        if not isinstance(record, dict) or q["paper_sub_id"]:
+            return None
+        if str(record.get("paperId") or "") != str(paper_id):
+            return None
+        if str(row.get("title") or "") != q["title"]:
+            return None
+        options = row.get("options")
+        fresh = [{"label": x["label"], "text": x["text"]} for x in q["options"]]
+        if not isinstance(options, list) or options != fresh:
+            return None
+        sort_order = record.get("optionSort")
+        if sort_order is not None and str(sort_order) != json.dumps(q["raw_options"], ensure_ascii=False,
+                                                                   separators=(",", ":")):
+            return None
+    try:
+        answer_record(q, row["answer"])
+    except (ValueError, TypeError):
+        return None
+    return row["answer"]
+
+
 class AnswerRunner:
-    def __init__(self, api, ai, output_dir="ai_results", auto_submit=False, output=None, clock_factory=AttemptClock, *, on_log=None, on_progress=None, max_workers=1):
+    def __init__(self, api, ai, output_dir="ai_results", auto_submit=False, output=None, clock_factory=AttemptClock, *, on_log=None, on_progress=None, max_workers=1, manual_answer=None, confirm_submit=None):
         self.max_workers = validate_workers(max_workers)
         self.api, self.ai, self.output_dir = api, ai, output_dir
         self.auto_submit = auto_submit
@@ -114,6 +154,8 @@ class AnswerRunner:
         self.progress = Reporter(on_progress)
         self.reused = False
         self.service_cooldown_until = 0.0
+        self.manual_answer = manual_answer
+        self.confirm_submit = confirm_submit
 
     def wait_for_ai(self, clock, delay):
         """Keep deadlines responsive during provider cooldowns and retries."""
@@ -244,8 +286,9 @@ class AnswerRunner:
             clock = self.clock_factory(self.api, course, exam_id, task_id, remaining, self.auto_submit).start()
             items = prepared_items(raw_questions)
             entries, saved_answers = {}, {}
-            failures = 0
             question_total = len(items)
+            if reuse_identity(previous, exam_id, task_id):
+                self.progress.detail("复用上一轮答案：" + report["paper"])
             if self.max_workers > 1 and question_total > 1:
                 parallel = ParallelAnswers(self.ai, [q for _, q, _ in items], self.max_workers, clock)
                 parallel.cooldown_until = self.service_cooldown_until
@@ -256,6 +299,19 @@ class AnswerRunner:
                 saved_answers[position] = item_report
                 report["answers"] = [saved_answers[i] for i in sorted(saved_answers)]
 
+            def saved_value(position, q):
+                """Validated answer of an unchanged question from the same draft, with its source."""
+                rows = previous.get("answers") if reuse_identity(previous, exam_id, task_id) else None
+                if not isinstance(rows, list) or position >= len(rows):
+                    return None
+                answer = reusable_row(rows[position], q, q["paper_id"])
+                if answer is None:
+                    return None
+                row = rows[position]
+                return answer, "manual" if isinstance(row, dict) and row.get("source") == "manual" else "ai"
+
+            reuse_count = 0
+            manual_used = 0
             for position, generated in results:
                 value, prepared, preparation_error = items[position]
                 clock.check()
@@ -270,6 +326,22 @@ class AnswerRunner:
                     q = prepared
                     item_report.update(title=q["title"], options=model_question(q)["options"])
                     self.progress.detail(report["paper"])
+                    reused = saved_value(position, q)
+                    if reused is not None:
+                        reused_value, source = reused
+                        self.progress.questions(stage + " · 复用已校验答案", completed, question_total)
+                        entry = answer_record(q, reused_value)
+                        entries[position] = entry
+                        item_report.update(answer=reused_value, record=entry, source=source,
+                                           question_fingerprint=question_fingerprint(q))
+                        manual_used += 1 if source == "manual" else 0
+                        reuse_count += 1
+                        completed += 1
+                        self.progress.questions("已处理题目", completed, question_total)
+                        self.output("复用答案 %s / %s：%s" % (position + 1, question_total, q["title"][:70]))
+                        save_answer(position, item_report)
+                        write_report(path, report)
+                        continue
                     self.progress.questions(stage + " · AI 生成", completed, question_total)
                     self.output("AI 作答 %s / %s：%s" % (position + 1, question_total, q["title"][:70]))
                     if parallel is not None:
@@ -285,6 +357,8 @@ class AnswerRunner:
                     entry = answer_record(q, answer["answer"])
                     entries[position] = entry
                     item_report["record"] = entry
+                    item_report["source"] = "ai"
+                    item_report["question_fingerprint"] = question_fingerprint(q)
                 except (ValueError, TypeError, AIError) as exc:
                     item_report["error"] = str(exc)
                     if isinstance(exc, AIServiceError):
@@ -297,7 +371,6 @@ class AnswerRunner:
                         return report
                     # Unsupported or invalid questions are reported and kept in
                     # the local report; the paper is never submitted incomplete.
-                    failures += 1
                 save_answer(position, item_report)
                 write_report(path, report)
                 if position in entries:
@@ -310,11 +383,65 @@ class AnswerRunner:
                 clock.check()
             clock.stop()
             clock.check()
-            if failures or not entries:
+            if reuse_count:
+                self.output("复用上一轮已校验答案 %s 题，AI 重新生成 %s 题" % (reuse_count, question_total - reuse_count))
+            unresolved = [position for position in range(question_total)
+                          if position not in entries and items[position][2] is None]
+            if unresolved and self.auto_submit and self.manual_answer is not None:
+                for position in unresolved:
+                    value, q, _ = items[position]
+                    item_report = saved_answers[position]
+                    reason = item_report.get("error") or "AI 未提供答案"
+                    report["pending_manual"] = [{"question_number": row["question_number"], "title": row["title"],
+                                                 "reason": row.get("error") or "AI 未提供答案",
+                                                 "question_fingerprint": question_fingerprint(items[i][1])}
+                                                for i, row in sorted(saved_answers.items())
+                                                if i not in entries and items[i][2] is None]
+                    report.update(status="paused", message="等待人工补答第 %s 题；已保存本地报告，未交卷" % (position + 1))
+                    write_report(path, report)
+                    self.progress.detail("人工补答：" + q["title"][:70])
+                    clock.check()
+                    try:
+                        answer = self.manual_answer(model_question(q), reason)
+                    except (EOFError, KeyboardInterrupt):
+                        report.update(status="paused", message="已保存本地报告，未交卷；下次运行可继续补答")
+                        write_report(path, report)
+                        raise
+                    clock.check()
+                    if answer is None:
+                        report.update(status="paused", message="已保存本地报告，未交卷；下次运行可继续补答")
+                        write_report(path, report)
+                        return report
+                    try:
+                        entry = answer_record(q, answer)
+                    except (ValueError, TypeError) as exc:
+                        item_report["error"] = str(exc)
+                        save_answer(position, item_report)
+                        write_report(path, report)
+                        continue
+                    item_report.pop("error", None)
+                    item_report.update(answer=answer, record=entry, source="manual",
+                                       question_fingerprint=question_fingerprint(q))
+                    entries[position] = entry
+                    completed += 1
+                    manual_used += 1
+                    save_answer(position, item_report)
+                    report["pending_manual"] = [row for row in report["pending_manual"]
+                                                if row["question_number"] != item_report["question_number"]]
+                    write_report(path, report)
+                    self.progress.questions("已处理题目", completed, question_total)
+                    self.output("人工答案 %s / %s：%s" % (position + 1, question_total, q["title"][:70]))
+                report.pop("pending_manual", None)
+            if len(entries) < question_total:
                 report.update(status="needs_review", message="存在未完成或不支持的题目，仅保存本地报告，未交卷")
             elif not self.auto_submit:
                 report.update(status="preview", message="答案已保存到本地，未向平台保存或提交答案")
             else:
+                if manual_used:
+                    # A whole-paper submission after human input is explicit only.
+                    if self.confirm_submit is None or not self.confirm_submit(report["paper"], completed, question_total):
+                        report.update(status="preview", message="未确认交卷，答案已保存到本地，未向平台提交")
+                        return report
                 self.progress.questions("检查作答状态", completed, question_total)
                 # Recheck this attempt, not the entire history. A browser may
                 # have submitted this same draft while AI was still answering.

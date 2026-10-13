@@ -76,7 +76,7 @@ def question_fingerprint(q):
         "number": q["number"], "child_number": q.get("child_number"),
         "type_id": q["type_id"], "title": q["title"], "context": q.get("context", ""),
         "blank_count": q.get("blank_count", 0),
-        "options": [(x["label"], x["text"], x["value"]) for x in q.get("options", [])],
+        "options": [[x["label"], x["text"], x["value"]] for x in q.get("options", [])],
         "raw_options": json.dumps(q.get("raw_options", []), ensure_ascii=False, sort_keys=True),
     }
 
