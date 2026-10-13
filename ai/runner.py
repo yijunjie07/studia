@@ -389,7 +389,6 @@ class AnswerRunner:
                 else:
                     self.progress.questions("第 %s 题 · 答案未完成" % (position + 1), completed, question_total)
                 clock.check()
-            clock.stop()
             clock.check()
             if reuse_count:
                 self.output("复用上一轮已校验答案 %s 题，AI 重新生成 %s 题" % (reuse_count, question_total - reuse_count))
@@ -415,7 +414,6 @@ class AnswerRunner:
                         report.update(status="paused", message="已保存本地报告，未交卷；下次运行可继续补答")
                         write_report(path, report)
                         raise
-                    clock.check()
                     if answer is None:
                         report.update(status="paused", message="已保存本地报告，未交卷；下次运行可继续补答")
                         write_report(path, report)
@@ -439,6 +437,9 @@ class AnswerRunner:
                     write_report(path, report)
                     self.progress.questions("已处理题目", completed, question_total)
                     self.output("人工答案 %s / %s：%s" % (position + 1, question_total, q["title"][:70]))
+                    # Persist the typed answer before a deadline that may have
+                    # passed while the human was answering can abort the paper.
+                    clock.check()
                 if len(entries) >= question_total:
                     report.pop("pending_manual", None)
             if len(entries) < question_total:
@@ -448,9 +449,15 @@ class AnswerRunner:
             else:
                 if manual_used:
                     # A whole-paper submission after human input is explicit only.
+                    # The attempt clock stays alive through the prompt, so time
+                    # spent waiting on the human still counts against the deadline.
                     if self.confirm_submit is None or not self.confirm_submit(report["paper"], completed, question_total):
                         report.update(status="preview", message="未确认交卷，答案已保存到本地，未向平台提交")
                         return report
+                # The request below is the point of no return; every earlier
+                # deadline is still enforced against the confirmed answer.
+                clock.stop()
+                clock.check()
                 self.progress.questions("检查作答状态", completed, question_total)
                 # Recheck this attempt, not the entire history. A browser may
                 # have submitted this same draft while AI was still answering.

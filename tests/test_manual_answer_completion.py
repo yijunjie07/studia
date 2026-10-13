@@ -317,6 +317,73 @@ class ManualCompletionTests(RunnerMixin, unittest.TestCase):
         self.api.submit.assert_called_once()
 
 
+class RecordingClock(FakeClock):
+    """FakeClock that remembers whether the attempt was stopped and can expire on demand."""
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.stop_called = False
+        self.expired = False
+
+    def check(self):
+        if self.expired:
+            raise ExamError("试卷剩余时间已用尽，停止交卷；请在网页核对状态")
+
+    def stop(self):
+        self.stop_called = True
+
+
+class ClockLifetimeTests(RunnerMixin, unittest.TestCase):
+    """The clock runs through the manual prompt and the confirmation; only the POST ends it."""
+
+    def setUp(self):
+        super().setUp()
+        self.paper = [self.q(i) for i in range(3)]
+        self.api.paper.return_value["questions"] = self.paper
+        self.clock = RecordingClock()
+        self.ai.answer.side_effect = [{"answer": "A", "confidence": .9, "explanation": ""},
+                                      {"answer": None, "confidence": .9, "explanation": "缺少材料"},
+                                      {"answer": "B", "confidence": .9, "explanation": ""}]
+
+    def run_with_clock(self, **options):
+        runner = AnswerRunner(self.api, self.ai, self.temp.name, auto_submit=True, output=Mock(),
+                              clock_factory=lambda *args: self.clock, **options)
+        return runner.run_paper(self.course, self.item, 3)
+
+    def test_the_clock_keeps_running_until_the_submission_request(self):
+        seen = {}
+
+        def manual(question, reason):
+            seen["manual"] = self.clock.stop_called
+            return "B"
+
+        def confirm(*args):
+            seen["confirm"] = self.clock.stop_called
+            return True
+
+        def submit(payload):
+            seen["submit"] = self.clock.stop_called
+
+        self.api.submit.side_effect = submit
+        report = self.run_with_clock(manual_answer=manual, confirm_submit=confirm)
+        self.assertEqual(report["status"], "submitted")
+        self.assertEqual(seen, {"manual": False, "confirm": False, "submit": True})
+        self.assertTrue(self.clock.stop_called)
+
+    def test_an_expiry_after_the_human_answered_still_keeps_the_typed_answer(self):
+        def manual(question, reason):
+            self.clock.expired = True
+            return "B"
+
+        report = self.run_with_clock(manual_answer=manual, confirm_submit=lambda *args: True)
+        self.assertEqual(report["status"], "error")
+        self.api.submit.assert_not_called()
+        saved = self.saved_report()
+        self.assertEqual(saved["answers"][1]["source"], "manual")
+        self.assertEqual(saved["answers"][1]["answer"], "B")
+        self.assertNotIn(2, [row["question_number"] for row in saved.get("pending_manual", [])])
+
+
 class ParallelManualTests(RunnerMixin, unittest.TestCase):
     """Every already-computed parallel answer is in the report before the human is asked."""
 
