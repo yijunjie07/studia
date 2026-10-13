@@ -297,9 +297,12 @@ class StudyConcurrencyTests(unittest.TestCase):
 
     def test_worker_interruption_stops_dispatch_and_closes_all_clones(self):
         for cls in (AIMoocHandler, ZYKMoocHandler):
-            transport = StudyTransport(2, failure=KeyboardInterrupt())
+            cancel = threading.Event()
+            transport = StudyTransport(2, failure=KeyboardInterrupt(),
+                                       cancel_event=cancel)
             with self.assertRaises(KeyboardInterrupt):
-                self.run_study(cls, transport, 2)
+                self.run_study(cls, transport, 2, cancel_event=cancel)
+            self.assertTrue(transport.cancel_observed)
             self.assertLessEqual(len(transport.writes), 2)
             self.assertCountEqual(transport.closed, transport.clones)
 
