@@ -764,5 +764,41 @@ class ParallelManualTests(RunnerMixin, unittest.TestCase):
         self.api.submit.assert_called_once()
 
 
+class PendingResumeTests(RunnerMixin, unittest.TestCase):
+    """A legacy pending row is carried into the report and completed by hand, never regenerated."""
+
+    def test_legacy_pending_row_is_resumed_without_any_ai_call(self):
+        for workers in (1, 2, 8):
+            with self.subTest(workers=workers):
+                self.setUp()
+                for existing in Path(self.temp.name).rglob("*.json"):
+                    existing.unlink()
+                self.ai.config = AIConfig("https://example.org/v1", "model", "fake-key",
+                                          api_format="chat_completions")
+                self.ai.answer.side_effect = AssertionError("the pending row must not be regenerated")
+                pending = {"title": "题19", "question_number": 20,
+                           "options": model_question(prepare_question(self.q(19), 19))["options"],
+                           "answer": None, "error": "AI 未提供答案"}
+                self.write_previous([self.row(i) for i in range(19)] + [pending])
+                prompts = []
+                runner = AnswerRunner(self.api, self.ai, self.temp.name, auto_submit=True,
+                                      clock_factory=FakeClock, output=Mock(), max_workers=workers,
+                                      manual_answer=lambda q, reason: prompts.append((q, reason)) or "B",
+                                      confirm_submit=Mock(return_value=True))
+                with patch("ai.concurrency.AIClient") as client:
+                    client.return_value.answer.side_effect = AssertionError(
+                        "the pending row must not be regenerated")
+                    report = runner.run_paper(self.course, self.item, 3)
+                self.assertEqual(report["status"], "submitted")
+                self.assertEqual(len(self.api.submit.call_args.args[0]["taskExamProblemRecordList"]), 20)
+                client.assert_not_called()
+                self.assertEqual(len(prompts), 1)
+                self.assertEqual(prompts[0][0]["title"], "题19")
+                self.assertEqual(prompts[0][1], "AI 未提供答案")
+                self.assertEqual([row["source"] for row in report["answers"]],
+                                 ["ai"] * 19 + ["manual"])
+                runner.confirm_submit.assert_called_once_with("测验", 20, 20)
+
+
 if __name__ == "__main__":
     unittest.main()

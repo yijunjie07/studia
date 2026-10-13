@@ -172,6 +172,18 @@ def reusable_row(row, q, paper_id):
     return row["answer"]
 
 
+def pending_row(row, q):
+    """True for a previous attempt's own failed question: an answer is still missing."""
+    if not isinstance(row, dict):
+        return False
+    fingerprint = row.get("question_fingerprint")
+    if fingerprint:
+        return fingerprint == question_fingerprint(q) and bool(row.get("error") or row.get("answer") is None)
+    return (row.get("answer") is None and not row.get("record") and q["type_id"] in (1, 2)
+            and not q["paper_sub_id"] and not q.get("context") and row.get("title") == q["title"]
+            and row.get("options") == model_question(q)["options"])
+
+
 class AnswerRunner:
     def __init__(self, api, ai, output_dir="ai_results", auto_submit=False, output=None, clock_factory=AttemptClock, *, on_log=None, on_progress=None, max_workers=1, manual_answer=None, confirm_submit=None):
         self.max_workers = validate_workers(max_workers)
@@ -322,6 +334,7 @@ class AnswerRunner:
             # call, so a deadline or service failure cannot lose it.
             reuse_count = 0
             manual_used = 0
+            pending_positions = set()
             reusing = reuse_identity(previous, exam_id, task_id, category)
             previous_rows = previous.get("answers") if reusing else None
             cached = {}
@@ -340,6 +353,16 @@ class AnswerRunner:
                     continue
                 reused = reusable_row(cached[position], q, q["paper_id"])
                 if reused is None:
+                    # A failed question from this same attempt is not regenerated:
+                    # it is carried over as pending and handed to the human.
+                    if (self.auto_submit and self.manual_answer is not None
+                            and previous.get("status") != "ai_error"
+                            and pending_row(cached[position], q)):
+                        pending_positions.add(position)
+                        save_answer(position, {**cached[position], "question_number": position + 1,
+                                               "title": q["title"],
+                                               "options": model_question(q)["options"],
+                                               "question_fingerprint": question_fingerprint(q)})
                     continue
                 entry = answer_record(q, reused)
                 source = "manual" if cached[position].get("source") == "manual" else "ai"
@@ -366,7 +389,8 @@ class AnswerRunner:
             write_report(path, report)
             clock = self.clock_factory(self.api, course, exam_id, task_id, remaining, self.auto_submit).start()
             if self.max_workers > 1 and question_total > 1:
-                parallel = ParallelAnswers(self.ai, [None if position in entries else q for position, (_, q, _) in enumerate(items)],
+                parallel = ParallelAnswers(self.ai, [None if position in entries or position in pending_positions else q
+                                                     for position, (_, q, _) in enumerate(items)],
                                            self.max_workers, clock)
                 parallel.cooldown_until = self.service_cooldown_until
             self.progress.questions("AI 生成 · 等待答案", completed, question_total)
@@ -374,7 +398,7 @@ class AnswerRunner:
 
             for position, generated in results:
                 value, prepared, preparation_error = items[position]
-                if position in entries:
+                if position in entries or position in pending_positions:
                     continue
                 clock.check()
                 stage = "第 %s 题" % (position + 1)
@@ -386,7 +410,8 @@ class AnswerRunner:
                     if preparation_error is not None:
                         raise preparation_error
                     q = prepared
-                    item_report.update(title=q["title"], options=model_question(q)["options"])
+                    item_report.update(title=q["title"], options=model_question(q)["options"],
+                                       question_fingerprint=question_fingerprint(q))
                     self.progress.detail(report["paper"])
                     self.progress.questions(stage + " · AI 生成", completed, question_total)
                     self.output("AI 作答 %s / %s：%s" % (position + 1, question_total, q["title"][:70]))
@@ -429,7 +454,9 @@ class AnswerRunner:
                 clock.check()
             clock.check()
             if reuse_count:
-                self.output("复用上一轮已校验答案 %s 题，AI 重新生成 %s 题" % (reuse_count, question_total - reuse_count))
+                pending_note = "，待人工补答 %s 题" % len(pending_positions) if pending_positions else ""
+                self.output("复用上一轮已校验答案 %s 题，AI 重新生成 %s 题%s"
+                            % (reuse_count, question_total - reuse_count - len(pending_positions), pending_note))
             unresolved = [position for position in range(question_total)
                           if position not in entries and items[position][2] is None]
             if unresolved and self.auto_submit and self.manual_answer is not None:
