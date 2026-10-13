@@ -799,6 +799,47 @@ class PendingResumeTests(RunnerMixin, unittest.TestCase):
                                  ["ai"] * 19 + ["manual"])
                 runner.confirm_submit.assert_called_once_with("测验", 20, 20)
 
+    def test_an_established_human_question_survives_another_questions_service_failure(self):
+        # Q0 was already handed to the human last time; Q1 is a valid cache and Q2
+        # was never answered. A real service failure on Q2 must neither regenerate
+        # the established human question nor let Q2 pose as one.
+        self.paper = [self.q(i) for i in range(3)]
+        self.api.paper.return_value["questions"] = self.paper
+        failed = self.row(0)
+        failed.update(answer=None, error="AI 未提供答案")
+        failed.pop("record")
+        self.write_previous([failed, self.row(1)], status="ai_error")
+        fingerprint = failed["question_fingerprint"]
+        path = report_path(self.temp.name, "user", self.course, "exam")
+        restore = json.loads(path.read_text(encoding="utf-8"))
+        restore["pending_manual"] = [{"question_number": 1, "title": "题0", "reason": "AI 未提供答案",
+                                      "question_fingerprint": fingerprint}]
+        path.write_text(json.dumps(restore, ensure_ascii=False), encoding="utf-8")
+        self.ai.answer.side_effect = AIServiceError("HTTP 401")
+        manual = Mock(return_value="B")
+        confirm = Mock(return_value=True)
+        report = self.run_paper(manual_answer=manual, confirm_submit=confirm)
+        self.assertEqual(report["status"], "ai_error")
+        manual.assert_not_called()
+        self.assertEqual([call.args[0]["title"] for call in self.ai.answer.call_args_list], ["题2"])
+        self.assertEqual([(row["question_number"], row["question_fingerprint"])
+                          for row in report["pending_manual"]], [(1, fingerprint)])
+        self.assertNotIn("题2", [row["title"] for row in report["pending_manual"]])
+        # The next healthy retry regenerates only the question the service failed on.
+        self.ai.answer.reset_mock()
+        self.ai.answer.side_effect = None
+        prompts = []
+        report = self.run_paper(manual_answer=lambda q, reason: prompts.append(q["title"]) or "B",
+                                confirm_submit=confirm)
+        self.assertEqual([call.args[0]["title"] for call in self.ai.answer.call_args_list], ["题2"])
+        self.assertEqual(self.ai.answer.call_count, 1)
+        self.assertEqual(prompts, ["题0"])
+        self.assertEqual(report["status"], "submitted")
+        self.assertEqual([row["source"] for row in report["answers"]], ["manual", "ai", "ai"])
+        self.assertEqual(len(self.api.submit.call_args.args[0]["taskExamProblemRecordList"]), 3)
+        self.api.submit.assert_called_once()
+        confirm.assert_called_once_with("测验", 3, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

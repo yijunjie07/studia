@@ -356,13 +356,25 @@ class AnswerRunner:
                     # A failed question from this same attempt is not regenerated:
                     # it is carried over as pending and handed to the human.
                     if (self.auto_submit and self.manual_answer is not None
-                            and previous.get("status") != "ai_error"
-                            and pending_row(cached[position], q)):
+                            and pending_row(cached[position], q)
+                            and (previous.get("status") != "ai_error"
+                                 or any(isinstance(row, dict) and row.get("question_number") == position + 1
+                                        and row.get("question_fingerprint") == question_fingerprint(q)
+                                        for row in previous.get("pending_manual") or []))):
                         pending_positions.add(position)
-                        save_answer(position, {**cached[position], "question_number": position + 1,
-                                               "title": q["title"],
-                                               "options": model_question(q)["options"],
-                                               "question_fingerprint": question_fingerprint(q)})
+                        row = {**cached[position], "question_number": position + 1,
+                               "title": q["title"],
+                               "options": model_question(q)["options"],
+                               "question_fingerprint": question_fingerprint(q)}
+                        save_answer(position, row)
+                        # Provenance of an established human question survives a
+                        # later service failure, so a retry keeps it pending.
+                        report["pending_manual"] = [existing for existing in report.get("pending_manual", [])
+                                                    if existing["question_number"] != position + 1]
+                        report["pending_manual"].append(
+                            {"question_number": row["question_number"], "title": row["title"],
+                             "reason": row.get("error") or "AI 未提供答案",
+                             "question_fingerprint": row["question_fingerprint"]})
                     continue
                 entry = answer_record(q, reused)
                 source = "manual" if cached[position].get("source") == "manual" else "ai"
