@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 from ai.client import AIClient, AIConfig, AIServiceError
 from ai.questions import answer_record, model_question, prepare_question
 from ai.runner import AnswerRunner, report_path
-from AIMoocMain.exam_api import ExamError
+from AIMoocMain.exam_api import ExamError, ExamServiceError
 from app import Application
 from rich.console import Console
 from settings import SettingsStore
@@ -211,6 +211,24 @@ class ManualCompletionTests(RunnerMixin, unittest.TestCase):
         self.assertIn("AI 答案：", markdown)
         self.assertIn("人工补答", markdown)
 
+    def test_a_callback_exception_still_leaves_the_complete_preview_on_disk(self):
+        self.fail_second()
+
+        def confirm(*args):
+            saved = self.saved_report()
+            self.assertEqual(saved["status"], "preview")
+            self.assertNotIn("pending_manual", saved)
+            self.assertEqual([row["source"] for row in saved["answers"]], ["ai", "manual", "ai"])
+            raise KeyboardInterrupt
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_paper(manual_answer=lambda q, reason: "B", confirm_submit=confirm)
+        self.api.submit.assert_not_called()
+        saved = self.saved_report()
+        self.assertEqual(saved["status"], "preview")
+        self.assertNotIn("pending_manual", saved)
+        self.assertEqual(saved["answers"][1]["source"], "manual")
+        self.assertEqual(saved["answers"][1]["answer"], "B")
+
     def test_declining_confirmation_saves_answers_without_posting(self):
         self.fail_second()
         report = self.run_paper(manual_answer=lambda q, reason: "B",
@@ -320,6 +338,65 @@ class ManualCompletionTests(RunnerMixin, unittest.TestCase):
         self.assertEqual(report["status"], "submitted")
         confirm.assert_not_called()
         self.api.submit.assert_called_once()
+
+
+class RunnerCheckpointTests(RunnerMixin, unittest.TestCase):
+    """A setup failure must not replace the previous complete report on disk."""
+
+    def prepare_previous(self, size=19, status="preview"):
+        self.rows = [self.row(i) for i in range(size)]
+        self.write_previous(self.rows, status=status)
+        self.path = report_path(self.temp.name, "user", self.course, "exam")
+        self.before = self.path.read_bytes()
+
+    def assert_previous_preserved(self, run):
+        run()
+        self.assertEqual(self.path.read_bytes(), self.before)
+        self.assertFalse(self.api.submit.called)
+
+    def test_a_failed_platform_read_never_erases_the_previous_report(self):
+        for label, source, error in (
+                ("records service error", "records", ExamServiceError("平台登录已失效")),
+                ("paper error", "paper", ExamError("平台拒绝请求"))):
+            with self.subTest(failure=label):
+                self.setUp()
+                self.prepare_previous()
+                getattr(self.api, source).side_effect = error
+                self.assert_previous_preserved(lambda: self.run_paper(False))
+
+    def test_exhausted_or_invalid_questions_never_erase_the_previous_report(self):
+        setup_failures = {
+            "no remaining time": lambda: self.api.paper.return_value.update(surplusSecond=0),
+            "malformed child list": lambda: self.api.paper.return_value["questions"][0].update(questionSubList=5),
+        }
+        for label, arrange in setup_failures.items():
+            with self.subTest(failure=label):
+                self.setUp()
+                self.prepare_previous()
+                arrange()
+                self.assert_previous_preserved(lambda: self.run_paper(False))
+
+    def test_a_later_healthy_retry_reuses_the_complete_report_without_ai(self):
+        self.prepare_previous()
+        # A healthy retry of the same paper: every question already has a valid answer.
+        self.api.paper.return_value["questions"] = [self.q(i) for i in range(19)]
+        report = self.run_paper(False)
+        self.assertEqual(report["status"], "preview")
+        self.ai.answer.assert_not_called()
+        self.assertNotEqual(self.path.read_bytes(), self.before)
+        self.assertEqual([row["source"] for row in report["answers"]], ["ai"] * 19)
+
+    def test_a_new_paper_archives_the_previous_complete_report_before_replacing_it(self):
+        self.prepare_previous()
+        self.api.paper.return_value["taskExamRecord"]["id"] = "next-task"
+        report = self.run_paper(False)
+        self.assertEqual(report["status"], "preview")
+        self.assertEqual(report["task_id"], "next-task")
+        archived = list((Path(self.temp.name) / self.course["courseName"] / "history").rglob("*.json"))
+        self.assertEqual(len(archived), 1)
+        kept = json.loads(archived[0].read_text())
+        self.assertEqual((kept["task_id"], len(kept["answers"])), ("task", 19))
+        self.assertNotEqual(self.path.read_bytes(), self.before)
 
 
 class ConfirmCancelTests(unittest.TestCase):

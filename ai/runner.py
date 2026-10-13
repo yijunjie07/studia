@@ -239,8 +239,6 @@ class AnswerRunner:
                 self.progress.questions("交卷结果待确认", 0)
                 self.output("跳过已有交卷记录：%s（%s）" % (paper_display_name(item), previous["status"]))
                 return previous
-            if previous.get("status") == "submitted":
-                archive_report(path, previous)
         submitted_task_ids = [str(value) for value in previous.get("submitted_task_ids", []) if value]
         if previous.get("status") == "submitted" and previous.get("task_id"):
             submitted_task_ids.append(str(previous["task_id"]))
@@ -252,8 +250,10 @@ class AnswerRunner:
                   "submitted_task_ids": submitted_task_ids}
         clock = None
         parallel = None
-        paper_opened = False
         completed, question_total = 0, None
+        # Nothing below may touch the on-disk report until the fresh checkpoint is
+        # fully prepared; the previous attempt stays readable for a later retry.
+        fresh_checkpoint_ready = False
         try:
             # The browser uses this same paper endpoint for '再次答题'. Older
             # submitted attempts must not prevent opening a fresh draft.
@@ -262,7 +262,6 @@ class AnswerRunner:
             if not availability.available:
                 raise TaskUnavailableError(availability.reason)
             paper = self.api.paper(exam_id)
-            paper_opened = True
             task = paper.get("taskExamRecord") or {}
             if str(paper.get("tjzt")) == "1" or str(task.get("status")) != "0":
                 raise ExamError("平台未提供新的可作答记录，本次无法再次作答；请检查剩余次数和开放状态")
@@ -289,10 +288,15 @@ class AnswerRunner:
                 if remaining <= 0:
                     raise ExamError("试卷已无剩余时间")
             report["task_id"] = str(task_id)
+            items = prepared_items(raw_questions)
             report["status"] = "answering"
+            # A new valid paper task replaces the old draft: keep the previous
+            # completed attempt only now, when the fresh checkpoint is ready.
+            if previous:
+                archive_report(path, previous)
+            fresh_checkpoint_ready = True
             write_report(path, report)
             clock = self.clock_factory(self.api, course, exam_id, task_id, remaining, self.auto_submit).start()
-            items = prepared_items(raw_questions)
             entries, saved_answers = {}, {}
             question_total = len(items)
             if reuse_identity(previous, exam_id, task_id):
@@ -451,6 +455,11 @@ class AnswerRunner:
                     # A whole-paper submission after human input is explicit only.
                     # The attempt clock stays alive through the prompt, so time
                     # spent waiting on the human still counts against the deadline.
+                    # Persist the finished draft before asking: even if the prompt
+                    # is cancelled or raises, the report is not left as paused or
+                    # answering with all answers already complete.
+                    report.update(status="preview", message="答案已补齐，等待确认交卷；未向平台提交")
+                    write_report(path, report)
                     result = self.confirm_submit(report["paper"], completed, question_total) if self.confirm_submit else False
                     if result is None:
                         # The human cancelled the prompt: end the run instead of
@@ -505,9 +514,9 @@ class AnswerRunner:
                 self.service_cooldown_until = max(self.service_cooldown_until, parallel.cooldown_until)
             if clock:
                 clock.stop()
-            # A deadline crossed during history lookup must not erase an old
-            # draft when no new paper was opened.
-            if report["status"] != "skipped" or paper_opened:
+            # A signal or history failure before the fresh checkpoint exists must
+            # leave a previous attempt's report untouched.
+            if fresh_checkpoint_ready or not previous:
                 write_report(path, report)
             stage = {"submitted": "已交卷", "preview": "答案已生成 · 未交卷",
                      "needs_review": "答案未完成", "skipped": "已跳过", "submission_unknown": "交卷结果待确认"}.get(

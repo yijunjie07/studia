@@ -324,8 +324,6 @@ class Application:
                               "stop_queue": isinstance(exc, ExamServiceError)}
                     results.append(result)
                     logger.error("%s：%s", name, exc)
-                    self.progress.result(name, result["status"])
-                    continue
                 status = result["status"]
                 if status == "ai_error":
                     self.remember(lambda: self.store.save_ai_health(config, "error", result.get("message", "AI 服务失败")))
