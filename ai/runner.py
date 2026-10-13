@@ -439,7 +439,8 @@ class AnswerRunner:
                     write_report(path, report)
                     self.progress.questions("已处理题目", completed, question_total)
                     self.output("人工答案 %s / %s：%s" % (position + 1, question_total, q["title"][:70]))
-                report.pop("pending_manual", None)
+                if len(entries) >= question_total:
+                    report.pop("pending_manual", None)
             if len(entries) < question_total:
                 report.update(status="needs_review", message="存在未完成或不支持的题目，仅保存本地报告，未交卷")
             elif not self.auto_submit:

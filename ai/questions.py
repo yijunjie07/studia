@@ -77,6 +77,7 @@ def question_fingerprint(q):
         "type_id": q["type_id"], "title": q["title"], "context": q.get("context", ""),
         "blank_count": q.get("blank_count", 0),
         "options": [[x["label"], x["text"], x["value"]] for x in q.get("options", [])],
+        # sorted keys: the string form must not depend on the platform's key order.
         "raw_options": json.dumps(q.get("raw_options", []), ensure_ascii=False, sort_keys=True),
     }
 
