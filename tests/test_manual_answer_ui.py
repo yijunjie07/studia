@@ -1,0 +1,136 @@
+"""The terminal prompt shows the unresolved question and reads B as a choice, not as Back."""
+import io
+import unittest
+from contextlib import contextmanager
+from unittest.mock import Mock
+
+from ai.questions import prepare_question
+from rich.console import Console
+from tests.test_ai import question
+from ui import Back, TerminalUI
+
+
+class ManualPromptTests(unittest.TestCase):
+    def make_view(self, answers):
+        output = io.StringIO()
+        inputs = iter(answers)
+
+        def feed():
+            try:
+                return next(inputs)
+            except StopIteration:
+                raise EOFError()
+        view = TerminalUI(console=Console(file=output, width=100, highlight=False), input_fn=feed)
+        view.live = Mock()
+        return view, output
+
+    def prepared(self, kind=1, title="哪项是乐器？"):
+        return prepare_question(dict(question(kind), title=title), 0)
+
+    def test_prompt_shows_number_type_reason_context_title_and_options(self):
+        view, output = self.make_view(["B"])
+        prepared = prepare_question(dict(question(1), title="哪项是乐器？"), 2,
+                                    {"id": "parent", "title": "材料一"}, 0)
+        value = view.manual_answer(prepared, "AI 未提供答案")
+        self.assertEqual(value, "B")
+        shown = output.getvalue()
+        for expected in ("3.", "单选题", "材料一", "哪项是乐器？", "A. 钢琴", "B. 桌子",
+                         "AI 未提供答案", "第 1 小题", "B 是选项"):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, shown)
+
+    def test_an_invalid_line_reprompts_and_the_valid_one_is_returned(self):
+        view, output = self.make_view(["Z", ":s"])
+        self.assertIsNone(view.manual_answer(self.prepared(), "原因"))
+        self.assertIn("输入无效", output.getvalue())
+        self.assertEqual(output.getvalue().count("请输入答案"), 2)
+
+    def test_a_b_letter_is_an_answer_not_navigation(self):
+        view, _ = self.make_view(["b"])
+        self.assertEqual(view.manual_answer(self.prepared(), "原因"), "B")
+
+    def test_save_and_escape_leave_the_prompt_without_an_answer(self):
+        for answer in (":s", ":q"):
+            with self.subTest(answer=answer):
+                view, _ = self.make_view([answer])
+                self.assertIsNone(view.manual_answer(self.prepared(), "原因"))
+        view, _ = self.make_view(["\x1b"])
+        self.assertIsNone(view.manual_answer(self.prepared(), "原因"))
+
+    def test_eof_propagates_so_the_runner_can_checkpoint(self):
+        for stop in (EOFError(), KeyboardInterrupt()):
+            with self.subTest(stop=type(stop).__name__):
+                view, _ = self.make_view([], )
+                view.input_fn = Mock(side_effect=stop)
+                with self.assertRaises(type(stop)):
+                    view.manual_answer(self.prepared(), "原因")
+
+    def test_the_live_view_and_raw_input_are_suspended_while_reading(self):
+        view, _ = self.make_view(["A"])
+        view.runtime_input = Mock()
+        view.runtime_input.suspend.return_value = contextmanager(lambda: (yield))()
+        view.manual_answer(self.prepared(), "原因")
+        view.live.stop.assert_called()
+        view.live.start.assert_called()
+        view.runtime_input.suspend.assert_called_once()
+
+    def test_judgement_and_blank_questions_are_converted_to_typed_values(self):
+        for kind, text, expected in ((3, "n", False), (4, "钢琴 | 小提琴", ["钢琴", "小提琴"])):
+            with self.subTest(kind=kind):
+                view, _ = self.make_view([text])
+                self.assertEqual(view.manual_answer(self.prepared(kind), "原因"), expected)
+
+
+class ConfirmSubmitTests(unittest.TestCase):
+    def make_view(self, answers):
+        output = io.StringIO()
+        inputs = iter(answers)
+
+        def feed():
+            try:
+                return next(inputs)
+            except StopIteration:
+                raise EOFError()
+        view = TerminalUI(console=Console(file=output, width=100, highlight=False), input_fn=feed)
+        view.runtime_input = Mock()
+        view.runtime_input.suspend.return_value = contextmanager(lambda: (yield))()
+        return view, output
+
+    def test_default_answer_keeps_the_paper_unsubmitted(self):
+        view, output = self.make_view([""])
+        self.assertFalse(view.confirm_submit("测验", 20, 20))
+        self.assertIn("20/20 题已完成，交卷提交整份试卷？", output.getvalue())
+
+    def test_explicit_yes_submits_the_whole_paper(self):
+        view, _ = self.make_view(["y"])
+        self.assertTrue(view.confirm_submit("测验", 20, 20))
+
+    def test_cancel_and_back_return_false(self):
+        for answer in ("n", "q", ""):
+            with self.subTest(answer=answer):
+                view, _ = self.make_view([answer] if answer else [])
+                self.assertFalse(view.confirm_submit("测验", 20, 20))
+        view, _ = self.make_view(["menu"])
+        view.input_fn = Mock(return_value="\x1b")
+        self.assertFalse(view.confirm_submit("测验", 20, 20))
+        view, _ = self.make_view([])
+        view.input_fn = Mock(side_effect=EOFError())
+        self.assertFalse(view.confirm_submit("测验", 20, 20))
+
+
+class PausedStatusTests(unittest.TestCase):
+    def test_a_paused_paper_is_reported_as_waiting_for_a_human_answer(self):
+        from reporting import ProgressEvent
+        view, output = ConfirmSubmitTests().make_view([])
+        view.on_progress(ProgressEvent("begin", "AI 答题", total=1, unit="份试卷"))
+        view.on_progress(ProgressEvent("result", "测验", status="paused"))
+        self.assertEqual(view.results, [("测验", "paused")])
+        self.assertIn("待补答", "".join(line for line, _ in view.lines))
+        text, style = view.finish_text()
+        self.assertIn("失败 1", text)
+        self.assertIn("待补答 1", text)
+        self.assertEqual(style, "error")
+
+
+if __name__ == "__main__":
+    unittest.main()
