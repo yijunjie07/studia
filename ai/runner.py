@@ -113,12 +113,16 @@ def attempt_not_draft(records, task_id):
                for record in records)
 
 
-def reuse_identity(report, exam_id, task_id):
+def reuse_identity(report, exam_id, task_id, category=None):
     """A previous report may supply answers only for this exact paper attempt."""
     if not isinstance(report, dict) or not task_id:
         return False
-    return (str(report.get("exam_id") or "") == str(exam_id)
-            and str(report.get("task_id")) == str(task_id))
+    if str(report.get("exam_id") or "") != str(exam_id) or str(report.get("task_id")) != str(task_id):
+        return False
+    # Only an unchanged task type may reuse; a missing category on either side cannot be compared.
+    if category is None or report.get("category") is None:
+        return True
+    return str(report["category"]) == str(category)
 
 
 def reusable_row(row, q, paper_id):
@@ -130,10 +134,16 @@ def reusable_row(row, q, paper_id):
         if fingerprint != question_fingerprint(q):
             return None
     else:
+        # A plain row may speak only for its own plain choice question.
+        kind = q["type_id"]
+        if kind not in (1, 2) or q["paper_sub_id"] or q.get("context"):
+            return None
         record = row.get("record")
-        if not isinstance(record, dict) or q["paper_sub_id"]:
+        if not isinstance(record, dict) or record.get("paperSubId"):
             return None
         if str(record.get("paperId") or "") != str(paper_id):
+            return None
+        if str(record.get("questionNo")) != str(q["number"]):
             return None
         if str(row.get("title") or "") != q["title"]:
             return None
@@ -142,8 +152,18 @@ def reusable_row(row, q, paper_id):
         if not isinstance(options, list) or options != fresh:
             return None
         sort_order = record.get("optionSort")
-        if sort_order is not None and str(sort_order) != json.dumps(q["raw_options"], ensure_ascii=False,
-                                                                   separators=(",", ":")):
+        # The platform may re-serialize whitespace: only the parsed value must match.
+        try:
+            saved_options = json.loads(sort_order) if isinstance(sort_order, str) else None
+        except ValueError:
+            return None
+        if saved_options != q["raw_options"]:
+            return None
+        # A single choice carries one label, a multiple choice carries a list.
+        label = row["answer"]
+        if kind == 1 and not isinstance(label, str):
+            return None
+        if kind == 2 and not isinstance(label, list):
             return None
     try:
         answer_record(q, row["answer"])
@@ -299,7 +319,7 @@ class AnswerRunner:
             clock = self.clock_factory(self.api, course, exam_id, task_id, remaining, self.auto_submit).start()
             entries, saved_answers = {}, {}
             question_total = len(items)
-            if reuse_identity(previous, exam_id, task_id):
+            if reuse_identity(previous, exam_id, task_id, category):
                 self.progress.detail("复用上一轮答案：" + report["paper"])
             if self.max_workers > 1 and question_total > 1:
                 parallel = ParallelAnswers(self.ai, [q for _, q, _ in items], self.max_workers, clock)
@@ -313,7 +333,7 @@ class AnswerRunner:
 
             def saved_value(position, q):
                 """Validated answer of an unchanged question from the same draft, with its source."""
-                rows = previous.get("answers") if reuse_identity(previous, exam_id, task_id) else None
+                rows = previous.get("answers") if reuse_identity(previous, exam_id, task_id, category) else None
                 if not isinstance(rows, list) or position >= len(rows):
                     return None
                 answer = reusable_row(rows[position], q, q["paper_id"])

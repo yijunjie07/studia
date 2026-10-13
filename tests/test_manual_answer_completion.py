@@ -48,10 +48,10 @@ class RunnerMixin:
     def saved_report(self):
         return json.loads(next(Path(self.temp.name).rglob("*.json")).read_text(encoding="utf-8"))
 
-    def write_previous(self, rows, user="user", task_id="task", exam_id="exam", status="needs_review"):
+    def write_previous(self, rows, user="user", task_id="task", exam_id="exam", status="needs_review", category=3):
         path = report_path(self.temp.name, user, self.course, exam_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"paper": "测验", "exam_id": exam_id, "category": 3, "status": status,
+        path.write_text(json.dumps({"paper": "测验", "exam_id": exam_id, "category": category, "status": status,
                                     "task_id": task_id, "answers": rows}, ensure_ascii=False), encoding="utf-8")
 
     def row(self, position, title=None, answer="A", fingerprint=True, source="ai"):
@@ -150,7 +150,60 @@ class ReuseTests(RunnerMixin, unittest.TestCase):
         self.run_paper(False)
         self.assertEqual(self.ai.answer.call_count, 1)
 
-    def test_another_task_another_account_or_another_exam_reuses_nothing(self):
+    def test_a_legacy_row_is_never_reused_for_another_category(self):
+        self.paper = [self.q(0)]
+        self.api.paper.return_value["questions"] = self.paper
+        self.write_previous([self.row(0, fingerprint=False)], category=1)
+        self.run_paper(False)
+        self.assertEqual(self.ai.answer.call_count, 1)
+
+    def test_a_legacy_row_accepts_reformatted_option_sort_whitespace(self):
+        self.paper = [self.q(0)]
+        self.api.paper.return_value["questions"] = self.paper
+        legacy = self.row(0, fingerprint=False)
+        legacy["record"]["optionSort"] = json.dumps(json.loads(legacy["record"]["optionSort"]), indent=2)
+        self.write_previous([legacy])
+        report = self.run_paper(False)
+        self.assertEqual(self.ai.answer.call_count, 0)
+        self.assertEqual(report["answers"][0]["answer"], "A")
+
+    def test_a_legacy_row_without_proof_of_identity_is_not_reused(self):
+        self.paper = [self.q(0)]
+        self.api.paper.return_value["questions"] = self.paper
+
+        def other_options(row):
+            raw = json.loads(row["record"]["optionSort"])
+            raw[0] = {**raw[0], "Content": "另一个选项"}
+            row["record"]["optionSort"] = json.dumps(raw, separators=(",", ":"))
+
+        cases = {
+            "no sort": lambda row: row["record"].pop("optionSort"),
+            "malformed sort": lambda row: row["record"].update(optionSort="not json"),
+            "sort of other options": other_options,
+            "other question number": lambda row: row["record"].update(questionNo=99),
+            "child question": lambda row: row["record"].update(paperSubId="child"),
+            "list answer for single choice": lambda row: row.update(answer=["A"]),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(case=name):
+                legacy = self.row(0, fingerprint=False)
+                mutate(legacy)
+                self.write_previous([legacy])
+                self.ai.answer.reset_mock()
+                self.run_paper(False)
+                self.assertEqual(self.ai.answer.call_count, 1)
+
+    def test_a_legacy_row_is_only_reused_for_simple_choice_questions(self):
+        # A non-choice legacy row can carry a self-consistent record; it is still not reusable.
+        self.paper = [dict(question(3), title="判断")]
+        self.api.paper.return_value["questions"] = self.paper
+        q = prepare_question(self.paper[0], 0)
+        legacy = {"title": q["title"], "question_number": 1, "options": [],
+                  "answer": True, "record": {"questionNo": 0, "paperId": q["paper_id"], "answer": "1"}}
+        self.write_previous([legacy])
+        self.run_paper(False)
+        self.assertEqual(self.ai.answer.call_count, 1)
+
         self.addCleanup(lambda: [p.unlink() for p in Path(self.temp.name).rglob("*.json")])
         rows = [self.row(i, fingerprint=False) for i in range(3)]
         self.paper = [self.q(i) for i in range(3)]
