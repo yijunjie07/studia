@@ -125,6 +125,29 @@ class EmptyLibraryTests(unittest.TestCase):
         with self.assertRaises(Cancelled):
             view.library([], 0, {})
 
+    def test_line_mode_rejects_unknown_action_without_leaving_the_page(self):
+        view, output = make_view(["bogus", "s"], width=52)
+        self.assertEqual(view.library([], 0, {}), "s")
+        text = output.getvalue()
+        self.assertIn("请输入 r 刷新、t 切换平台或 s 设置；q 退出。", text)
+        self.assertGreaterEqual(text.count(EMPTY_BODY), 2)
+
+    def test_line_mode_empty_guidance_is_never_clipped(self):
+        for width in (40, 52):
+            with self.subTest(width=width):
+                view, output = make_view(["q"], width=width)
+                with self.assertRaises(Cancelled):
+                    view.library([], 0, {})
+                text = output.getvalue()
+                for line in ("当前平台暂无可显示的课程", "可先到平台网页核对或加入课程。",
+                             "加入课程后可刷新。", "已有课程？请核对账号与平台，",
+                             "并确认课程是否开放。"):
+                    self.assertIn(line, text)
+                for rendered in text.splitlines():
+                    if "加入课程后可刷新" in rendered:
+                        self.assertIn("加入课程后可刷新。", rendered)
+                self.assertNotIn("…", text)
+
     def test_workspace_empty_refresh_keeps_session_and_reads_courses(self):
         client = Mock(access_token="cached", user_id="user", default_base_url="https://platform.invalid")
         client.my_course_list.side_effect = [{"rows": []}, {"rows": COURSES}]
