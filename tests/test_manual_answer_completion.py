@@ -1,4 +1,5 @@
 """Manual completion: reuse valid answers, ask the human only for the rest, confirm before posting."""
+import io
 import json
 import tempfile
 import unittest
@@ -9,7 +10,11 @@ from ai.client import AIClient, AIConfig, AIServiceError
 from ai.questions import answer_record, model_question, prepare_question
 from ai.runner import AnswerRunner, report_path
 from AIMoocMain.exam_api import ExamError
+from app import Application
+from rich.console import Console
+from settings import SettingsStore
 from tests.test_ai import FakeClock, question
+from ui import TerminalUI
 
 
 class RunnerMixin:
@@ -315,6 +320,78 @@ class ManualCompletionTests(RunnerMixin, unittest.TestCase):
         self.assertEqual(report["status"], "submitted")
         confirm.assert_not_called()
         self.api.submit.assert_called_once()
+
+
+class ConfirmCancelTests(unittest.TestCase):
+    """A cancelled confirmation must not silently start the next queued paper."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.course = {"id": "ci", "courseId": "c", "courseName": "课程"}
+        self.selected = [(self.course, {"id": exam_id, "name": exam_id}, 3) for exam_id in ("first", "second")]
+        self.api = Mock(user_id="user")
+        self.ai = Mock()
+        self.ai.config.model = "model"
+        sleep = patch("ai.runner.time.sleep")
+        sleep.start()
+        self.addCleanup(sleep.stop)
+
+    def reset_paper(self):
+        self.api.reset_mock()
+        self.api.records.return_value = []
+        self.api.verify_submitted.return_value = True
+        self.api.paper.side_effect = lambda exam_id: {
+            "questions": [dict(question(qid=exam_id), title=exam_id)],
+            "taskExamRecord": {"id": "task-" + exam_id, "status": 0}}
+        self.ai.answer.side_effect = [{"answer": None, "confidence": .9, "explanation": "缺少材料"},
+                                      {"answer": "A", "confidence": .9, "explanation": "ok"}]
+
+    def make_view(self, confirm_inputs):
+        inputs = iter(confirm_inputs)
+
+        def feed():
+            value = next(inputs)
+            if isinstance(value, BaseException):
+                raise value
+            return value
+        view = TerminalUI(console=Console(file=io.StringIO(), width=100, highlight=False), input_fn=feed)
+        view.begin_operation()
+        return view
+
+    def execute(self, view):
+        app = Application(view, SettingsStore(Path(self.temp.name) / "settings"))
+
+        def factory(*args, **kwargs):
+            return AnswerRunner(*args, **kwargs, output_dir=self.temp.name, clock_factory=FakeClock, output=Mock())
+        with patch.object(app, "verify_ai", return_value=self.ai), patch("app.AnswerRunner", side_effect=factory):
+            return app.execute_ai(Mock(), self.selected, Mock(), True, api=self.api)
+
+    def saved_first(self):
+        return json.loads(report_path(self.temp.name, "user", self.course, "first").read_text(encoding="utf-8"))
+
+    def test_cancelling_the_confirmation_stops_the_queue_without_posting(self):
+        for cancel in (KeyboardInterrupt(), EOFError(), "q", "\x1b"):
+            with self.subTest(cancel=type(cancel).__name__ if isinstance(cancel, BaseException) else cancel):
+                self.reset_paper()
+                view = self.make_view(["B", cancel])
+                reports = self.execute(view)
+                self.assertEqual([report["status"] for report in reports], ["preview"])
+                self.api.paper.assert_called_once_with("first")
+                self.api.submit.assert_not_called()
+                saved = self.saved_first()
+                self.assertEqual(saved["answers"][0]["source"], "manual")
+                self.assertEqual(saved["answers"][0]["answer"], "B")
+                self.assertNotIn("pending_manual", saved)
+
+    def test_a_plain_decline_only_skips_that_paper_and_the_next_one_runs(self):
+        self.reset_paper()
+        self.ai.answer.side_effect = None
+        self.ai.answer.return_value = {"answer": None, "confidence": .9, "explanation": "缺少材料"}
+        reports = self.execute(self.make_view(["B", "n", "B", "n"]))
+        self.assertEqual([report["status"] for report in reports], ["preview", "preview"])
+        self.assertEqual(self.api.paper.call_count, 2)
+        self.api.submit.assert_not_called()
 
 
 class RecordingClock(FakeClock):

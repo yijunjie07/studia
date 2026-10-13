@@ -451,8 +451,15 @@ class AnswerRunner:
                     # A whole-paper submission after human input is explicit only.
                     # The attempt clock stays alive through the prompt, so time
                     # spent waiting on the human still counts against the deadline.
-                    if self.confirm_submit is None or not self.confirm_submit(report["paper"], completed, question_total):
+                    result = self.confirm_submit(report["paper"], completed, question_total) if self.confirm_submit else False
+                    if result is None:
+                        # The human cancelled the prompt: end the run instead of
+                        # starting the queued papers with the same state.
+                        report.update(status="preview", message="已取消交卷；答案已保存到本地，队列已停止，未向平台提交")
+                        report["stop_queue"] = True
+                    elif not result:
                         report.update(status="preview", message="未确认交卷，答案已保存到本地，未向平台提交")
+                    if not result:
                         return report
                 # The request below is the point of no return; every earlier
                 # deadline is still enforced against the confirmed answer.

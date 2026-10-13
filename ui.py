@@ -679,12 +679,12 @@ class TerminalUI:
                 warning = "输入无效：%s" % exc
 
     def confirm_submit(self, paper, completed, total):
-        """Explicit whole-paper confirmation; cancelling keeps the draft unsubmitted."""
+        """Whole-paper confirmation: True submits, False declines, None cancels the run."""
         try:
             with self.prompt_region():
                 return self.confirm("%s %s/%s 题已完成，交卷提交整份试卷？" % (paper, completed, total), default=False)
         except (Back, Cancelled, EOFError, KeyboardInterrupt):
-            return False
+            return None
 
     @staticmethod
     def course_details(course):

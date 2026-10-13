@@ -107,17 +107,23 @@ class ConfirmSubmitTests(unittest.TestCase):
         view, _ = self.make_view(["y"])
         self.assertTrue(view.confirm_submit("测验", 20, 20))
 
-    def test_cancel_and_back_return_false(self):
-        for answer in ("n", "q", ""):
+    def test_plain_no_returns_false_so_the_queue_continues(self):
+        for answer in ("n", ""):
             with self.subTest(answer=answer):
                 view, _ = self.make_view([answer] if answer else [])
                 self.assertFalse(view.confirm_submit("测验", 20, 20))
-        view, _ = self.make_view(["menu"])
+
+    def test_explicit_cancel_returns_none_so_the_queue_stops(self):
+        for answer in ("q",):  # q quits, Esc is Back, an empty input raises EOFError
+            with self.subTest(answer=answer):
+                view, _ = self.make_view([answer])
+                self.assertIsNone(view.confirm_submit("测验", 20, 20))
+        view, _ = self.make_view([])
         view.input_fn = Mock(return_value="\x1b")
-        self.assertFalse(view.confirm_submit("测验", 20, 20))
+        self.assertIsNone(view.confirm_submit("测验", 20, 20))
         view, _ = self.make_view([])
         view.input_fn = Mock(side_effect=EOFError())
-        self.assertFalse(view.confirm_submit("测验", 20, 20))
+        self.assertIsNone(view.confirm_submit("测验", 20, 20))
 
 
 class PausedStatusTests(unittest.TestCase):

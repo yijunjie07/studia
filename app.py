@@ -336,7 +336,9 @@ class Application:
                     logger.warning("已暂停补答：%s；其余试卷未执行，可稍后继续。", name)
                     break
                 if result.get("stop_queue") or status in ("submission_unknown", "submitting", "ai_error"):
-                    logger.warning("队列停止：服务不可用或交卷结果待确认；其余试卷未执行。")
+                    # The message states why this run ended; do not guess a
+                    # service failure when a human stopped a submission.
+                    logger.warning("队列停止：%s；其余试卷未执行。", result.get("message") or "本次处理已停止")
                     break
         return results
 
