@@ -201,6 +201,10 @@ class ManualCompletionTests(RunnerMixin, unittest.TestCase):
         self.assertEqual(entries[1]["answer"], "0")
         self.api.submit.assert_called_once()
         self.assertNotIn("pending_manual", self.saved_report())
+        markdown = next(Path(self.temp.name).rglob("*.md")).read_text(encoding="utf-8")
+        self.assertIn("人工答案：", markdown)
+        self.assertIn("AI 答案：", markdown)
+        self.assertIn("人工补答", markdown)
 
     def test_declining_confirmation_saves_answers_without_posting(self):
         self.fail_second()

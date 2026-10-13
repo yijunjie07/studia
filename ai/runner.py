@@ -75,14 +75,22 @@ def write_report(path, report):
     temp = path.with_suffix(".json.tmp")
     temp.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(str(temp), str(path))
-    lines = ["# " + report["paper"], "", "状态：" + report["status"], "", "AI 生成答案，不是平台标准答案。", ""]
+    header = "AI 生成答案，不是平台标准答案。"
+    if any(item.get("source") == "manual" for item in report["answers"]):
+        header = "答案由 AI 生成或人工补答，不是平台标准答案。"
+    lines = ["# " + report["paper"], "", "状态：" + report["status"], "", header, ""]
     if report.get("message"):
         lines += [report["message"], ""]
     for index, item in enumerate(report["answers"], 1):
         lines += ["## %d. %s" % (item.get("question_number", index), item.get("title", "无法解析的题目")), ""]
         for opt in item.get("options", []):
             lines.append("%s. %s" % (opt["label"], opt["text"]))
-        label = "人工答案：" if item.get("source") == "manual" else "AI 答案：" if item.get("answer") is not None else "待补答："
+        if item.get("source") == "manual":
+            label = "人工答案："
+        elif item.get("answer") is not None:
+            label = "AI 答案："
+        else:
+            label = "待补答："
         lines += ["", label + json.dumps(item.get("answer"), ensure_ascii=False),
                   "置信度：" + str(item.get("confidence", "")),
                   item.get("explanation", ""), item.get("error", ""), ""]
