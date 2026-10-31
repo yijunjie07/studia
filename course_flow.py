@@ -25,14 +25,14 @@ class CourseWorkspace:
     def run(self):
         # Import here so the legacy entry points and dependency injection share
         # the same client factories.
-        from app import AIMoocApi, ZYKMoocApi
+        from app import AIMoocApi, ZYKMoocApi, ZHSApi
 
         self.view.workspace = True
         while True:
             try:
                 if self.client is None:
                     try:
-                        cls = ZYKMoocApi if self.platform == 1 else AIMoocApi
+                        cls = {1: ZYKMoocApi, 2: ZHSApi}.get(self.platform, AIMoocApi)
                         self.client, self.rows = self.app.client_and_courses(cls, choose=False)
                     except Cancelled:
                         raise
@@ -51,7 +51,7 @@ class CourseWorkspace:
 
     def root_action(self, action):
         if action == "s":
-            if self.app.manage_settings(current_platform="zyk" if self.platform == 1 else "mooc"):
+            if self.app.manage_settings(current_platform={1: "zyk", 2: "zhs"}.get(self.platform, "mooc")):
                 self.view.set_user()
                 self.client, self.rows = None, []
                 self.library_state.clear()
@@ -77,7 +77,9 @@ class CourseWorkspace:
                 if mode == 1:
                     self.view.review_study(
                         courses, max_workers=self.store.concurrency()['study'],
-                        activities=self.platform != 1)
+                        activities=self.platform == 0,
+                        notice=("逐个视频实时播放，耗时约为视频时长的三分之二；"
+                                "平台限制同一账号同时只能看一个视频。") if self.platform == 2 else "")
                     result = self.execute(lambda: self.app.study(self.platform, self.client, courses))
                 else:
                     result = self.tasks(courses, mode, task_state.setdefault(mode, {}))
