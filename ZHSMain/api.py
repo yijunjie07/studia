@@ -29,6 +29,11 @@ AI = "https://kg-ai-run.zhihuishu.com"
 AI_TASK = "https://kg-run-student.zhihuishu.com"
 EXAM = "https://studentexamtest.zhihuishu.com"
 NEWBASE = "https://newbase.zhihuishu.com"
+HOMEWORK = "https://studentexam-api.zhihuishu.com"
+TAURUS = "https://taurusexam-api.zhihuishu.com"
+
+HOMEWORK_GATEWAY = HOMEWORK + "/studentExam/gateway/t/v1"
+TAURUS_GATEWAY = TAURUS + "/taurusExam/gateway/t/v1"
 
 HEADERS = {
     "Accept": "*/*",
@@ -117,6 +122,7 @@ class ZHSApi:
         self.username = username
         self.password = password
         self.user_info = None
+        self._shared_sso_done = False
         saved = access_token or token
         if saved:
             self.load_cookies(saved)
@@ -144,6 +150,7 @@ class ZHSApi:
         account = self.uuid
         if account:
             self.session.cookies.set("exitRecod_" + account, "2", domain="zhihuishu.com")
+        self._shared_sso_done = False
 
     @property
     def uuid(self):
@@ -680,3 +687,121 @@ class ZHSApi:
             )
             return {}
         return self.secure(self._exam_url("/exam/user/submit"), payload, key="exam", ok=0)
+
+    # ------------------------------------------------------------ 共享课试卷
+
+    def exam_form(self, url, payload, *, extra=None):
+        """Shared-course exam endpoints: no dateFormate, plain status "200"."""
+        form = {"secretStr": encrypt(json.dumps(dict(payload or {})), KEYS["exam"])}
+        if extra:
+            form.update(extra)
+        result = self._request("POST", url, data=form)
+        if str(result.get("status")) != "200":
+            message = result.get("msg") or result.get("message") or ""
+            if "滑块" in message or "验证" in message:
+                raise CaptchaRequired("智慧树要求滑块验证，请到网页打开该试卷完成验证后重试")
+            raise ZHSApiError(result.get("status"), message)
+        return result
+
+    def shared_exam_sso(self):
+        if self._shared_sso_done:
+            return
+        response = self._request(
+            "GET",
+            PASSPORT + "/cas/login",
+            params={"service": HOMEWORK + "/studentExam/gateway/t/v1/student/getStudentHomework"},
+            allow_redirects=False,
+            expect_json=False,
+        )
+        location = response.headers.get("Location") or ""
+        if response.status_code != 302 or "ticket=" not in location:
+            raise AuthenticationExpired("智慧树登录已过期，请重新扫码")
+        self._request("GET", location, allow_redirects=True, expect_json=False)
+        self._shared_sso_done = True
+
+    def shared_homework_list(self, recruit_id, course_id, flag):
+        rt = self.exam_form(
+            HOMEWORK_GATEWAY + "/student/getStudentHomework",
+            {"recruitId": recruit_id, "courseId": course_id, "flag": flag,
+             "pageSize": 200, "pageNum": 0},
+        ).get("rt")
+        if not isinstance(rt, dict) or not isinstance(rt.get("studentHomeworkList"), list):
+            raise PlatformUnavailable("智慧树作业列表返回格式异常，请稍后重试")
+        return rt["studentHomeworkList"]
+
+    def shared_exam_list(self, recruit_id, course_id, flag):
+        rt = self.exam_form(
+            TAURUS_GATEWAY + "/student/getStudentFinalExam",
+            {"courseId": course_id, "recruitId": recruit_id, "flag": flag},
+        ).get("rt")
+        if not isinstance(rt, list):
+            raise PlatformUnavailable("智慧树考试列表返回格式异常，请稍后重试")
+        return rt
+
+    def shared_school_id(self):
+        rt = self.exam_form(
+            HOMEWORK_GATEWAY + "/exam/getLoginSchoolInfo", {}).get("rt")
+        if not isinstance(rt, dict) or rt.get("schoolId") in (None, ""):
+            return ""
+        return str(rt["schoolId"])
+
+    def shared_answer_lock(self, exam_id, recruit_id):
+        rt = self.exam_form(
+            HOMEWORK_GATEWAY + "/answer/getSaveAnswerLockResult",
+            {"examId": exam_id, "recruitId": recruit_id},
+        ).get("rt")
+        state = rt.get("state") if isinstance(rt, dict) else None
+        try:
+            return int(state)
+        except (TypeError, ValueError):
+            raise PlatformUnavailable("智慧树答案锁状态返回异常，请稍后重试") from None
+
+    def shared_do_homework(self, recruit_id, exam_id, stu_exam_id, school_id, course_id):
+        return self.exam_form(
+            HOMEWORK_GATEWAY + "/student/doHomework",
+            {"recruitId": recruit_id, "examId": exam_id, "studentExamId": stu_exam_id,
+             "schoolId": school_id, "courseId": course_id},
+        ).get("rt")
+
+    def shared_do_exam(self, recruit_id, exam_id, stu_exam_id, school_id, course_id):
+        return self.exam_form(
+            TAURUS_GATEWAY + "/student/doExam",
+            {"recruitId": recruit_id, "examId": exam_id, "studentExamId": stu_exam_id,
+             "schoolId": school_id, "courseId": course_id, "deviceId": ""},
+        ).get("rt")
+
+    def shared_save_answer(self, answer_item, recruit_id, *, exam):
+        extra = {"source": "1"} if exam else None
+        return self.exam_form(
+            HOMEWORK_GATEWAY + "/answer/saveStudentAnswer",
+            {"stuExamAnswer": json.dumps([answer_item]), "recruitId": recruit_id},
+            extra=extra,
+        )
+
+    def shared_submit_homework(self, recruit_id, exam_id, stu_exam_id, count):
+        return self.exam_form(
+            HOMEWORK_GATEWAY + "/answer/submit",
+            {"recruitId": recruit_id, "examId": exam_id, "stuExamId": stu_exam_id,
+             "achieveCount": str(count)},
+        ).get("rt")
+
+    def shared_submit_exam(self, recruit_id, exam_id, stu_exam_id, count):
+        rt = self.exam_form(
+            TAURUS_GATEWAY + "/answer/submit",
+            {"recruitId": recruit_id, "examId": exam_id, "stuExamId": stu_exam_id,
+             "achieveCount": str(count)},
+        ).get("rt")
+        if not isinstance(rt, dict):
+            raise PlatformUnavailable("智慧树交卷结果返回格式异常，请稍后重试")
+        if str(rt.get("statu")) != "1":
+            raise ZHSApiError("statu", rt.get("msg"))
+        return rt
+
+    def shared_answer_info(self, recruit_id, stu_exam_id, exam_id, school_id, course_id,
+                           question_ids):
+        return self.exam_form(
+            HOMEWORK_GATEWAY + "/answer/getStuAnswerInfo",
+            {"recruitId": recruit_id, "stuExamId": stu_exam_id, "examId": exam_id,
+             "schoolId": school_id, "courseId": course_id,
+             "questionIds": ",".join(str(qid) for qid in question_ids)},
+        ).get("rt")

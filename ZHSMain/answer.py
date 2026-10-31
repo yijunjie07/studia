@@ -23,8 +23,11 @@ MEDIA = re.compile(r"<(img|audio|video|iframe)\b", re.I)
 
 
 def _kind(raw):
+    kind = raw.get("questionType")
+    if isinstance(kind, dict):
+        kind = kind.get("id")
     try:
-        return int(raw.get("questionType"))
+        return int(kind)
     except (TypeError, ValueError):
         raise ValueError("暂不支持该题型") from None
 
@@ -68,6 +71,17 @@ def prepare(raw):
     public["options"] = texts
     return {"qid": raw.get("id"), "kind": kind, "public": public,
             "ids": ids, "blank_count": 0}
+
+
+def prepare_shared(raw):
+    """Shared-course questions use eid / name / questionOptions instead of the AI shape."""
+    if not isinstance(raw, dict):
+        raise ValueError("题目数据格式异常")
+    if raw.get("eid") in (None, ""):
+        raise ValueError("题目缺少平台 ID")
+    return prepare({"id": raw["eid"], "content": raw.get("name") or "",
+                    "questionType": raw.get("questionType"),
+                    "optionVos": raw.get("questionOptions")})
 
 
 def encode(prepared, answer, *, fill_sep):
@@ -132,6 +146,8 @@ class ZHSAnswerRunner:
                 return self._homework(z, cz, name)
             if kind == "ai_exam":
                 return self._exam(z, cz, name)
+            if kind in ("shared_homework", "shared_exam"):
+                return self._shared(course, item, z, name, kind == "shared_exam")
         except KeyError as exc:
             return self._result(name, "error", "试卷缺少必要字段：%s" % exc)
         except (CaptchaRequired, StudyTimeLimit, AuthenticationExpired, KeyboardInterrupt):
@@ -246,17 +262,87 @@ class ZHSAnswerRunner:
                          save_one=None, item_of=item_of, flush=flush,
                          submit=submit, after_submit=after_submit)
 
+    # ------------------------------------------------------------ 共享课试卷
+
+    def _shared(self, course, item, z, name, is_exam):
+        zc = course.get("zhs") or {}
+        recruit_id = z.get("recruitId", zc.get("recruitId"))
+        course_id = z.get("courseId", zc.get("courseId"))
+        exam_id = z["examId"]
+        stu_exam_id = z["stuExamId"]
+        # The catalog may be minutes old; re-check before opening the paper.
+        entries = catalog_shared(self.client, course)
+        current = next((entry for _, entry, _ in entries if entry.get("id") == item.get("id")), None)
+        if current is None:
+            return self._result(name, "error", "试卷已不在列表中，请刷新后重试")
+        if current.get("_unavailable"):
+            return self._result(name, "error", current["_unavailable"][1])
+
+        self.client.shared_exam_sso()
+        school = self.client.shared_school_id()
+        opener = self.client.shared_do_exam if is_exam else self.client.shared_do_homework
+        rt = opener(recruit_id, exam_id, stu_exam_id, school, course_id)
+        try:
+            parts = rt["examBase"]["workExamParts"]
+        except (KeyError, TypeError):
+            return self._result(name, "error", "试卷题目格式异常")
+        sheet = []
+        for part in parts or []:
+            if isinstance(part, dict):
+                sheet.extend(q for q in (part.get("questionDtos") or []) if isinstance(q, dict))
+        total = len(sheet)
+        if total == 0:
+            return self._result(name, "error", "试卷题目为空")
+
+        def save_one(entry, prepared, encoded):
+            answer = (encoded[0] if prepared["kind"] == 3
+                      else ",".join(str(part) for part in encoded))
+            self.client.shared_save_answer({
+                "examId": exam_id,
+                "recruitId": recruit_id,
+                "stuExamId": stu_exam_id,
+                "eid": prepared["qid"],
+                "schoolId": school,
+                "deviceId": "",
+                "examType": 1 if is_exam else "",
+                "fromType": 3,
+                "answer": answer,
+                "dataIds": "",
+                "questionType": prepared["kind"],
+            }, recruit_id, exam=is_exam)
+
+        def submit():
+            if is_exam:
+                self.client.shared_submit_exam(recruit_id, exam_id, stu_exam_id, total)
+                return {"paper": name, "status": "submitted", "message": "已交卷，成绩以平台为准"}
+            rt = self.client.shared_submit_homework(recruit_id, exam_id, stu_exam_id, total) or {}
+            score = rt.get("score")
+            total_score = rt.get("totalScore")
+            if score is None:
+                message = "已交卷，成绩以平台为准"
+            elif total_score is None:
+                message = "已交卷，得分 %s" % score
+            else:
+                message = "已交卷，得分 %s/%s" % (score, total_score)
+            return {"paper": name, "status": "submitted", "message": message}
+
+        return self._run(name, exam_id, stu_exam_id, sheet, fill_sep="/",
+                         save_one=save_one, submit=submit, heartbeat=False,
+                         fetch=lambda entry: entry)
+
     # ------------------------------------------------------------------ 流程
 
     def _run(self, name, test_id, paper_id, sheet, *, fill_sep, save_one=None,
-             item_of=None, flush=None, submit=None, after_submit=None):
+             item_of=None, flush=None, submit=None, after_submit=None,
+             heartbeat=True, fetch=None):
         if not isinstance(sheet, list):
             return self._result(name, "error", "答题卡格式异常")
         total = len(sheet)
         if total == 0:
             return self._result(name, "error", "答题卡为空")
         self.reporter.questions(name, 0, total)
-        self._start_heartbeat(test_id, paper_id)
+        if heartbeat:
+            self._start_heartbeat(test_id, paper_id)
         try:
             batch = []
             for index, entry in enumerate(sheet, 1):
@@ -266,9 +352,12 @@ class ZHSAnswerRunner:
                 self.reporter.detail("%s · 第 %d/%d 题" % (name, index, total))
                 self.sleep(self.rng.uniform(3, 5))
                 try:
-                    raw = self.client.exam_question(
-                        test_id, paper_id, entry["questionId"], entry["version"])
-                    prepared = prepare(raw)
+                    if fetch is not None:
+                        raw = fetch(entry)
+                    else:
+                        raw = self.client.exam_question(
+                            test_id, paper_id, entry["questionId"], entry["version"])
+                    prepared = prepare_shared(raw) if fetch is not None else prepare(raw)
                     reply = self._ask(prepared["public"])
                     encoded = encode(prepared, reply.get("answer"), fill_sep=fill_sep)
                 except (CaptchaRequired, StudyTimeLimit, AuthenticationExpired, KeyboardInterrupt):
@@ -300,7 +389,7 @@ class ZHSAnswerRunner:
             if not self.auto_submit:
                 return self._result(name, "preview", "答案已保存，未交卷")
             try:
-                submit()
+                outcome = submit()
             except (CaptchaRequired, StudyTimeLimit, AuthenticationExpired, KeyboardInterrupt):
                 raise
             except Exception:
@@ -308,7 +397,9 @@ class ZHSAnswerRunner:
                 self.reporter.detail("%s · 提交请求失败" % name)
                 return self._result(name, "submission_unknown",
                                     "提交结果未知，请到平台核对；未重试")
-            return after_submit()
+            if after_submit is not None:
+                return after_submit()
+            return outcome or self._result(name, "submitted", "已交卷")
         finally:
             self._stop_heartbeat()
 
@@ -395,6 +486,13 @@ def _knowledge_points(basic):
 
 
 def catalog(client, course):
+    kind = (course.get("zhs") or {}).get("kind")
+    if kind == "shared":
+        return catalog_shared(client, course)
+    return catalog_ai(client, course)
+
+
+def catalog_ai(client, course):
     """List knowledge-homework and exam papers for the AI course task picker."""
     z = course.get("zhs") or {}
     course_id = z.get("courseId")
@@ -481,4 +579,122 @@ def catalog(client, course):
     if homework_failed and exam_failed:
         raise PlatformUnavailable("智慧树试卷目录读取失败，请稍后重试")
     return [(course, item, 1 if item["zhs"]["kind"] == "ai_homework" else 2)
+            for item in entries]
+
+
+def _shared_homework_items(client, recruit_id, course_id):
+    rows = client.shared_homework_list(recruit_id, course_id, 1)
+    rows += client.shared_homework_list(recruit_id, course_id, 2)
+    items = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        stu_exam_id = row.get("id")
+        exam_id = row.get("examId")
+        if stu_exam_id in (None, "") or exam_id in (None, ""):
+            logger.warning("跳过缺少标识的共享课作业：%s", row.get("examName"))
+            continue
+        row_course = row.get("courseId")
+        if row_course not in (None, "") and str(row_course) != str(course_id):
+            logger.warning("跳过课程不符的共享课作业：%s", row.get("examName"))
+            continue
+        item = {
+            "id": "shw-%s-%s" % (stu_exam_id, exam_id),
+            "name": row.get("examName") or "未命名作业",
+            "startTime": row.get("startTime"),
+            "endTime": row.get("endDate"),
+            "zhs": {"kind": "shared_homework", "recruitId": recruit_id,
+                    "courseId": course_id, "stuExamId": stu_exam_id, "examId": exam_id},
+        }
+        if "score" in row:
+            item["score"] = row["score"]
+        state = row.get("state")
+        item["_completion_status"] = "submitted" if state == 4 else "not_started"
+        if state == 4:
+            item["_unavailable"] = ("已提交", "已提交的作业不自动重做（会消耗重做次数），需要请到网页操作。")
+        elif state not in (1, 4, 5):
+            item["_unavailable"] = ("状态未知", "平台状态未知，请到网页核对。")
+        items.append(item)
+    return items
+
+
+def _shared_exam_items(client, recruit_id, course_id):
+    rows = client.shared_exam_list(recruit_id, course_id, 1)
+    rows += client.shared_exam_list(recruit_id, course_id, 0)
+    items, seen = [], set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        stu_exam_id = row.get("id")
+        exam_id = row.get("examId")
+        if stu_exam_id in (None, "") or exam_id in (None, ""):
+            logger.warning("跳过缺少标识的共享课考试：%s", row.get("examName"))
+            continue
+        key = (str(stu_exam_id), str(exam_id))
+        if key in seen:
+            continue
+        seen.add(key)
+        item = {
+            "id": "sex-%s-%s" % (stu_exam_id, exam_id),
+            "name": row.get("examName") or "未命名考试",
+            "startTime": row.get("startTime"),
+            "endTime": row.get("endDate"),
+            "zhs": {"kind": "shared_exam", "recruitId": recruit_id,
+                    "courseId": course_id, "stuExamId": stu_exam_id, "examId": exam_id},
+        }
+        if "score" in row:
+            item["score"] = row["score"]
+        state = row.get("state")
+        if state == 4:
+            item["_completion_status"] = "submitted"
+            item["_unavailable"] = ("已提交", "考试已提交。")
+            items.append(item)
+            continue
+        if not row.get("studentStartTime") and state != 2:
+            item["_unavailable"] = ("未开考", "考试需要先在网页上手动开考，再回来答题。")
+        elif _positive_int(row.get("faStudentExamRemainCount")) <= 0:
+            item["_unavailable"] = ("无剩余次数", "考试剩余次数不足或未知。")
+        else:
+            try:
+                locked = client.shared_answer_lock(exam_id, recruit_id) == 1
+            except (CaptchaRequired, AuthenticationExpired):
+                raise
+            except Exception as exc:
+                logger.warning("%s：查询答案锁失败：%s", item["name"], exc)
+                item["_unavailable"] = ("状态未知", "答案锁状态查询失败，请刷新重试。")
+            else:
+                if locked:
+                    item["_unavailable"] = ("已锁定", "考试答案已锁定。")
+        items.append(item)
+    return items
+
+
+def catalog_shared(client, course):
+    """List shared-course homework and exams with their reasons for being unusable."""
+    z = course.get("zhs") or {}
+    recruit_id = z.get("recruitId")
+    course_id = z.get("courseId")
+    entries = []
+    homework_failed = exam_failed = False
+
+    client.shared_exam_sso()
+    try:
+        entries.extend(_shared_homework_items(client, recruit_id, course_id))
+    except (CaptchaRequired, AuthenticationExpired):
+        raise
+    except Exception as exc:
+        homework_failed = True
+        logger.warning("读取共享课作业目录失败：%s", exc)
+
+    try:
+        entries.extend(_shared_exam_items(client, recruit_id, course_id))
+    except (CaptchaRequired, AuthenticationExpired):
+        raise
+    except Exception as exc:
+        exam_failed = True
+        logger.warning("读取共享课考试目录失败：%s", exc)
+
+    if homework_failed and exam_failed:
+        raise PlatformUnavailable("智慧树试卷目录读取失败，请稍后重试")
+    return [(course, item, 1 if item["zhs"]["kind"] == "shared_homework" else 2)
             for item in entries]

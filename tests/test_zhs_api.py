@@ -299,5 +299,78 @@ class ExamApiTest(unittest.TestCase):
             client.ai_homework_info(1, 2, 3)
 
 
+class SharedExamApiTest(unittest.TestCase):
+    def test_exam_form_has_no_date_formate(self):
+        client = make_api()
+        client.session.request.return_value = json_response({"status": "200", "rt": {"ok": 1}})
+        result = client.exam_form("https://x.test/path", {"a": 1})
+        self.assertEqual(result["rt"], {"ok": 1})
+        _, kwargs = client.session.request.call_args
+        self.assertNotIn("dateFormate", kwargs["data"])
+        body = json.loads(decrypt(kwargs["data"]["secretStr"], KEYS["exam"]))
+        self.assertEqual(body, {"a": 1})
+
+    def test_exam_form_extra_and_status(self):
+        client = make_api()
+        client.session.request.return_value = json_response({"status": 200})
+        client.exam_form("https://x.test/path", {"a": 1}, extra={"source": "1"})
+        _, kwargs = client.session.request.call_args
+        self.assertEqual(kwargs["data"]["source"], "1")
+        client.session.request.return_value = json_response({"status": "500", "msg": "boom"})
+        with self.assertRaises(ZHSApiError) as ctx:
+            client.exam_form("https://x.test/path", {})
+        self.assertEqual(ctx.exception.code, "500")
+        self.assertIn("boom", str(ctx.exception))
+
+    def test_exam_form_captcha(self):
+        client = make_api()
+        client.session.request.return_value = json_response({"status": "500", "msg": "请拖动滑块验证"})
+        with self.assertRaises(CaptchaRequired):
+            client.exam_form("https://x.test/path", {})
+
+    def test_shared_exam_sso(self):
+        client = make_api()
+        redirect = Mock(status_code=302, headers={"Location": "https://x.test/landing?ticket=t1"})
+        landing = Mock(status_code=200)
+        client.session.request.side_effect = [redirect, landing]
+        client.shared_exam_sso()
+        first, second = client.session.request.call_args_list
+        self.assertTrue(first.args[1].startswith(api.PASSPORT + "/cas/login"))
+        self.assertFalse(first.kwargs["allow_redirects"])
+        self.assertEqual(first.kwargs["params"]["service"],
+                         api.HOMEWORK + "/studentExam/gateway/t/v1/student/getStudentHomework")
+        self.assertEqual(second.args[1], "https://x.test/landing?ticket=t1")
+        self.assertTrue(second.kwargs["allow_redirects"])
+        # Completed once; a second call makes no request.
+        client.shared_exam_sso()
+        self.assertEqual(client.session.request.call_count, 2)
+
+    def test_shared_exam_sso_expired(self):
+        client = make_api()
+        client.session.request.return_value = Mock(status_code=200, headers={})
+        with self.assertRaises(AuthenticationExpired):
+            client.shared_exam_sso()
+
+    def test_shared_submit_exam_checks_statu(self):
+        client = make_api()
+        client.session.request.return_value = json_response({"status": "200", "rt": {"statu": "1"}})
+        self.assertEqual(client.shared_submit_exam(1, 2, 3, 4)["statu"], "1")
+        client.session.request.return_value = json_response(
+            {"status": "200", "rt": {"statu": "0", "msg": "no"}})
+        with self.assertRaises(ZHSApiError) as ctx:
+            client.shared_submit_exam(1, 2, 3, 4)
+        self.assertEqual(ctx.exception.code, "statu")
+        self.assertIn("no", str(ctx.exception))
+
+    def test_shared_submit_exam_uses_taurus(self):
+        client = make_api()
+        client.session.request.return_value = json_response({"status": "200", "rt": {"statu": "1"}})
+        client.shared_submit_exam(1, 2, 3, 4)
+        _, kwargs = client.session.request.call_args
+        self.assertIn(api.TAURUS + "/taurusExam/gateway/t/v1/answer/submit", client.session.request.call_args.args[1])
+        body = json.loads(decrypt(kwargs["data"]["secretStr"], KEYS["exam"]))
+        self.assertEqual(body["achieveCount"], "4")
+
+
 if __name__ == "__main__":
     unittest.main()
