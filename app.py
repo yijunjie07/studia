@@ -9,8 +9,10 @@ from AIMoocMain.exam_api import ExamAPI, ExamError, ExamServiceError, TaskUnavai
 from AIMoocMain.export_questions import QuizExportHandler, collect_quiz_catalog, paper_display_name, paper_exam_id
 from ZYKMoocMain.api import ZYKMoocApi
 from ZYKMoocMain.main import ZYKMoocHandler
-from ZHSMain.api import ZHSApi
+from ZHSMain.api import CaptchaRequired, StudyTimeLimit, ZHSApi
 from ZHSMain.main import ZHSHandler
+import ZHSMain.answer
+from ZHSMain.answer import ZHSAnswerRunner
 from ZHSMain.login import qr_login
 from NewMoocMain.oauth_login import oauth_login
 from ai.client import AIClient, AIError
@@ -390,6 +392,47 @@ class Application:
                     # service failure when a human stopped a submission.
                     logger.warning("队列停止：%s；其余试卷未执行。", result.get("message") or "本次处理已停止")
                     break
+        return results
+
+    def zhs_task_catalog(self, client, courses):
+        catalog = []
+        with self.view.activity("读取课程任务"):
+            for course in courses:
+                catalog.extend(ZHSMain.answer.catalog(client, course))
+        return catalog
+
+    def execute_zhs_ai(self, client, selected, config, auto_submit):
+        results = []
+        ai_client = None
+        with self.view.activity("AI 答题"):
+            self.progress.begin("AI 答题", len(selected), "份试卷")
+            try:
+                for course, item, category in selected:
+                    name = paper_display_name(item)
+                    if ai_client is None:
+                        ai_client = self.verify_ai(config)
+                        runner = ZHSAnswerRunner(client, ai_client, auto_submit=auto_submit,
+                                                 on_progress=self.view.on_progress)
+                    try:
+                        result = runner.run_paper(course, item, category)
+                        results.append(result)
+                    except (CaptchaRequired, StudyTimeLimit) as exc:
+                        results.append({"paper": name, "status": "error", "message": str(exc)})
+                        self.progress.result(name, "error")
+                        logger.warning("队列停止：%s；其余试卷未执行。", exc)
+                        break
+                    status = result["status"]
+                    if status == "ai_error":
+                        self.remember(lambda: self.store.save_ai_health(
+                            config, "error", result.get("message", "AI 服务失败")))
+                    self.progress.result(name, status)
+                    if status in ("ai_error", "submission_unknown"):
+                        logger.warning("队列停止：%s；其余试卷未执行。",
+                                       result.get("message") or "本次处理已停止")
+                        break
+            finally:
+                if ai_client is not None:
+                    ai_client.session.close()
         return results
 
     def run(self):

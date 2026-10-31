@@ -8,6 +8,10 @@ from ui import Back, Cancelled
 
 def task_identity(task):
     course, item, category = task
+    zhs = course.get("zhs")
+    if zhs is not None:
+        return (str(zhs.get("courseId")), str(zhs.get("classId", "")),
+                paper_exam_id(item), category)
     return (str(course.get("id") or course.get("courseInfoId") or ""),
             str(course.get("courseId") or ""), paper_exam_id(item), category)
 
@@ -95,9 +99,14 @@ class CourseWorkspace:
                 if self.view.operation_result() == 2:
                     return
 
+    def catalog_for(self, courses):
+        if self.platform == 2:
+            return self.app.zhs_task_catalog(self.client, courses)
+        return self.app.task_catalog(self.client, courses)
+
     def tasks(self, courses, mode, state):
         try:
-            catalog = self.app.task_catalog(self.client, courses)
+            catalog = self.catalog_for(courses)
         except Exception as exc:
             self.view.begin_operation()
             self.view.pending_error = str(exc)
@@ -119,7 +128,7 @@ class CourseWorkspace:
             if choice == "r":
                 selected = state.get("selected", selected)
                 try:
-                    catalog = self.app.task_catalog(self.client, courses)
+                    catalog = self.catalog_for(courses)
                 except Exception as exc:
                     self.view.begin_operation()
                     self.view.pending_error = str(exc)
@@ -152,6 +161,10 @@ class CourseWorkspace:
                         connection_status=self.app.ai_status_text)
                     config = answer_options["config"]
                     def answer():
+                        if self.platform == 2:
+                            # 智慧树没有本地报告文件，执行器已记录结果与错误。
+                            self.app.execute_zhs_ai(self.client, selected, config, auto_submit)
+                            return []
                         results = self.app.execute_ai(self.client, selected, config, auto_submit)
                         for report in results:
                             if report.get("status") in ("submitted", "preview"):

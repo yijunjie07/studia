@@ -621,6 +621,8 @@ class TerminalUI:
         choices = [(1, "自动学习", "完成课程学习任务")]
         if platform == 0:
             choices += [(2, "AI 答题", "AI 作答并自动交卷"), (3, "导出题目", "保存题目和已有答案")]
+        elif platform == 2:
+            choices += [(2, "AI 答题", "AI 作答，可选自动交卷")]
         return self.choice(title, choices, help_text="Esc 返回课程列表 · q 退出")
 
     def choose_platform(self, current):

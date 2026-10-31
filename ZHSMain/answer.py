@@ -425,6 +425,7 @@ def catalog(client, course):
             except (TypeError, ValueError):
                 done = False
             entries.append({
+                "id": "hw-%s-%s-%s" % (knowledge_id, test_id, paper_id),
                 "name": "%s · 作业" % knowledge_name,
                 "score": score,
                 "_completion_status": "submitted" if done else "not_started",
@@ -454,6 +455,7 @@ def catalog(client, course):
                 logger.warning("跳过缺少标识的考试任务：%s", task.get("taskName") or task_id)
                 continue
             item = {
+                "id": "exam-%s-%s-%s" % (task_id, test_id, paper_id),
                 "name": task.get("taskName") or "未命名考试",
                 "startTime": task.get("startTime"),
                 "endTime": task.get("endTime"),

@@ -1,8 +1,10 @@
 import random
 import unittest
 
+from AIMoocMain.export_questions import paper_exam_id
 from ai.client import AIError, AITransientServiceError
 from base.auth import PlatformUnavailable
+from course_flow import task_identity
 from ZHSMain.answer import ZHSAnswerRunner, catalog, encode, prepare
 from ZHSMain.api import CaptchaRequired
 
@@ -334,6 +336,17 @@ class CatalogTest(unittest.TestCase):
         for _, item, _ in entries:
             self.assertNotIn("typeId", item)
             self.assertNotIn("status", item)
+
+    def test_entries_have_stable_unique_ids(self):
+        client = self.make_client()
+        other = dict(COURSE, courseName="课程二", zhs={"kind": "ai", "courseId": 9, "classId": 2})
+        first = {task_identity(task) for task in catalog(client, COURSE)}
+        second = {task_identity(task) for task in catalog(client, other)}
+        self.assertTrue(first.isdisjoint(second))
+        ids = [paper_exam_id(item) for _, item, _ in catalog(client, COURSE)]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(ids[0], "hw-1-11-22")
+        self.assertEqual(ids[1], "exam-7-5-6")
 
     def test_partial_failure(self):
         client = self.make_client()
