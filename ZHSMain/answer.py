@@ -1037,10 +1037,11 @@ def _shared_homework_items(client, recruit_id, course_id):
     return items
 
 
-def _shared_exam_items(client, recruit_id, course_id):
+def _shared_exam_items(client, recruit_id, course_id, seen=()):
     rows = client.shared_exam_list(recruit_id, course_id, 1)
     rows += client.shared_exam_list(recruit_id, course_id, 0)
-    items, seen = [], set()
+    # flag=0 also returns the chapter tests already listed as homework (same ids).
+    items, seen = [], set(seen)
     for row in rows or []:
         if not isinstance(row, dict):
             continue
@@ -1106,7 +1107,8 @@ def catalog_shared(client, course):
         logger.warning("读取共享课作业目录失败：%s", exc)
 
     try:
-        entries.extend(_shared_exam_items(client, recruit_id, course_id))
+        listed = {(str(e["zhs"]["stuExamId"]), str(e["zhs"]["examId"])) for e in entries}
+        entries.extend(_shared_exam_items(client, recruit_id, course_id, listed))
     except (CaptchaRequired, AuthenticationExpired):
         raise
     except Exception as exc:
