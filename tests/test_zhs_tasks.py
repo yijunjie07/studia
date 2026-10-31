@@ -1,6 +1,8 @@
 """智慧课程 AI 答题接入课程任务流程（离线）。"""
 import io
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from rich.console import Console
@@ -63,6 +65,7 @@ class ExecuteTest(unittest.TestCase):
         self.events = []
         view.on_progress = self.events.append
         self.store = Mock()
+        self.store.path = Path(tempfile.mkdtemp()) / "settings.json"
         self.store.concurrency.return_value = {"ai": 5, "study": 1}
         self.app = Application(view, store=self.store)
         self.ai_session = Mock()

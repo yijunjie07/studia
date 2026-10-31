@@ -1,5 +1,6 @@
 """Application orchestration. Menus/rendering are provided by the view (ui.py)."""
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from MoocMain.log import Logger
 
@@ -13,6 +14,7 @@ from ZHSMain.api import CaptchaRequired, StudyTimeLimit, ZHSApi
 from ZHSMain.main import ZHSHandler
 import ZHSMain.answer
 from ZHSMain.answer import ZHSAnswerRunner
+from ZHSMain.memory import AnswerMemory
 from ZHSMain.login import qr_login
 from NewMoocMain.oauth_login import oauth_login
 from ai.client import AIClient, AIError
@@ -414,7 +416,9 @@ class Application:
                         runner = ZHSAnswerRunner(
                             client, ai_client, auto_submit=auto_submit,
                             on_progress=self.view.on_progress,
-                            max_workers=self.store.concurrency()["ai"])
+                            max_workers=self.store.concurrency()["ai"],
+                            memory=AnswerMemory(
+                                Path(self.store.path).parent / "zhs-answers.json"))
                     try:
                         result = runner.run_paper(course, item, category)
                         results.append(result)

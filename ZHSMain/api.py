@@ -818,3 +818,10 @@ class ZHSApi:
              "schoolId": school_id, "courseId": course_id,
              "questionIds": ",".join(str(qid) for qid in question_ids)},
         ).get("rt")
+
+    def shared_look_homework(self, recruit_id, stu_exam_id, exam_id, school_id, course_id):
+        return self.exam_form(
+            HOMEWORK_GATEWAY + "/student/lookHomework",
+            {"recruitId": recruit_id, "studentExamId": stu_exam_id, "examId": exam_id,
+             "schoolId": school_id, "courseId": course_id},
+        ).get("rt")
