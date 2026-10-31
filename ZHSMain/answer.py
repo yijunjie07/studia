@@ -756,6 +756,10 @@ class ZHSAnswerRunner:
         if right:
             self.memory.remember_correct(prepared, right)
             changed = True
+        elif submitted and passed:
+            # Judgement options carry no isCorrect mark; a passing verdict is the proof.
+            self.memory.remember_correct(prepared, submitted)
+            changed = True
         if submitted and not passed:
             self.memory.remember(prepared, submitted, False)
             changed = True

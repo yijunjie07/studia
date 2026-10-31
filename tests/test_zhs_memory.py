@@ -246,6 +246,22 @@ class ReuseFlowTest(unittest.TestCase):
                                           {"id": 202, "content": "4", "isCorrect": 1}]))["correct"], ["4"])
         save.assert_called()
 
+    def test_passing_answer_is_remembered_when_options_are_unmarked(self):
+        # Live judgement questions mark no option isCorrect; only the verdict proves it.
+        memory = AnswerMemory(self.path)
+        options = [{"id": 101, "content": "对"}, {"id": 102, "content": "错"}]
+        client = FakeClient({1: raw_question(1, options=options)}, correct={1: True})
+        result = runner(client, FakeAI(["A"]), memory).run_paper(COURSE, HOME, 1)
+        self.assertEqual(result["status"], "submitted", result)
+        self.assertEqual(memory.lookup(prepared(1, options=options))["correct"], ["对"])
+
+    def test_reconfirmed_answer_leaves_the_wrong_list(self):
+        memory = AnswerMemory(self.path)
+        item = prepared(1, options=[{"id": 101, "content": "1"}, {"id": 102, "content": "2"}])
+        memory.remember(item, ["2"], False)
+        memory.remember_correct(item, ["2"])
+        self.assertEqual(memory.lookup(item), {"correct": ["2"], "wrong": []})
+
     def test_shared_homework_after_submit_updates_memory(self):
         from ZHSMain.answer import prepare_shared
         from tests.test_zhs_shared_answer import FakeSharedClient, homework_item
