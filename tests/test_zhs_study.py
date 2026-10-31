@@ -1,4 +1,5 @@
 import random
+import threading
 import unittest
 
 from base.auth import AuthenticationExpired
@@ -348,6 +349,30 @@ class RetryTest(unittest.TestCase):
 class AiStudyTest(unittest.TestCase):
     def course(self):
         return {"cakeThemeList": [{"knowledgeList": [{"knowledgeId": 1, "knowledgeName": "k"}]}]}
+
+    def test_cancel_stops_inside_an_ai_video(self):
+        client = FakeClient()
+        client.basic = self.course()
+        client.ai_lengths = {"f1": 300}
+        video = [{"studyStatus": 0, "schedule": 0, "resourcesDetail": {
+            "resourcesType": 1, "resourcesDistributeType": 3,
+            "resourcesFileId": "f1", "resourcesName": "video"}}]
+        client.ai_resources_queue = {1: [video, video]}
+        cancel = threading.Event()
+        reports = []
+        original = client.ai_report
+
+        def report(*args):
+            reports.append(args)
+            if len(reports) == 3:
+                cancel.set()
+            return original(*args)
+
+        client.ai_report = report
+        with self.assertRaises(KeyboardInterrupt):
+            ZHSHandler(client=client, course_rows=[ai_row()], sleep=lambda seconds: None,
+                       rng=FixedRng(), cancel_event=cancel)
+        self.assertEqual(len(reports), 3)
 
     def test_resource_dispatch_and_video_positions(self):
         client = FakeClient()

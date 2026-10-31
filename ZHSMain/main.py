@@ -461,6 +461,8 @@ class ZHSHandler:
             self.client.ai_report(course_id, class_id, file_id, knowledge_id, length)
             return
         while True:
+            if self.cancel_event.is_set():
+                raise KeyboardInterrupt
             position = min(int(round(position + 1.5 * 2)), length)
             attempts = 0
             while True:
