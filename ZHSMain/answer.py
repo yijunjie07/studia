@@ -12,6 +12,7 @@ from ai.client import AIError, AITransientServiceError
 from base.auth import AuthenticationExpired, PlatformUnavailable
 from MoocMain.log import Logger
 from reporting import Reporter
+from task_metrics import nonnegative_number
 from ZHSMain.api import CaptchaRequired, StudyTimeLimit
 
 logger = Logger(__name__).get_log()
@@ -287,6 +288,15 @@ class ZHSAnswerRunner:
 
         self.client.shared_exam_sso()
         school = self.client.shared_school_id()
+        redo = bool(current.get("_redo")) and not is_exam
+        if redo:
+            try:
+                self.client.shared_redo_homework(recruit_id, exam_id, course_id)
+            except (CaptchaRequired, StudyTimeLimit, AuthenticationExpired, KeyboardInterrupt):
+                raise
+            except Exception as exc:
+                return self._result(name, "error", "申请重做失败：%s" % exc)
+            logger.info("%s：已申请重做（剩余 %s 次）", name, current.get("answerCount"))
         opener = self.client.shared_do_exam if is_exam else self.client.shared_do_homework
         rt = opener(recruit_id, exam_id, stu_exam_id, school, course_id)
         try:
@@ -333,9 +343,12 @@ class ZHSAnswerRunner:
                 message = "已交卷，得分 %s/%s" % (score, total_score)
             return {"paper": name, "status": "submitted", "message": message}
 
-        return self._run(name, exam_id, stu_exam_id, sheet, fill_sep="/",
-                         save_one=save_one, submit=submit, heartbeat=False,
-                         fetch=lambda entry: entry)
+        result = self._run(name, exam_id, stu_exam_id, sheet, fill_sep="/",
+                           save_one=save_one, submit=submit, heartbeat=False,
+                           fetch=lambda entry: entry)
+        if redo and result.get("status") in ("error", "ai_error"):
+            result["message"] = "%s（已消耗一次重做机会，未交卷；该作业已重置，再次选择它作答不会再消耗重做次数）" % result.get("message", "")
+        return result
 
     # ------------------------------------------------------------------ 流程
 
@@ -674,6 +687,24 @@ def catalog_ai(client, course):
             for item in entries]
 
 
+def _retry_counts(row):
+    """(remaining redos, total redos) from backNum/isMarking, or None if unreadable."""
+    total = nonnegative_number(row.get("backNum"))
+    used = nonnegative_number(row.get("isMarking"))
+    if total is None or total != int(total):
+        return None
+    used = 0 if used is None else used
+    if used != int(used):
+        return None
+    return max(int(total) - int(used), 0), int(total)
+
+
+def _is_full_score(row):
+    score = nonnegative_number(row.get("score"))
+    total = nonnegative_number(row.get("totalScore"))
+    return score is not None and total is not None and score >= total
+
+
 def _shared_homework_items(client, recruit_id, course_id):
     rows = client.shared_homework_list(recruit_id, course_id, 1)
     rows += client.shared_homework_list(recruit_id, course_id, 2)
@@ -700,10 +731,23 @@ def _shared_homework_items(client, recruit_id, course_id):
         }
         if "score" in row:
             item["score"] = row["score"]
+        retry = _retry_counts(row)
+        if retry is not None:
+            item["frequency"], item["answerCount"] = retry[1], retry[0]
         state = row.get("state")
         item["_completion_status"] = "submitted" if state == 4 else "not_started"
         if state == 4:
-            item["_unavailable"] = ("已提交", "已提交的作业不自动重做（会消耗重做次数），需要请到网页操作。")
+            if _is_full_score(row):
+                item["_unavailable"] = ("已满分", "已满分，无需重做。")
+            elif retry is None or retry[0] <= 0:
+                item["_unavailable"] = ("无重做次数", "重做次数已用完。")
+            else:
+                remaining = retry[0]
+                item["zhs"]["redo"] = True
+                item["_redo"] = True
+                item["_hint"] = (
+                    "重做成绩会覆盖当前成绩（当前 %s/%s），剩余重做 %d 次。"
+                    % (row.get("score"), row.get("totalScore"), remaining))
         elif state not in (1, 4, 5):
             item["_unavailable"] = ("状态未知", "平台状态未知，请到网页核对。")
         items.append(item)

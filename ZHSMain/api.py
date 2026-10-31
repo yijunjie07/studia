@@ -784,6 +784,13 @@ class ZHSApi:
             extra=extra,
         )
 
+    def shared_redo_homework(self, recruit_id, exam_id, course_id):
+        return self.exam_form(
+            HOMEWORK_GATEWAY + "/student/saveCourseTran",
+            {"recruitId": recruit_id, "examId": exam_id, "description": "",
+             "courseId": course_id},
+        )
+
     def shared_submit_homework(self, recruit_id, exam_id, stu_exam_id, count):
         return self.exam_form(
             HOMEWORK_GATEWAY + "/answer/submit",
