@@ -168,6 +168,23 @@ class CourseListTest(unittest.TestCase):
         self.assertEqual(rows[1]["courseName"], "未命名课程")
         self.assertEqual(rows[1]["zhs"], {"kind": "ai", "courseId": 7, "classId": 8})
 
+    def test_live_list_shapes(self):
+        # Field names as returned by the live platform (secret, percent strings, string ids).
+        client = make_api()
+        client.shared_courses = Mock(return_value=[
+            {"secret": "abc", "courseName": "新一代信息技术导论", "recruitId": 444872,
+             "courseId": 1000091138, "progress": "45.5%"},
+        ])
+        client.ai_courses = Mock(return_value=[
+            {"courseName": "通信基础", "courseId": "1234567890123456789", "classId": 326950, "schedule": 58},
+        ])
+        shared, ai = client.my_course_list()["rows"]
+        self.assertEqual(shared["zhs"], {"kind": "shared", "secret": "abc", "recruitId": 444872,
+                                         "courseId": 1000091138})
+        self.assertEqual(shared["studySpeed"], 46)
+        self.assertEqual(ai["zhs"]["courseId"], 1234567890123456789)
+        self.assertEqual(ai["studySpeed"], 58)
+
     def test_one_side_failure(self):
         client = make_api()
         client.shared_courses = Mock(side_effect=PlatformUnavailable("down"))

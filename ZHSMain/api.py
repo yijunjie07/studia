@@ -78,6 +78,14 @@ def encode_ev(values):
     return "".join(parts)
 
 
+def _percent(value):
+    """Course progress arrives as 58, "58.3" or "58.3%"; None when absent."""
+    try:
+        return round(float(str(value).strip().rstrip("%")))
+    except (TypeError, ValueError):
+        return None
+
+
 class WatchPoints:
     def __init__(self, start=0):
         self.points = [0, 1]
@@ -295,7 +303,8 @@ class ZHSApi:
         return {"rows": rows}
 
     def _shared_row(self, item):
-        secret = item.get("recruitAndCourseId")
+        # The live list names the course key "secret"; older responses used recruitAndCourseId.
+        secret = item.get("secret") or item.get("recruitAndCourseId")
         try:
             recruit_id = int(item.get("recruitId"))
         except (TypeError, ValueError):
@@ -317,10 +326,9 @@ class ZHSApi:
                 "courseId": course_id,
             },
         }
-        try:
-            row["studySpeed"] = round(float(item.get("progress")))
-        except (TypeError, ValueError):
-            pass
+        progress = _percent(item.get("progress"))
+        if progress is not None:
+            row["studySpeed"] = progress
         return row
 
     def _ai_row(self, item):
@@ -328,11 +336,15 @@ class ZHSApi:
         class_id = self._int_or_zero(item.get("classId"))
         if course_id <= 0 or class_id <= 0:
             return None
-        return {
+        row = {
             "courseName": item.get("courseName") or "未命名课程",
             "courseInfoName": "智慧课程",
             "zhs": {"kind": "ai", "courseId": course_id, "classId": class_id},
         }
+        progress = _percent(item.get("schedule"))
+        if progress is not None:
+            row["studySpeed"] = progress
+        return row
 
     @staticmethod
     def _int_or_zero(value):
