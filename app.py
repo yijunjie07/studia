@@ -411,8 +411,10 @@ class Application:
                     name = paper_display_name(item)
                     if ai_client is None:
                         ai_client = self.verify_ai(config)
-                        runner = ZHSAnswerRunner(client, ai_client, auto_submit=auto_submit,
-                                                 on_progress=self.view.on_progress)
+                        runner = ZHSAnswerRunner(
+                            client, ai_client, auto_submit=auto_submit,
+                            on_progress=self.view.on_progress,
+                            max_workers=self.store.concurrency()["ai"])
                     try:
                         result = runner.run_paper(course, item, category)
                         results.append(result)

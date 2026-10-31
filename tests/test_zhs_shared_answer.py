@@ -189,13 +189,13 @@ class SharedHomeworkFlowTest(unittest.TestCase):
         self.assertEqual(result["status"], "preview")
         self.assertNotIn("shared_submit_homework", client.names())
 
-    def test_bad_answer_stops_without_submit(self):
+    def test_bad_answer_stops_without_saving_or_submit(self):
         client = FakeSharedClient([shared_question("e1"), shared_question("e2"),
                                    shared_question("e3")])
-        result = runner(client, FakeAI(["B", "Z"])).run_paper(COURSE, homework_item(), 1)
+        result = runner(client, FakeAI(["B", "Z", "B"])).run_paper(COURSE, homework_item(), 1)
         self.assertEqual(result["status"], "error")
         self.assertIn("第 2 题", result["message"])
-        self.assertEqual(len(client.call("shared_save_answer")), 1)
+        self.assertEqual(client.call("shared_save_answer"), [])
         self.assertNotIn("shared_submit_homework", client.names())
 
     def test_captcha_propagates(self):

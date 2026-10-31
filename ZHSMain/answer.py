@@ -5,6 +5,7 @@ import random
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from AIMoocMain.export_questions import clean_html_text
 from ai.client import AIError, AITransientServiceError
@@ -118,9 +119,14 @@ def _positive_int(value):
     return number if number > 0 else 0
 
 
+class _Skipped(Exception):
+    """A queued question skipped after another one already failed."""
+
+
 class ZHSAnswerRunner:
     def __init__(self, client, ai_client, *, auto_submit, on_progress=None, sleep=time.sleep,
-                 rng=None, heartbeat_interval=10, batch_size=5, cancel_event=None):
+                 rng=None, heartbeat_interval=10, batch_size=5, max_workers=8,
+                 cancel_event=None):
         self.client = client
         self.ai_client = ai_client
         self.auto_submit = auto_submit
@@ -129,6 +135,7 @@ class ZHSAnswerRunner:
         self.rng = rng or random.Random()
         self.heartbeat_interval = heartbeat_interval
         self.batch_size = max(1, int(batch_size))
+        self.max_workers = max(1, int(max_workers))
         self.cancel_event = cancel_event if cancel_event is not None else threading.Event()
         self._heartbeat_stop = None
         self._heartbeat_thread = None
@@ -341,67 +348,152 @@ class ZHSAnswerRunner:
         if total == 0:
             return self._result(name, "error", "答题卡为空")
         self.reporter.questions(name, 0, total)
+        logger.info("开始：%s（%d 题）", name, total)
         if heartbeat:
             self._start_heartbeat(test_id, paper_id)
         try:
-            batch = []
+            # 1. 拿题：顺序请求平台，题目全部就绪后才开始作答与保存。
+            questions = []
+            fetched = False
             for index, entry in enumerate(sheet, 1):
                 if self.cancel_event.is_set():
                     raise KeyboardInterrupt
                 self._raise_heartbeat_error()
-                self.reporter.detail("%s · 第 %d/%d 题" % (name, index, total))
-                self.sleep(self.rng.uniform(3, 5))
                 try:
                     if fetch is not None:
                         raw = fetch(entry)
                     else:
+                        if fetched:
+                            self.sleep(self.rng.uniform(0.5, 1))
                         raw = self.client.exam_question(
                             test_id, paper_id, entry["questionId"], entry["version"])
+                        fetched = True
                     prepared = prepare_shared(raw) if fetch is not None else prepare(raw)
-                    reply = self._ask(prepared["public"])
-                    encoded = encode(prepared, reply.get("answer"), fill_sep=fill_sep)
                 except (CaptchaRequired, StudyTimeLimit, AuthenticationExpired, KeyboardInterrupt):
                     raise
-                except AIError as exc:
-                    return self._result(name, "ai_error", "第 %d 题：%s" % (index, exc))
                 except Exception as exc:
                     return self._result(name, "error", "第 %d 题：%s" % (index, exc))
+                questions.append((entry, prepared))
+
+            # 2. AI 作答：不碰平台，可并发；任何一题失败都不保存、不提交。
+            answers, failure = self._ask_all(name, questions, fill_sep)
+            if failure is not None:
+                return failure
+
+            # 3. 保存：顺序执行平台请求。
+            batch = []
+            saved_any = False
+            for index, (entry, prepared) in enumerate(questions, 1):
+                if self.cancel_event.is_set():
+                    raise KeyboardInterrupt
+                self._raise_heartbeat_error()
+                self.reporter.detail("%s · 保存答案 %d/%d" % (name, index, total))
                 try:
                     if save_one is not None:
-                        save_one(entry, prepared, encoded)
+                        if saved_any:
+                            self.sleep(self.rng.uniform(1, 2))
+                        save_one(entry, prepared, answers[index - 1])
+                        saved_any = True
                     else:
-                        batch.append(item_of(entry, prepared, encoded))
+                        batch.append(item_of(entry, prepared, answers[index - 1]))
                         if len(batch) >= self.batch_size:
+                            if saved_any:
+                                self.sleep(self.rng.uniform(1, 2))
                             flush(batch)
                             batch = []
+                            saved_any = True
                 except (CaptchaRequired, StudyTimeLimit, AuthenticationExpired, KeyboardInterrupt):
                     raise
                 except Exception as exc:
                     return self._result(name, "error", "第 %d 题保存失败：%s" % (index, exc))
-                self.reporter.questions(name, index, total)
             if batch:
                 try:
+                    if saved_any:
+                        self.sleep(self.rng.uniform(1, 2))
                     flush(batch)
                 except (CaptchaRequired, StudyTimeLimit, AuthenticationExpired, KeyboardInterrupt):
                     raise
                 except Exception as exc:
                     return self._result(name, "error", "保存答案失败：%s" % exc)
+            logger.info("%s：已保存 %d 题答案", name, total)
+
             if not self.auto_submit:
-                return self._result(name, "preview", "答案已保存，未交卷")
-            try:
-                outcome = submit()
-            except (CaptchaRequired, StudyTimeLimit, AuthenticationExpired, KeyboardInterrupt):
-                raise
-            except Exception:
-                # Never resubmit: a duplicate attempt is worse than an unknown result.
-                self.reporter.detail("%s · 提交请求失败" % name)
-                return self._result(name, "submission_unknown",
-                                    "提交结果未知，请到平台核对；未重试")
-            if after_submit is not None:
-                return after_submit()
-            return outcome or self._result(name, "submitted", "已交卷")
+                result = self._result(name, "preview", "答案已保存，未交卷")
+            else:
+                try:
+                    outcome = submit()
+                except (CaptchaRequired, StudyTimeLimit, AuthenticationExpired, KeyboardInterrupt):
+                    raise
+                except Exception:
+                    # Never resubmit: a duplicate attempt is worse than an unknown result.
+                    self.reporter.detail("%s · 提交请求失败" % name)
+                    return self._result(name, "submission_unknown",
+                                        "提交结果未知，请到平台核对；未重试")
+                if after_submit is not None:
+                    result = after_submit()
+                else:
+                    result = outcome or self._result(name, "submitted", "已交卷")
+            logger.info("%s：%s", name, result.get("message", ""))
+            return result
         finally:
             self._stop_heartbeat()
+
+    def _ask_all(self, name, questions, fill_sep):
+        """Answer prepared questions concurrently; keep results in question order."""
+        total = len(questions)
+        answers = [None] * total
+        failures = {}
+        # Queued work is skipped through this flag rather than Future.cancel():
+        # as_completed never wakes for futures cancelled by executor.shutdown.
+        stop = threading.Event()
+        control_error = None
+        with ThreadPoolExecutor(max_workers=min(self.max_workers, total)) as executor:
+            futures = {
+                executor.submit(self._solve, prepared, fill_sep, stop): index
+                for index, (_, prepared) in enumerate(questions)
+            }
+            completed = 0
+            for future in as_completed(futures):
+                index = futures[future]
+                try:
+                    encoded = future.result()
+                except _Skipped:
+                    continue
+                except (CaptchaRequired, StudyTimeLimit, AuthenticationExpired, KeyboardInterrupt) as exc:
+                    control_error = control_error or exc
+                    stop.set()
+                    continue
+                except Exception as exc:
+                    failures[index] = exc
+                    stop.set()
+                    continue
+                if self.cancel_event.is_set() or self._heartbeat_error is not None:
+                    stop.set()
+                answers[index] = encoded
+                completed += 1
+                self.reporter.questions(name, completed, total)
+                logger.info("%s · AI 作答 %d/%d：%s", name, index + 1, total,
+                            questions[index][1]["public"]["title"][:40])
+        if self._heartbeat_error is not None:
+            control_error, self._heartbeat_error = self._heartbeat_error, None
+        if control_error is None and self.cancel_event.is_set():
+            control_error = KeyboardInterrupt()
+        if control_error is not None:
+            raise control_error
+        if failures:
+            index = min(failures)
+            exc = failures[index]
+            status = "ai_error" if isinstance(exc, AIError) else "error"
+            return answers, self._result(name, status, "第 %d 题：%s" % (index + 1, exc))
+        return answers, None
+
+    def _solve(self, prepared, fill_sep, stop):
+        if self.cancel_event.is_set():
+            raise KeyboardInterrupt
+        if stop.is_set():
+            raise _Skipped()
+        reply = self._ask(prepared["public"])
+        return encode(prepared, reply.get("answer"), fill_sep=fill_sep)
 
     def _ask(self, public):
         attempts = 0
