@@ -310,6 +310,15 @@ class SharedExamApiTest(unittest.TestCase):
         body = json.loads(decrypt(kwargs["data"]["secretStr"], KEYS["exam"]))
         self.assertEqual(body, {"a": 1})
 
+    def test_empty_homework_page_has_no_list(self):
+        # The live platform answers an empty page with {"next": ...} and no list key.
+        client = make_api()
+        client.session.request.return_value = json_response({"status": "200", "rt": {"next": 0}})
+        self.assertEqual(client.shared_homework_list(1, 2, 2), [])
+        client.session.request.return_value = json_response({"status": "200", "rt": None})
+        with self.assertRaises(PlatformUnavailable):
+            client.shared_homework_list(1, 2, 2)
+
     def test_exam_form_extra_and_status(self):
         client = make_api()
         client.session.request.return_value = json_response({"status": 200})

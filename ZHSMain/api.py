@@ -725,9 +725,15 @@ class ZHSApi:
             {"recruitId": recruit_id, "courseId": course_id, "flag": flag,
              "pageSize": 200, "pageNum": 0},
         ).get("rt")
-        if not isinstance(rt, dict) or not isinstance(rt.get("studentHomeworkList"), list):
+        if not isinstance(rt, dict):
             raise PlatformUnavailable("智慧树作业列表返回格式异常，请稍后重试")
-        return rt["studentHomeworkList"]
+        # An empty page is {"next": ...} with no list at all, not an empty list.
+        rows = rt.get("studentHomeworkList")
+        if rows is None:
+            return []
+        if not isinstance(rows, list):
+            raise PlatformUnavailable("智慧树作业列表返回格式异常，请稍后重试")
+        return rows
 
     def shared_exam_list(self, recruit_id, course_id, flag):
         rt = self.exam_form(
