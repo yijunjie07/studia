@@ -15,12 +15,19 @@ from base.auth import AuthenticationExpired, PlatformUnavailable
 logger = Logger(__name__).get_log()
 
 IV = b"1g3qqdh4jvbskb9x"
-KEYS = {"home": b"7q9oko0vqb3la20r", "video": b"azp53h0kft7qi78q", "ai": b"hw2fdlwcj4cs1mx7"}
+KEYS = {
+    "home": b"7q9oko0vqb3la20r",
+    "video": b"azp53h0kft7qi78q",
+    "ai": b"hw2fdlwcj4cs1mx7",
+    "exam": b"onbfhdyvz8x7otrp",
+}
 EV_KEY = "zzpttjd"
 BASE = "https://onlineservice-api.zhihuishu.com"
 PASSPORT = "https://passport.zhihuishu.com"
 STUDY = "https://studyservice-api.zhihuishu.com"
 AI = "https://kg-ai-run.zhihuishu.com"
+AI_TASK = "https://kg-run-student.zhihuishu.com"
+EXAM = "https://studentexamtest.zhihuishu.com"
 NEWBASE = "https://newbase.zhihuishu.com"
 
 HEADERS = {
@@ -179,14 +186,17 @@ class ZHSApi:
             raise PlatformUnavailable("智慧树返回了未知格式，请稍后重试")
         return result
 
-    def secure(self, url, payload, *, key="video", ok=0, as_json=False, method="POST"):
+    def _secure_form(self, payload, key):
         body = dict(payload or {})
         timestamp = int(time.time() * 1000)
         body["dateFormate"] = timestamp
-        form = {
+        return {
             "secretStr": encrypt(json.dumps(body), KEYS[key]),
             "dateFormate": str(timestamp),
         }
+
+    def secure(self, url, payload, *, key="video", ok=0, as_json=False, method="POST"):
+        form = self._secure_form(payload, key)
         if method.upper() == "GET":
             result = self._request("GET", url, params=form)
         elif as_json:
@@ -525,3 +535,148 @@ class ZHSApi:
                 )
         except Exception as exc:
             logger.debug("视频流预请求失败：%s", exc)
+
+    # ------------------------------------------------------------ 智慧课程试卷
+
+    @staticmethod
+    def _exam_url(path):
+        return EXAM + "/gateway/t/v1" + path
+
+    def ai_homework_info(self, course_id, class_id, knowledge_id):
+        data = self.secure(
+            AI + "/run/gateway/t/stu/exam/questions-paper",
+            {
+                "scMapId": course_id,
+                "courseId": class_id,
+                "classId": class_id,
+                "knowledgeId": knowledge_id,
+            },
+            key="ai",
+            ok=200,
+            as_json=True,
+        ).get("data")
+        if not isinstance(data, dict):
+            raise PlatformUnavailable("智慧树作业信息返回格式异常，请稍后重试")
+        return data
+
+    def ai_exam_tasks(self, course_id):
+        data = self.secure(
+            AI_TASK + "/student/gateway/t/task/taskList",
+            {"courseId": str(course_id), "taskType": 1, "taskName": "", "status": 0},
+            key="ai",
+            ok=200,
+            as_json=True,
+        ).get("data")
+        if not isinstance(data, list):
+            raise PlatformUnavailable("智慧树考试任务返回格式异常，请稍后重试")
+        return [task for task in data if isinstance(task, dict) and task.get("taskType") == 1]
+
+    def ai_exam_pull_paper(self, course_id, class_id, exam_test_id):
+        return self.secure(
+            AI + "/run/gateway/t/task/exam/start-pull-paper",
+            {
+                "courseId": course_id,
+                "classId": class_id,
+                "examTestId": exam_test_id,
+                "pageNumber": 1,
+                "pageSize": 10,
+            },
+            key="ai",
+            ok=200,
+            as_json=True,
+        )
+
+    def ai_exam_detail(self, payload):
+        data = self.secure(
+            AI + "/run/gateway/t/task/exam/openExamDetail",
+            payload,
+            key="ai",
+            ok=200,
+            as_json=True,
+        ).get("data")
+        return data if isinstance(data, dict) else {}
+
+    def exam_open(self, payload):
+        return self.secure(self._exam_url("/exam/user/openExam"), payload, key="exam", ok=0)
+
+    def exam_sheet(self, exam_test_id, exam_paper_id, *, all_parts):
+        payload = {"examTestId": exam_test_id, "examPaperId": exam_paper_id}
+        if all_parts:
+            data = self.secure(
+                self._exam_url("/exam/user/getAnswerSheetInformation"),
+                payload,
+                key="exam",
+                ok=0,
+                method="GET",
+            ).get("data")
+            parts = data.get("partSheetVos") if isinstance(data, dict) else None
+        else:
+            data = self.secure(
+                self._exam_url("/exam/user/getExamSheetInfo"),
+                payload,
+                key="exam",
+                ok=0,
+                method="GET",
+            ).get("data")
+            parts = (data.get("partSheetVos") or [])[:1] if isinstance(data, dict) else None
+            if isinstance(data, dict) and not parts:
+                parts = [{"questionSheetVos": data.get("questionSheetVos")}]
+        questions = []
+        for part in parts or []:
+            if isinstance(part, dict):
+                questions.extend(part.get("questionSheetVos") or [])
+        result = []
+        for question in questions:
+            if not isinstance(question, dict):
+                continue
+            try:
+                qid = int(question.get("questionId"))
+                version = int(question.get("version") or 1)
+            except (TypeError, ValueError):
+                continue
+            result.append({"questionId": qid, "version": version})
+        return result
+
+    def exam_question(self, exam_test_id, exam_paper_id, question_id, version):
+        return self.secure(
+            self._exam_url("/question/getExamQuestionInfo"),
+            {
+                "examTestId": exam_test_id,
+                "examPaperId": exam_paper_id,
+                "questionId": question_id,
+                "version": version,
+            },
+            key="exam",
+            ok=0,
+            method="GET",
+        ).get("data")
+
+    def exam_save_answer(self, payload):
+        return self.secure(self._exam_url("/answer/saveAnswer"), payload, key="exam", ok=0)
+
+    def exam_save_batch(self, payload):
+        return self.secure(self._exam_url("/answer/saveBatchAnswer"), payload, key="exam", ok=0)
+
+    def exam_heartbeat(self, exam_test_id, exam_paper_id, seconds):
+        return self.secure(
+            self._exam_url("/exam/user/updateUserUsedTime"),
+            {
+                "examTestId": exam_test_id,
+                "examPaperId": exam_paper_id,
+                "heartbeatTime": seconds,
+            },
+            key="exam",
+            ok=0,
+        )
+
+    def exam_submit(self, payload, *, expect_body=True):
+        if not expect_body:
+            # The submit endpoint answers with an empty body; HTTP status is the only signal.
+            self._request(
+                "POST",
+                self._exam_url("/exam/user/submit"),
+                data=self._secure_form(payload, "exam"),
+                expect_json=False,
+            )
+            return {}
+        return self.secure(self._exam_url("/exam/user/submit"), payload, key="exam", ok=0)

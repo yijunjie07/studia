@@ -241,5 +241,63 @@ class LoginTest(unittest.TestCase):
             client.finish_qr_login("once")
 
 
+class ExamApiTest(unittest.TestCase):
+    def test_exam_sheet_uses_exam_key_and_host(self):
+        client = make_api()
+        client.session.request.side_effect = [
+            json_response({"code": 0, "data": {"partSheetVos": [
+                {"questionSheetVos": [{"questionId": "1"}, {"questionId": 2, "version": 3}]}]}}),
+            json_response({"code": 0, "data": {"partSheetVos": [
+                {"questionSheetVos": [{"questionId": 3}]},
+                {"questionSheetVos": [{"questionId": 4, "version": "2"}]}]}}),
+        ]
+        self.assertEqual(client.exam_sheet(11, 22, all_parts=False),
+                         [{"questionId": 1, "version": 1}, {"questionId": 2, "version": 3}])
+        self.assertEqual(client.exam_sheet(11, 22, all_parts=True),
+                         [{"questionId": 3, "version": 1}, {"questionId": 4, "version": 2}])
+        first, second = client.session.request.call_args_list
+        self.assertEqual(first.args[0], "GET")
+        self.assertTrue(first.args[1].startswith(api.EXAM + "/gateway/t/v1/"))
+        self.assertTrue(first.args[1].endswith("/exam/user/getExamSheetInfo"))
+        self.assertTrue(second.args[1].endswith("/exam/user/getAnswerSheetInformation"))
+        body = json.loads(decrypt(first.kwargs["params"]["secretStr"], KEYS["exam"]))
+        self.assertEqual(body["examTestId"], 11)
+        self.assertEqual(body["examPaperId"], 22)
+
+    def test_exam_submit_without_body(self):
+        client = make_api()
+        empty = Mock()
+        empty.status_code = 200
+        client.session.request.return_value = empty
+        client.exam_submit({"examTestId": 1}, expect_body=False)
+        _, kwargs = client.session.request.call_args
+        self.assertIsNone(kwargs["json"])
+        body = json.loads(decrypt(kwargs["data"]["secretStr"], KEYS["exam"]))
+        self.assertEqual(body["examTestId"], 1)
+        self.assertIn("dateFormate", body)
+
+        client.session.request.return_value = Mock(status_code=500)
+        with self.assertRaises(PlatformUnavailable):
+            client.exam_submit({"examTestId": 1}, expect_body=False)
+
+    def test_ai_exam_tasks_filters_type(self):
+        client = make_api()
+        client.session.request.return_value = json_response({"code": 200, "data": [
+            {"taskType": 1, "id": 1}, {"taskType": 2, "id": 2}, "bad"]})
+        self.assertEqual(client.ai_exam_tasks(9), [{"taskType": 1, "id": 1}])
+        _, kwargs = client.session.request.call_args
+        body = json.loads(decrypt(kwargs["json"]["secretStr"], KEYS["ai"]))
+        self.assertEqual(body["courseId"], "9")
+        self.assertEqual(body["taskType"], 1)
+
+    def test_ai_homework_info_shape(self):
+        client = make_api()
+        client.session.request.return_value = json_response({"code": 200, "data": {"examTestId": 1}})
+        self.assertEqual(client.ai_homework_info(1, 2, 3), {"examTestId": 1})
+        client.session.request.return_value = json_response({"code": 200, "data": []})
+        with self.assertRaises(PlatformUnavailable):
+            client.ai_homework_info(1, 2, 3)
+
+
 if __name__ == "__main__":
     unittest.main()
