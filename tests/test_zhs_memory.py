@@ -88,29 +88,6 @@ class MemoryStoreTest(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name) / "zhs-answers.json"
 
-    def test_shared_answers_fill_in_and_local_rejection_wins(self):
-        shared = Path(self.directory.name) / "shared.json"
-        question = prepared(1)
-        source = AnswerMemory(Path(self.directory.name) / "source.json", shared=shared)
-        source.remember(question, ["2"], True)
-        source.remember(prepared(2, content="2+2=?"), ["3"], False)
-        self.assertEqual(source.export_shared(), 1)
-        self.assertNotIn("wrong", shared.read_text(encoding="utf-8"))
-
-        memory = AnswerMemory(self.path, shared=shared)
-        self.assertEqual(memory.lookup(question)["correct"], ["2"])
-        memory.remember(question, ["2"], False)
-        self.assertIsNone(memory.lookup(question)["correct"])
-        self.assertIsNone(AnswerMemory(self.path).lookup(prepared(3, content="?"))["correct"])
-
-    def test_broken_shared_file_is_ignored(self):
-        shared = Path(self.directory.name) / "shared.json"
-        shared.write_text("{", encoding="utf-8")
-        memory = AnswerMemory(self.path, shared=shared)
-        memory.remember(prepared(1), ["2"], True)
-        self.assertEqual(memory.lookup(prepared(1))["correct"], ["2"])
-        self.assertIsNone(memory.lookup(prepared(2, content="?"))["correct"])
-
     def test_key_ignores_option_order_and_matches_by_text(self):
         forward = prepare(raw_question(1, options=[
             {"id": 1, "content": "甲"}, {"id": 2, "content": "乙"}]))
@@ -209,16 +186,6 @@ class CourseScopeTest(unittest.TestCase):
             runner(client, ai, memory).run_paper(
                 {"courseName": "别的课", "zhs": {"kind": "ai", "courseId": 9, "classId": 2}}, HOME, 1)
             self.assertEqual(len(ai.asked), 1)   # another course asks the AI
-
-    def test_export_still_feeds_the_bundled_file_without_course(self):
-        with tempfile.TemporaryDirectory() as directory:
-            shared = Path(directory) / "shared.json"
-            memory = AnswerMemory(Path(directory) / "m.json", shared=shared)
-            in_course(memory).remember_correct(prepared(1), ["2"])
-            memory.save()
-            self.assertEqual(memory.export_shared(), 1)
-            self.assertEqual(in_course(AnswerMemory(Path(directory) / "x.json", shared=shared), "ai/9")
-                             .lookup(prepared(1))["correct"], ["2"])
 
 
 class ReuseFlowTest(unittest.TestCase):
@@ -459,7 +426,7 @@ class DatabaseMemoryTest(unittest.TestCase):
             self.assertEqual(memory.lookup(question)["correct"], ["2"])
             restarted = DatabaseAnswerMemory(db)
             self.assertEqual(restarted.lookup(question), {"correct": ["2"], "wrong": [["1"]]})
-            self.assertEqual(restarted.stats(), {"questions": 1, "confirmed": 1, "bundled": 0})
+            self.assertEqual(restarted.stats(), {"questions": 1, "confirmed": 1})
 
     def test_legacy_user_files_merge_without_losing_either_side(self):
         from ZHSMain.memory import DatabaseAnswerMemory
