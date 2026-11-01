@@ -39,6 +39,9 @@ class AnswerMemory:
                               for option in public.get("options") or []),
             "blanks": prepared.get("blank_count") or 0,
         }
+        if prepared.get("scope"):
+            # Scoped to one course (see Scoped); unscoped keys are the bundled file's.
+            payload["scope"] = prepared["scope"]
         text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -52,7 +55,9 @@ class AnswerMemory:
             if not isinstance(item, dict):
                 item = {}
             wrong = [list(combo) for combo in item.get("wrong") or []]
-            for correct in (item.get("correct"), self._shared_correct(key)):
+            # The bundled file holds confirmed answers without a course; it stays a fallback.
+            bundled = self._shared_correct(self.key({k: v for k, v in prepared.items() if k != "scope"}))
+            for correct in (item.get("correct"), bundled):
                 if correct and not any(_canonical(prepared, combo) == _canonical(prepared, correct)
                                        for combo in wrong):
                     return {"correct": list(correct), "wrong": wrong}
@@ -64,7 +69,7 @@ class AnswerMemory:
             self._load()
             items = {key: {"correct": item["correct"]}
                      for key, item in _read_items(self.shared).items() if item["correct"]}
-            items.update((key, {"correct": item["correct"]})
+            items.update((item.get("open") or key, {"correct": item["correct"]})
                          for key, item in self._items.items() if item.get("correct"))
             self.shared.write_text(json.dumps(
                 {"version": 1, "items": dict(sorted(items.items()))},
@@ -83,6 +88,9 @@ class AnswerMemory:
             self._load()
             item = self._items.setdefault(
                 key, {"correct": None, "wrong": [], "updated": None})
+            if prepared.get("scope"):
+                # The course-free key lets export_shared() still feed the bundled file.
+                item["open"] = self.key({k: v for k, v in prepared.items() if k != "scope"})
             if correct:
                 # A fresh confirmation outranks an older rejection of the same answer.
                 canonical = _canonical(prepared, texts)
@@ -156,6 +164,26 @@ class AnswerMemory:
         finally:
             if temporary and os.path.exists(temporary):
                 os.unlink(temporary)
+
+
+class Scoped:
+    """A memory limited to one course: questions are looked up and stored under that scope,
+    so papers of the same course share answers and other courses never see them."""
+
+    def __init__(self, memory, scope):
+        self.memory, self.scope = memory, scope
+
+    def lookup(self, prepared):
+        return self.memory.lookup(dict(prepared, scope=self.scope))
+
+    def remember(self, prepared, answer_texts, correct):
+        self.memory.remember(dict(prepared, scope=self.scope), answer_texts, correct)
+
+    def remember_correct(self, prepared, answer_texts):
+        self.remember(prepared, answer_texts, True)
+
+    def save(self):
+        self.memory.save()
 
 
 class DatabaseAnswerMemory(AnswerMemory):
@@ -246,6 +274,8 @@ def _read_items(path):
             if isinstance(wrong, list) else []
         cleaned[key] = {"correct": correct or None, "wrong": wrong[-MAX_WRONG:],
                         "updated": item.get("updated")}
+        if isinstance(item.get("open"), str):
+            cleaned[key]["open"] = item["open"]
     return cleaned
 
 
