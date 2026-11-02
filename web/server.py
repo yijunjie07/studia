@@ -103,7 +103,7 @@ class Studia:
     """All state behind the web UI; one running job at a time across platforms."""
 
     def __init__(self, store=None, oauth=oauth_login, *, reports_dir="ai_results", oauth_url=None, memory=None, mooc_memory=None,
-                 job_limit=None):
+                 job_limit=None, zhs_parallel=None):
         self.store = store or SettingsStore()
         self.token = secrets.token_urlsafe(24)
         self.lock = threading.RLock()
@@ -115,6 +115,8 @@ class Studia:
         self.reports_dir = reports_dir
         # How many of this person's jobs may run at once; read each time, so an admin's change applies at once.
         self.job_limit = job_limit or (lambda: MAX_JOBS)
+        # Whether different Zhihuishu courses may play videos at the same time (an admin switch, off by default).
+        self.zhs_parallel = zhs_parallel or (lambda: False)
         self.oauth_url = oauth_url
         # Hosted mode passes the site-wide memory; locally it lives next to the settings file.
         self.memory = memory
@@ -160,7 +162,7 @@ class Studia:
     def state(self):
         return {"platforms": [p.public(self.logged_in(p)) for p in self.platforms.values()],
                 "jobs": self._running(), "history": [_job_public(j) for j in self.history],
-                "job_limit": self.job_limit()}
+                "job_limit": self.job_limit(), "zhs_parallel": self.zhs_parallel()}
 
     def client(self, platform):
         with self.lock:
@@ -407,8 +409,9 @@ class Studia:
                 continue
             if other["course"] == course_id:
                 raise HttpError(409, "这门课正在%s，请等它结束或先停止" % other["title"])
-            if pid == "zhs" and GROUP[kind] == "learn":
+            if pid == "zhs" and GROUP[kind] == "learn" and not self.zhs_parallel():
                 # Zhihuishu treats two videos playing on one account as multiple windows.
+                # Within one course videos always play one at a time (ZHSHandler), switch or not.
                 raise HttpError(409, "智慧树同一账号同时只能播放一个视频，请等「%s」的%s结束"
                                 % (other["course_name"], other["title"]))
 
