@@ -7,6 +7,7 @@
 # @Software: PyCharm
 import datetime
 import logging
+import os
 import sys
 import re
 
@@ -34,6 +35,29 @@ def is_dev_mode() -> bool:
     return any(arg in ("-dev", "--dev") for arg in sys.argv[1:])
 
 
+class DailyFileHandler(logging.FileHandler):
+    """Writes each record to that day's file, so a server running past midnight starts a new file
+    (the admin's log export reads files by date)."""
+
+    def __init__(self):
+        self.day = datetime.date.today()
+        super().__init__(self.path(self.day), encoding='utf-8', delay=True)
+
+    @staticmethod
+    def path(day):
+        return './icve-ai-assistant-log_{t}.log'.format(t=day.isoformat())
+
+    def emit(self, record):
+        day = datetime.date.fromtimestamp(record.created)
+        if day != self.day:
+            # Called under the handler's lock (Handler.handle), so switching files is safe.
+            if self.stream:
+                self.stream.close()
+                self.stream = None
+            self.baseFilename, self.day = os.path.abspath(self.path(day)), day
+        super().emit(record)
+
+
 class Logger:
     def __init__(self, name):
         self.logger = logging.getLogger(name)
@@ -48,8 +72,7 @@ class Logger:
         if not any(isinstance(h, logging.FileHandler) for h in self.logger.handlers):
             formatter = logging.Formatter(
                 '[%(asctime)s][%(thread)d][%(filename)s][line: %(lineno)d][%(levelname)s] :: %(message)s')
-            file_name = './icve-ai-assistant-log_{t}.log'.format(t=datetime.datetime.now().strftime('%Y-%m-%d'))
-            fh = logging.FileHandler(file_name, encoding='utf-8')
+            fh = DailyFileHandler()
             fh.setLevel(logging.DEBUG)
             fh.setFormatter(formatter)
             self.logger.addHandler(fh)

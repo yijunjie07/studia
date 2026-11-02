@@ -475,7 +475,9 @@ def export_logs(directory, kind, start, end):
     if kind == "audit":
         files = [Path(directory) / "audit.log"]
     else:
-        day, last = datetime.date.fromtimestamp(start), datetime.date.fromtimestamp(end)
+        # From the day before: older servers kept writing into the file of the day they started.
+        day = datetime.date.fromtimestamp(start) - datetime.timedelta(days=1)
+        last = datetime.date.fromtimestamp(end)
         files = []
         while day <= last:
             files.append(Path(directory) / ("icve-ai-assistant-log_%s.log" % day.isoformat()))
