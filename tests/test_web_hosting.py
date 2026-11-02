@@ -368,3 +368,32 @@ class LogExportTest(unittest.TestCase):
             self.assertIn('"login"', export_logs(directory, "audit", at("2026-11-01 09:00"), at("2026-11-01 10:00")))
             self.assertEqual(export_logs(directory, "app", at("2026-11-02 09:00"), at("2026-11-02 10:00")),
                              "这段时间没有日志。\n")
+
+
+class DailyLogFileTest(unittest.TestCase):
+    def test_a_long_running_server_writes_each_day_to_its_own_file(self):
+        from MoocMain.log import DailyFileHandler
+        with tempfile.TemporaryDirectory() as directory:
+            cwd = os.getcwd()
+            os.chdir(directory)
+            try:
+                handler = DailyFileHandler()
+                handler.setFormatter(logging.Formatter("%(message)s"))
+                today = time.time()
+                for when, text in ((today, "today"), (today + 86400, "tomorrow")):
+                    record = logging.LogRecord("ZHSMain.api", logging.WARNING, __file__, 1, text, None, None)
+                    record.created = when
+                    handler.handle(record)
+                handler.close()
+                day = lambda t: time.strftime("%Y-%m-%d", time.localtime(t))
+                self.assertEqual(Path("icve-ai-assistant-log_%s.log" % day(today)).read_text().strip(), "today")
+                self.assertEqual(Path("icve-ai-assistant-log_%s.log" % day(today + 86400)).read_text().strip(), "tomorrow")
+            finally:
+                os.chdir(cwd)
+
+    def test_export_finds_lines_an_older_server_left_in_the_previous_days_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "icve-ai-assistant-log_2026-11-01.log").write_text(
+                "[2026-11-02 00:01:53,616][1][api.py][line: 1][WARNING] :: 智慧树接口失败：POST x\n", encoding="utf-8")
+            at = lambda text: time.mktime(time.strptime(text, "%Y-%m-%d %H:%M"))
+            self.assertIn("智慧树接口失败", export_logs(directory, "app", at("2026-11-02 00:00"), at("2026-11-02 09:00")))
