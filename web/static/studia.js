@@ -75,7 +75,7 @@ async function api(path, { method = "GET", body } = {}) {
 const state = {
   platforms: [], courses: {}, papers: {}, units: {}, selected: {},
   jobs: [], runs: {}, focus: null, jobLimit: 4, zhsParallel: false, history: [], view: "", loginToken: { cancelled: true }, lastDone: null,
-  current: store.get("studia-platform", ""), menuOpen: false, meOpen: false, adminTab: "overview", logFilter: "all", armed: null, editPassword: false,
+  current: store.get("studia-platform", ""), meOpen: false, adminTab: "overview", logFilter: "all", armed: null, editPassword: false,
 };
 function freshRun() { return { detail: "", overall: null, sub: null, lines: [], unit: null }; }
 const runOf = (id) => (state.runs[id] = state.runs[id] || freshRun());
@@ -157,7 +157,6 @@ function homeOf(p) {
 }
 function switchPlatform(pid, navigate = true) {
   state.current = pid;
-  state.menuOpen = false;
   store.set("studia-platform", pid);
   if (navigate) go(homeOf(platformOf(pid)));
   else renderSidebar();
@@ -169,40 +168,41 @@ function jobPill() {
   return state.history.length ? `<span class="count">${state.history.length}</span>` : "";
 }
 
+// Hover rolls a label up and an italic copy in, as in the pill menu.
+const roll = (text) => `<span class="roll"><span class="roll_in" data-label="${esc(text)}">${esc(text)}</span></span>`;
+const rolling = (text) => `<span class="label" data-label="${esc(text)}"><span>${esc(text)}</span></span>`;
+
 function renderSidebar() {
   const p = currentPlatform();
   if (!p) return;
   const view = state.view;
   const item = (hash, icon, label, extra = "", cls = "") =>
-    `<button class="nav_item ${cls}" data-go="${hash}" aria-current="${view === hash}">${icon}<span class="label">${esc(label)}</span>${extra}</button>`;
+    `<button class="nav_item ${cls}" data-go="${hash}" aria-current="${view === hash}">${icon}${rolling(label)}${extra}</button>`;
+  const platforms = `<div class="plat_seg" role="tablist">${state.platforms.map((x, i) =>
+    `<button role="tab" aria-selected="${x.id === p.id}" data-switch="${x.id}" title="${esc(platformStatus(x))} · ⌘${i + 1}">${esc(x.short)}${
+      state.jobs.some((j) => j.platform === x.id) ? '<i class="busy"></i>' : x.logged_in ? "" : '<i class="out"></i>'}</button>`).join("")}</div>`;
+  patch($(".switcher_wrap"), platforms);
 
-  patch($(".switcher_wrap"), `
-    <button class="switch" data-menu aria-haspopup="menu" aria-expanded="${state.menuOpen}">
-      <span class="plat ${p.id}">${INITIAL[p.id]}</span><span class="who"><b>${esc(p.name)}</b><small>${esc(platformStatus(p))}</small></span><span class="chev">${ICON.updown}</span></button>
-    ${state.menuOpen ? `<div class="menu" role="menu">${state.platforms.map((x, i) => `
-      <button class="menu_row" role="menuitem" data-switch="${x.id}"><span class="plat ${x.id}">${INITIAL[x.id]}</span>
-        <span class="who"><b>${esc(x.name)}</b><small>${esc(platformStatus(x))}</small></span>
-        ${state.jobs.some((j) => j.platform === x.id) ? '<span class="live">进行中</span>' : ""}
-        ${x.id === p.id ? `<span class="tick">${ICON.tick}</span>` : `<span class="kbd">⌘${i + 1}</span>`}</button>`).join("")}</div>` : ""}`);
-
-  let html = item("#/jobs", ICON.pulse, "任务", jobPill());
-  html += `<div class="nav_label">${p.logged_in ? "课程" : esc(p.short)}<span class="kbd">⌘K</span></div>`;
-  if (!p.logged_in) html += item(`#/login/${p.id}`, ICON.login, `登录${/^[A-Za-z]/.test(p.short) ? " " : ""}${p.short}`);
-  else if (!state.courses[p.id]) html += `<div class="nav_item quiet"><span class="label">正在读取课程…</span></div>`;
-  else html += state.courses[p.id].map((c) => {
+  const courses = [];
+  if (!p.logged_in) courses.push(item(`#/login/${p.id}`, ICON.login, `登录${/^[A-Za-z]/.test(p.short) ? " " : ""}${p.short}`));
+  else if (!state.courses[p.id]) courses.push(`<div class="nav_item quiet"><span class="label">正在读取课程…</span></div>`);
+  else courses.push(...state.courses[p.id].map((c) => {
     const busy = state.jobs.some((j) => j.platform === p.id && j.course === c.id);
     return item(`#/course/${p.id}/${c.id}`, ring(c.progress, COLOR[p.id]), c.name,
       busy ? '<span class="live"></span>' : c.progress == null ? "" : `<span class="count">${esc(c.progress)}%</span>`);
-  }).join("") || `<div class="nav_item quiet"><span class="label">没有课程</span></div>`;
-  patch($(".nav"), html);
+  }));
+  if (!courses.length) courses.push(`<div class="nav_item quiet"><span class="label">没有课程</span></div>`);
+  patch($(".nav"), item("#/jobs", ICON.pulse, "任务", jobPill())
+    + `<div class="nav_label">${p.logged_in ? "课程" : esc(p.short)}<span class="kbd">⌘K</span></div>` + courses.join(""));
 
   // One account button at the bottom; settings, the admin console, theme and sign-out live in its menu.
   const me = session.user;
   const night = document.documentElement.dataset.theme === "night";
   const name = me ? me.username : "本机";
   const initial = me ? me.username.slice(0, 1).toUpperCase() : "本";
+  const role = me ? (me.role === "admin" ? "管理员" : "成员") : "只有这台电脑能访问";
   patch($(".side_foot"), `<button class="me" data-me aria-haspopup="menu" aria-expanded="${state.meOpen}">
-      <span class="avatar">${esc(initial)}</span><span class="who"><b>${esc(name)}</b><small>${me ? (me.role === "admin" ? "管理员" : "成员") : "只有这台电脑能访问"}</small></span>
+      <span class="avatar">${esc(initial)}</span><span class="who"><b>${esc(name)}</b><small>${role}</small></span>
       <span class="chev">${ICON.updown}</span></button>
     ${state.meOpen ? `<div class="menu me_menu" role="menu">
       <button class="menu_row" role="menuitem" data-go="#/settings">${ICON.gear}<span class="grow">设置</span><span class="kbd">⌘,</span></button>
@@ -210,6 +210,28 @@ function renderSidebar() {
       <button class="menu_row" role="menuitem" data-toggle-theme>${night ? ICON.sun : ICON.moon}<span class="grow">${night ? "日间模式" : "夜读模式"}</span><span class="kbd">⌘J</span></button>
       ${me ? `<div class="psep"></div><button class="menu_row danger" role="menuitem" data-signout>${ICON.logout}<span class="grow">退出 Studia</span></button>` : ""}
     </div>` : ""}`);
+
+  // Phones: the same navigation as a pill at the top that opens into a full menu.
+  const live = state.jobs.filter((j) => j.state !== "queued").length;
+  patch($(".pill_cta_wrap"), `<button class="pill_cta" data-go="#/jobs">${roll(live ? `${live} 个进行中` : "任务")}<span class="arrow"></span></button>`);
+  const big = (hash, label, extra = "") => `<button data-go="${hash}" aria-current="${view === hash}">${rolling(label)}${extra ? `<small>${extra}</small>` : ""}</button>`;
+  const menuCourses = !p.logged_in ? [big(`#/login/${p.id}`, `登录 ${p.short}`)]
+    : (state.courses[p.id] || []).map((c) => big(`#/course/${p.id}/${c.id}`, c.name, c.progress == null ? "" : `${esc(c.progress)}%`));
+  patch($(".pill_panel"), `<p class="pill_brand">Studia</p>${platforms}
+    <nav class="pill_nav">${big("#/jobs", "任务", state.jobs.length ? String(state.jobs.length) : "")}
+      <div class="pill_group">${p.logged_in ? "课 程" : esc(p.name)}</div>${menuCourses.join("")}</nav>
+    <div class="pill_foot"><span>${esc(name)} · ${role}</span>
+      <button data-find>查找</button><button data-go="#/settings">设置</button>
+      ${me?.role === "admin" ? `<button data-go="#/admin">管理后台</button>` : ""}
+      <button data-toggle-theme>${night ? "日间模式" : "夜读模式"}</button>
+      ${me ? `<button data-signout>退出</button>` : ""}</div>`);
+}
+
+function setPill(open) {
+  document.body.classList.toggle("pill-open", open);
+  const toggle = $(".pill_toggle");
+  toggle.setAttribute("aria-expanded", open);
+  $(".roll_in", toggle).textContent = $(".roll_in", toggle).dataset.label = open ? "关闭" : "菜单";
 }
 
 /* ---------------------------------------------------------------- page helpers */
@@ -501,7 +523,7 @@ const VIEWS = {
     } else {
       setPage(`${head}<p class="sub">${esc(p.name)} 使用职教云账号，通过浏览器授权登录。${where}</p>
         <div class="login_card"><div class="login_status"><div data-status><b>在浏览器中登录</b><p>点下面的按钮会打开职教云登录页，在那里登录完成后，这里会自动继续。</p></div>
-          <button class="btn primary" data-start-login>打开登录页</button></div></div>`);
+          <button class="btn primary" data-start-login>${roll("打开登录页")}</button></div></div>`);
       $("[data-start-login]", page).onclick = () => browserLogin(pid);
     }
   },
@@ -533,7 +555,7 @@ const VIEWS = {
               <label class="auth_field"><span>原密码</span><input name="old" type="password" autocomplete="current-password" required></label>
               <label class="auth_field"><span>新密码</span><input name="new" type="password" autocomplete="new-password" minlength="8" placeholder="至少 8 位" required></label>
               <label class="auth_field"><span>再输一次</span><input name="again" type="password" autocomplete="new-password" minlength="8" required></label>
-              <span class="row_btns"><button type="button" class="btn" data-password-cancel>取消</button><button class="btn primary">保存新密码</button></span>
+              <span class="row_btns"><button type="button" class="btn" data-password-cancel>取消</button><button class="btn primary">${roll("保存新密码")}</button></span>
             </span></form>`
           : `<div class="model plain"><span class="m1"><b>密码</b><small class="sans">修改后，其他设备上的登录会全部退出</small></span>
               <span class="row_btns"><button class="btn small" data-password-edit>修改密码</button></span></div>`}
@@ -581,7 +603,7 @@ const VIEWS = {
         <div class="models"><div class="form_card" style="margin:0;box-shadow:none">
           <div class="field"><label>AI 答题</label><input type="number" min="1" max="8" name="ai" value="${data.concurrency.ai}"></div>
           <div class="field"><label>自动学习</label><input type="number" min="1" max="8" name="study" value="${data.concurrency.study}"></div>
-          <div class="form_btns"><button class="btn primary" data-concurrency>保存</button></div></div></div>
+          <div class="form_btns"><button class="btn primary" data-concurrency>${roll("保存")}</button></div></div></div>
         <div class="section"><h3>外观</h3></div>
         <div class="models"><div class="model plain"><span class="m1"><b>夜读模式</b><small class="sans">深色主题，只替换颜色，不改布局。只记在这个浏览器里。</small></span>
           <button class="btn" data-toggle-theme>切换 <span class="kbd">⌘J</span></button></div></div>`);
@@ -620,7 +642,7 @@ function renderModels(head, models, editing = null) {
       <div class="field"><label>服务地址</label><input name="base_url" value="${esc(m?.base_url || "")}" placeholder="https://api.example.com/v1" required></div>
       <div class="field"><label>模型</label><input name="model" value="${esc(m?.model || "")}" placeholder="例如 deepseek-chat" required></div>
       <div class="field"><label>API Key</label><input name="api_key" type="password" autocomplete="off" ${m ? `placeholder="留空则不修改（当前 ${esc(m.key_hint)}）"` : "required"}></div>
-      <div class="form_btns"><button type="button" class="btn" data-cancel>取消</button><button class="btn primary">${m ? "保存" : "保存并测试"}</button></div>
+      <div class="form_btns"><button type="button" class="btn" data-cancel>取消</button><button class="btn primary">${roll(m ? "保存" : "保存并测试")}</button></div>
     </form>`;
   const row = (m) => {
     if (editing === m.id) return form(m);
@@ -756,7 +778,7 @@ function renderCourse(p, c, tab, full = false) {
     }).join("") || `<div class="empty">这门课没有作业、测验或考试</div>`;
     if (categories.length) body += `<div class="dock"><span class="info">${answerBlock ? esc(answerBlock) : n ? `已选 <b>${n}</b> 份 · 交卷前会再确认一次` : "勾选要作答的试卷"}</span>
       <button class="btn" data-save ${n && !answerBlock ? "" : "disabled"}>仅生成答案</button>
-      <button class="btn primary ${state.armed === k ? "armed" : ""}" data-submit ${n && !answerBlock ? "" : "disabled"}>${state.armed === k ? `再按一次，交 ${n} 份卷` : "AI 作答并交卷"}</button></div>`;
+      <button class="btn primary ${state.armed === k ? "armed" : ""}" data-submit ${n && !answerBlock ? "" : "disabled"}>${roll(state.armed === k ? `再按一次，交 ${n} 份卷` : "AI 作答并交卷")}</button></div>`;
   }
   if (full) setPage(head + body); else { quiet = true; setPage(head + body); quiet = false; }
 
@@ -1150,13 +1172,11 @@ overlay.addEventListener("click", (event) => { if (event.target === overlay) clo
 
 document.addEventListener("click", (event) => {
   const t = event.target;
-  if (state.menuOpen && !t.closest(".menu, [data-menu]")) { state.menuOpen = false; renderSidebar(); }
   if (state.meOpen && !t.closest("[data-me]")) { state.meOpen = false; renderSidebar(); }
   if (t.closest("[data-me]")) { state.meOpen = !state.meOpen; renderSidebar(); return; }
   if (t.closest("[data-signout]")) { signOut(); return; }
-  if (t.closest("[data-drawer]")) { document.body.classList.toggle("drawer"); return; }
-  if (t.closest("[data-go], [data-find]")) document.body.classList.remove("drawer");
-  if (t.closest("[data-menu]")) { state.menuOpen = !state.menuOpen; renderSidebar(); return; }
+  if (t.closest("[data-pill]")) { setPill(!document.body.classList.contains("pill-open")); return; }
+  if (t.closest("[data-go], [data-find], [data-switch], [data-signout]")) setPill(false);
   const sw = t.closest("[data-switch]"); if (sw) { switchPlatform(sw.dataset.switch); return; }
   const target = t.closest("[data-go]"); if (target) { closeSheet(); go(target.dataset.go); }
   if (t.closest("[data-find]")) openFinder();
@@ -1186,9 +1206,9 @@ window.addEventListener("keydown", (event) => {
   if (mod && event.key.toLowerCase() === "k") { event.preventDefault(); openFinder(); return; }
   if (mod && event.key.toLowerCase() === "j") { event.preventDefault(); toggleTheme(); return; }
   if (mod && event.key === ",") { event.preventDefault(); go("#/settings"); return; }
-  if (event.key === "Escape" && document.body.classList.contains("drawer")) { document.body.classList.remove("drawer"); return; }
+  if (event.key === "Escape" && document.body.classList.contains("pill-open")) { setPill(false); return; }
   if (event.key === "Escape" && state.meOpen) { state.meOpen = false; renderSidebar(); return; }
-  if (event.key === "Escape") { if (state.menuOpen) { state.menuOpen = false; renderSidebar(); } else closeSheet(); return; }
+  if (event.key === "Escape") { closeSheet(); return; }
   if (mod || event.altKey || event.target.closest("input, textarea, select") || document.body.classList.contains("signed-out")) return;
   if (event.key === "S" && event.shiftKey) { stopJob(focusedJob()?.id); return; }
   if (event.key === "f") { openSheet(); return; }
@@ -1270,7 +1290,7 @@ function showAuth(mode = "login") {
         ${field("password", "密码", `type="password" required autocomplete="${mode === "login" ? "current-password" : "new-password"}" ${mode === "login" ? "" : 'minlength="8" placeholder="至少 8 位"'}`)}
         ${mode === "setup" ? field("again", "再输一次密码", 'type="password" required autocomplete="new-password" minlength="8"') : ""}
         <p class="auth_error" role="alert"></p>
-        <button class="btn primary auth_submit">${text.button}</button>
+        <button class="btn primary auth_submit">${roll(text.button)}</button>
         ${text.switch ? `<p class="auth_note">${text.switch[0]}<button type="button" class="link" data-auth-mode="${text.switch[2]}">${text.switch[1]}</button></p>` : ""}
       </form>
     </section>`;
@@ -1299,14 +1319,14 @@ function showAuth(mode = "login") {
     if (mode === "setup" && body.password !== body.again) { error.textContent = "两次输入的密码不一致"; return; }
     const button = $(".auth_submit", form);
     button.disabled = true;
-    button.textContent = "请稍候…";
+    button.innerHTML = roll("请稍候…");
     try {
       await api(`/api/auth/${mode}`, { method: "POST", body });
       location.reload();
     } catch (failure) {
       error.textContent = failure.message;
       button.disabled = false;
-      button.textContent = text.button;
+      button.innerHTML = roll(text.button);
     }
   };
 }
