@@ -117,7 +117,9 @@ code { font: 12px var(--mono); padding: 1px 5px; border-radius: 4px; background:
 .ring { width: 16px; height: 16px; flex: none; }
 
 .side_foot { position: relative; display: flex; align-items: center; gap: 6px; padding: 10px 14px 14px; border-top: 1px solid var(--line); }
-.me .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side_foot .me { height: auto; padding: 6px 8px; gap: 10px; }
+.me .who b { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.me .chev { color: var(--text-4); }
 .me[aria-expanded="true"] { background: var(--hover); }
 .me.static { cursor: default; }
 .me_menu { top: auto; bottom: calc(100% - 6px); }
@@ -400,8 +402,7 @@ body.signed-out .app, body.signed-out .player { display: none; }
 .auth_foot { margin: 28px 0 0; font: 12px var(--mono); letter-spacing: .08em; color: var(--text-4); }
 
 .auth_side { display: grid; place-items: center; padding: 40px 24px; }
-.auth_card { width: 360px; max-width: 100%; }
-.auth_mobile_brand { display: none; }
+.auth_card { width: 360px; max-width: 100%; min-width: 0; }
 .auth_card h2 { margin: 0; font-size: 26px; font-weight: 600; letter-spacing: -.01em; }
 .auth_lead { margin: 8px 0 26px; color: var(--text-3); line-height: 1.7; overflow-wrap: anywhere; }
 .auth_field { display: block; margin-bottom: 14px; }
@@ -420,10 +421,19 @@ body.signed-out .app, body.signed-out .player { display: none; }
 .auth_note .link { margin-left: 4px; }
 
 @media (max-width: 860px) {
-  .auth { grid-template-columns: 1fr; align-content: start; }
-  .auth_art { display: none; }
-  .auth_side { place-items: start center; padding: calc(48px + env(safe-area-inset-top)) 20px 32px; }
-  .auth_mobile_brand { display: flex; margin-bottom: 36px; }
+  /* Phones keep the desk, as a short header above the form. */
+  .auth { grid-template-columns: minmax(0, 1fr); align-content: start; }
+  .auth_art { padding: calc(24px + env(safe-area-inset-top)) 20px 22px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .auth_pitch { margin-top: 22px; }
+  .auth_pitch h1 { font-size: 22px; }
+  .auth_pitch p { margin-top: 8px; font-size: 13.5px; line-height: 1.65; }
+  .auth_grid { margin: 18px 0 0; padding: 12px 14px; gap: 5px; transform: none; }
+  .auth_grid .cells { gap: 4px; }
+  .auth_grid .cells .cell { width: 11px; height: 11px; border-radius: 3px; }
+  .auth_foot { display: none; }
+  .auth_side { grid-template-columns: minmax(0, 1fr); place-items: start stretch; padding: 26px 20px calc(32px + env(safe-area-inset-bottom)); }
+  .auth_card { width: 100%; }
+}
 }
 
 /* ---------------------------------------------------------------- palette */
