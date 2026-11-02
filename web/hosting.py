@@ -153,6 +153,7 @@ class Hub:
                              oauth_url=lambda pid, uid=uid: self.oauth_url(uid, pid),
                              job_limit=lambda uid=uid: self.job_limit(uid),
                              zhs_parallel=lambda: bool(self.accounts.setting("zhs_parallel_study", False)))
+                app.owner = (self.accounts.user(uid) or {}).get("username", uid)
                 self.apps[uid] = app
             return app
 

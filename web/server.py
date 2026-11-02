@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from concurrent.futures import ThreadPoolExecutor
 
+import MoocMain.log
 from AIMoocMain.api import AIMoocApi
 from AIMoocMain.exam_api import ExamAPI, ExamError, ExamServiceError, TaskUnavailableError
 from AIMoocMain.export_questions import paper_display_name, paper_exam_id
@@ -56,6 +57,18 @@ GROUP = {"study": "learn", "review": "learn", "answer": "answer"}
 # name on to the helper threads it starts, so a log line can be traced back to its job.
 JOBS = {}
 JOB_THREAD = re.compile(r"studia-job-([0-9a-f]+)")
+
+
+def _job_context():
+    """Tag runtime-log lines written by a job (or a helper thread it started) with its owner and job id."""
+    match = JOB_THREAD.match(threading.current_thread().name)
+    if not match:
+        return ""
+    owner = getattr(JOBS.get(match[1]), "owner", None)
+    return "%s/%s" % (owner, match[1]) if owner else "任务 %s" % match[1]
+
+
+MoocMain.log.line_context = _job_context
 logger = logging.getLogger(__name__)
 
 # Order is the sidebar order. "answer"/"review" mark what the web UI can run today.
@@ -121,6 +134,8 @@ class Studia:
         # Hosted mode passes the site-wide memory; locally it lives next to the settings file.
         self.memory = memory
         self.mooc_memory = mooc_memory
+        # The account name in hosted mode, shown in runtime-log lines; None locally.
+        self.owner = None
         self.jobs = {}
         self.history = []
         self.subscribers = set()

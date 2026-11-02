@@ -35,6 +35,11 @@ def is_dev_mode() -> bool:
     return any(arg in ("-dev", "--dev") for arg in sys.argv[1:])
 
 
+def line_context():
+    """Whose work a log line is, e.g. "alice/ab12cd34"; the web server replaces this, elsewhere it is empty."""
+    return ""
+
+
 class DailyFileHandler(logging.FileHandler):
     """Writes each record to that day's file, so a server running past midnight starts a new file
     (the admin's log export reads files by date)."""
@@ -55,6 +60,11 @@ class DailyFileHandler(logging.FileHandler):
                 self.stream.close()
                 self.stream = None
             self.baseFilename, self.day = os.path.abspath(self.path(day)), day
+        try:
+            who = line_context()
+        except Exception:
+            who = ""
+        record.who = "[%s]" % who if who else ""
         super().emit(record)
 
 
@@ -71,7 +81,7 @@ class Logger:
         # 文件日志始终带完整上下文，便于排查
         if not any(isinstance(h, logging.FileHandler) for h in self.logger.handlers):
             formatter = logging.Formatter(
-                '[%(asctime)s][%(thread)d][%(filename)s][line: %(lineno)d][%(levelname)s] :: %(message)s')
+                '[%(asctime)s][%(thread)d][%(filename)s][line: %(lineno)d][%(levelname)s]%(who)s :: %(message)s')
             fh = DailyFileHandler()
             fh.setLevel(logging.DEBUG)
             fh.setFormatter(formatter)

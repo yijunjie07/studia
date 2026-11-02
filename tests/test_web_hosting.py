@@ -8,7 +8,7 @@ import time
 import unittest
 from pathlib import Path
 from http.server import ThreadingHTTPServer
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import web.accounts
 from web.accounts import AccountError, Accounts, Sessions, Throttle
@@ -397,3 +397,30 @@ class DailyLogFileTest(unittest.TestCase):
                 "[2026-11-02 00:01:53,616][1][api.py][line: 1][WARNING] :: 智慧树接口失败：POST x\n", encoding="utf-8")
             at = lambda text: time.mktime(time.strptime(text, "%Y-%m-%d %H:%M"))
             self.assertIn("智慧树接口失败", export_logs(directory, "app", at("2026-11-02 00:00"), at("2026-11-02 09:00")))
+
+
+class LogOwnerTest(unittest.TestCase):
+    def test_runtime_log_lines_name_the_user_and_job(self):
+        import MoocMain.log
+        from web.server import JOBS
+        with tempfile.TemporaryDirectory() as directory:
+            cwd = os.getcwd()
+            os.chdir(directory)
+            log = logging.getLogger("ZHSMain.owner-test")
+            log.setLevel(logging.INFO)
+            handler = MoocMain.log.DailyFileHandler()
+            handler.setFormatter(logging.Formatter("[%(levelname)s]%(who)s :: %(message)s"))
+            log.addHandler(handler)
+            JOBS["ab12cd34"] = Mock(owner="alice")
+            try:
+                for name in ("studia-job-ab12cd34/study_0", "MainThread"):
+                    worker = threading.Thread(target=log.warning, args=("被拦",), name=name)
+                    worker.start()
+                    worker.join()
+            finally:
+                log.removeHandler(handler)
+                handler.close()
+                JOBS.pop("ab12cd34", None)
+                os.chdir(cwd)
+            lines = next(Path(directory).glob("*.log")).read_text(encoding="utf-8").splitlines()
+            self.assertEqual(lines, ["[WARNING][alice/ab12cd34] :: 被拦", "[WARNING] :: 被拦"])
