@@ -69,6 +69,7 @@ RESUME_WINDOW = 3600
 RESUME_LIMIT = 3
 STEADY = 600  # seconds a resumed job must run before its resume count starts over
 INTERRUPTED = "更新时中断"
+PAUSED = "已由管理员暂停"
 JOB_THREAD = re.compile(r"studia-job-([0-9a-f]+)")
 
 
@@ -155,7 +156,12 @@ class Studia:
         # The account name in hosted mode, shown in runtime-log lines; None locally.
         self.owner = None
         self.jobs = {}
-        self.history = self._saved().get("history", [])[:HISTORY]
+        saved = self._saved()
+        # Jobs an administrator paused, with what is needed to start them again (see pause_job).
+        # They survive a restart like a running job does, so a supervisor's pause is not lost to an update.
+        self.paused = {entry["id"]: entry for entry in saved.get("paused") or []
+                       if isinstance(entry, dict) and entry.get("id")}
+        self.history = saved.get("history", [])[:HISTORY]
         # Set while the service shuts down: what was running stays on disk for resume().
         self.closing = False
         self.subscribers = set()
@@ -515,10 +521,12 @@ class Studia:
                     ("学习习惯分", "每日复习") if kind == "review" else ("问答互动分", "刷问答区")))
         with self.lock:
             self._check_conflicts(platform.id, course_id, kind)
+            # Kept so an administrator can pause the job and start it again later.
+            origin = {"platform": platform.id, "type": kind, "course": course_id}
             job = {"id": secrets.token_hex(4), "kind": kind, "title": LABEL[kind], "course": course_id,
                    "platform": platform.id, "course_name": row.get("courseName") or "课程", "cancel": threading.Event(),
                    "state": "queued", "summary": "", "started": time.time(), "ended": None, "lines": [], "progress": {},
-                   "resumes": resumes}
+                   "resumes": resumes, "body": origin}
             if resumes:
                 job["lines"].append({"text": "服务更新后自动继续", "level": "", "time": time.strftime("%H:%M")})
             if kind == "answer":
@@ -532,6 +540,8 @@ class Studia:
                 target = lambda: self._ask(platform, row, texts, job)
             else:
                 job["minutes"] = (REVIEW_MINUTES if minutes is None else minutes) if kind == "review" else 0
+                if kind == "review":
+                    origin["minutes"] = job["minutes"]
                 target = lambda: self._study(platform, row, job["minutes"], job)
             self.jobs[job["id"]] = job
             JOBS[job["id"]] = self
@@ -561,7 +571,86 @@ class Studia:
         for job in list(self.jobs.values()):
             if job_id in (None, job["id"]):
                 job["cancel"].set()
+        with self.lock:
+            if job_id is None:
+                self.paused.clear()      # "stop everything" also forgets what could be resumed
+            else:
+                self.paused.pop(job_id, None)
+            self._save()
         return {}
+
+    def pause_job(self, job_id):
+        """An administrator pauses one learning job. The job stops like a normal stop, but its
+        parameters are kept, so it can be started again from the progress the platform recorded.
+        Answering and Q&A are not pausable: a paper may already be half submitted."""
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                raise HttpError(404, "任务已经结束")
+            if job["kind"] not in ("study", "review"):
+                raise HttpError(400, "AI 答题和问答任务不能暂停，请直接停止")
+            if job.get("paused"):
+                return {}
+            origin = dict(job.get("body") or {})
+            if origin.get("minutes") and job.get("running_since"):
+                # Review time still owed, like a restart: only the unplayed part comes back.
+                origin["minutes"] = max(1, round(origin["minutes"] - (time.time() - job["running_since"]) / 60))
+            self.paused[job_id] = {"id": job_id, "kind": job["kind"], "title": job["title"], "course": job["course"],
+                                   "course_name": job["course_name"], "platform": job["platform"],
+                                   "body": origin, "paused_at": time.time()}
+            job["paused"] = True
+            job["cancel"].set()
+            self._save()
+        self.publish(dict(_job_public(job), type="job"))
+        return {}
+
+    def resume_job(self, job_id):
+        """Start a paused job again. A fresh job id is used, since the old thread is gone."""
+        with self.lock:
+            entry = self.paused.pop(job_id, None)
+        if entry is None:
+            raise HttpError(404, "这个任务不能继续，或者已经恢复了")
+        try:
+            self.start_job(dict(entry["body"]), minutes=entry["body"].get("minutes"))
+        except Exception:
+            with self.lock:
+                self.paused[job_id] = entry
+            raise
+        return {}
+
+    def promote_job(self, job_id):
+        """Move a queued job to the front of this person's queue."""
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                raise HttpError(404, "任务已经结束")
+            if job["state"] != "queued":
+                raise HttpError(400, "只有排队中的任务可以提前")
+            job["promoted"] = True
+        self.publish(dict(_job_public(job), type="job"))
+        return {}
+
+    def switch_job(self, job_id):
+        """Switch this person's running task to the chosen one: stop what runs in the same group,
+        then let this queued job go first."""
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                raise HttpError(404, "任务已经结束")
+            if job["state"] != "queued":
+                raise HttpError(400, "只有排队中的任务可以切换")
+            for other in self.jobs.values():
+                if other is not job and other["state"] == "running" and GROUP[other["kind"]] == GROUP[job["kind"]]:
+                    other["cancel"].set()
+            job["promoted"] = True
+        self.publish(dict(_job_public(job), type="job"))
+        return {}
+
+    def paused_jobs(self):
+        with self.lock:
+            entries = sorted(self.paused.values(), key=lambda e: e["paused_at"], reverse=True)
+        return [{"id": e["id"], "kind": e["kind"], "title": e["title"], "course": e["course"],
+                 "course_name": e["course_name"], "platform": e["platform"], "started": e["paused_at"]} for e in entries]
 
     def _running(self):
         return [_job_public(job) for job in sorted(self.jobs.values(), key=lambda j: j["started"])]
@@ -577,13 +666,16 @@ class Studia:
         return selected
 
     def _take_turn(self, job):
-        """Start a waiting job when this person has a free place; first come, first served.
+        """Start a waiting job when this person has a free place; first come, first served,
+        except that an administrator can promote a job ahead of the queue.
         Call with self.lock held. Returns whether the job may run."""
         if job["state"] == "running":
             return True
+        mine = (0 if job.get("promoted") else 1, job["started"])
         running = sum(1 for other in self.jobs.values() if other["state"] == "running")
         ahead = sum(1 for other in self.jobs.values()
-                    if other["state"] == "queued" and other["started"] < job["started"])
+                    if other["state"] == "queued" and other is not job
+                    and (0 if other.get("promoted") else 1, other["started"]) < mine)
         if running + ahead >= self.job_limit():
             return False
         job["state"], job["running_since"] = "running", time.time()
@@ -604,9 +696,9 @@ class Studia:
                 self.publish(dict(_job_public(job), type="job"))
             summary = target() or "已完成"
             if job["cancel"].is_set():
-                state, summary = "stopped", "已停止"
+                state, summary = ("paused", PAUSED) if job.get("paused") else ("stopped", "已停止")
         except KeyboardInterrupt:
-            state, summary = "stopped", "已停止"
+            state, summary = ("paused", PAUSED) if job.get("paused") else ("stopped", "已停止")
         except (CaptchaRequired, StudyTimeLimit, NeedsRetry) as exc:
             # Only the user can clear these: solve the captcha on the platform, or come back tomorrow.
             state, summary = "waiting", str(exc) or "平台要求验证"
@@ -651,6 +743,9 @@ class Studia:
         """Write the running jobs and recent history to disk. Call with self.lock held."""
         if self.closing:
             return
+        path = self._jobs_path()
+        if path is None:
+            return
         now = stopped_at or time.time()
         active = [{"platform": j["platform"], "type": j["kind"], "course": j["course"], "course_name": j["course_name"],
                    # Only back-to-back restarts count toward RESUME_LIMIT (a job that brings the service down);
@@ -658,12 +753,10 @@ class Studia:
                    "resumes": 0 if now - (j.get("running_since") or now) > STEADY else j.get("resumes", 0),
                    # Review time still owed: its length minus what it has already played.
                    "minutes": max(0, j.get("minutes", 0) - (now - j["running_since"]) / 60 if j.get("running_since") else j.get("minutes", 0))}
-                  for j in sorted(self.jobs.values(), key=lambda j: j["started"])]
+                  for j in sorted(self.jobs.values(), key=lambda j: j["started"]) if not j.get("paused")]
         data = {"stopped_at": stopped_at, "saved_at": now, "active": active,
+                "paused": list(self.paused.values()),
                 "history": [_job_public(j) for j in self.history]}
-        path = self._jobs_path()
-        if path is None:
-            return
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             temporary = path.with_suffix(".tmp")

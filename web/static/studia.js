@@ -83,7 +83,7 @@ async function api(path, { method = "GET", body } = {}) {
 const state = {
   platforms: [], courses: {}, papers: {}, paperErrors: {}, units: {}, selected: {}, earned: {}, qaDraft: {}, qaPosts: {}, qaOpen: new Set(),
   jobs: [], runs: {}, focus: null, jobLimit: 4, zhsParallel: false, history: [], view: "", loginToken: { cancelled: true }, lastDone: null,
-  current: store.get("studia-platform", ""), meOpen: false, adminTab: "people", logFilter: "all", editPassword: false, adminEdit: null,
+  current: store.get("studia-platform", ""), meOpen: false, adminTab: "people", logFilter: "all", editPassword: false, adminEdit: null, adminUser: null,
 };
 function freshRun() { return { detail: "", overall: null, sub: null, lines: [], unit: null }; }
 const runOf = (id) => (state.runs[id] = state.runs[id] || freshRun());
@@ -304,7 +304,7 @@ function setPage(html) {
 
 const LABEL = { study: "自动学习", review: "每日复习", answer: "AI 答题", qa: "问答区答题", ask: "问答区提问" };
 const TYPE_OF = Object.fromEntries(Object.entries(LABEL).map(([k, v]) => [v, k]));
-const STATE_WORD = { done: "完成", error: "失败", waiting: "等你操作", stopped: "已停止", running: "进行中", queued: "排队中" };
+const STATE_WORD = { done: "完成", error: "失败", waiting: "等你操作", stopped: "已停止", paused: "已暂停", running: "进行中", queued: "排队中" };
 
 /* ---------------------------------------------------------------- units (course grid) */
 
@@ -393,7 +393,9 @@ const settingsHead = (tab, sub) => PHONE.matches
 // Everyone's running and queued jobs, with the owner's name; shown under 任务 › 全站.
 const siteJobRows = (list) => !list.length ? `<div class="empty">现在没有任务在运行</div>` : `<div class="runs">${list.map((j) => `<div class="run">${j.state === "queued" ? ICON.waiting : ICON.running}
     <span class="t1">${esc(j.title)} · ${esc(j.course_name)}<small>${esc(j.username)} · ${esc(platformOf(j.platform)?.short || j.platform)} · 开始于 ${ago(j.started)}</small></span>
-    <span class="fix"><button class="btn small danger" data-stop-job="${esc(j.user_id)}/${esc(j.id)}" data-confirm="确认停止">停止</button></span>
+    <span class="fix">${j.kind === "study" || j.kind === "review" ? `<button class="btn small" data-pause-job="${esc(j.user_id)}/${esc(j.id)}" data-confirm="确认暂停">暂停</button>` : ""}
+      ${j.state === "queued" ? `<button class="btn small" data-promote-job="${esc(j.user_id)}/${esc(j.id)}">提前</button>` : ""}
+      <button class="btn small danger" data-stop-job="${esc(j.user_id)}/${esc(j.id)}" data-confirm="确认停止">停止</button></span>
     <span class="state ${j.state === "queued" ? "waiting" : "running"}">${j.state === "queued" ? "排队中" : "运行中"}<span class="mono">${duration(Date.now() / 1000 - j.started)}</span></span>
     <span class="when"></span></div>`).join("")}</div>`;
 let siteTimer = 0;
@@ -431,14 +433,30 @@ const VIEWS = {
       const nameOf = (uid) => users.find((u) => u.id === uid)?.username || "—";
       const inviteState = { open: ["blue", "可用"], used: ["", "已使用"], expired: ["", "已过期"] };
       const edit = (u, kind) => state.adminEdit?.uid === u.id && state.adminEdit.kind === kind;
+      const openJobs = (u) => state.adminUser === u.id;
+      // One supervisor line per task: pause/resume learning, promote or switch a queued one, kill anything.
+      const jobLine = (u, j, paused) => `<div class="job_line">
+          <span class="who"><b>${esc(j.title)}</b> <small>${esc(j.course_name)} · ${paused ? "已暂停" : j.state === "queued" ? "排队中" : "运行中"}</small></span>
+          ${paused
+            ? `<button class="btn small primary" data-job-action="resume" data-uid="${u.id}" data-jid="${esc(j.id)}">继续</button>
+               <button class="btn small danger" data-job-action="stop" data-uid="${u.id}" data-jid="${esc(j.id)}" data-confirm="确认放弃">放弃</button>`
+            : `${j.state === "queued" ? `<button class="btn small" data-job-action="promote" data-uid="${u.id}" data-jid="${esc(j.id)}">提前</button>
+                <button class="btn small" data-job-action="switch" data-uid="${u.id}" data-jid="${esc(j.id)}" data-confirm="确认切换">切到这项</button>` : ""}
+              ${j.kind === "study" || j.kind === "review" ? `<button class="btn small" data-job-action="pause" data-uid="${u.id}" data-jid="${esc(j.id)}" data-confirm="确认暂停">暂停</button>` : ""}
+              <button class="btn small danger" data-job-action="stop" data-uid="${u.id}" data-jid="${esc(j.id)}" data-confirm="确认停止">停止</button>`}
+        </div>`;
+      const jobLines = (u) => [...(u.jobs || []).map((j) => jobLine(u, j, false)),
+                                ...(u.paused || []).map((j) => jobLine(u, j, true))].join("");
       body = `<div class="section"><h3>用户</h3><span class="aside">${users.length} 人</span></div>
         <div class="models">${users.map((u) => `<div class="model"><span class="avatar big">${esc(u.username.slice(0, 1).toUpperCase())}</span>
             <span class="m1"><b>${esc(u.username)}</b>${u.role === "admin" ? '<span class="pill blue">管理员</span>' : ""}${u.disabled ? '<span class="pill red">已停用</span>' : ""}<span class="pill">同时 ${u.job_limit} 个${u.max_jobs ? "（单独设置）" : ""}</span>
-            <small class="sans">${u.jobs?.some((j) => j.state !== "queued") ? "学习中" : u.jobs?.length ? "排队中" : u.last_login ? `上次在线 ${ago(u.last_login)}` : "还没登录过"}</small></span><span></span>
-            <span class="row_btns">${u.jobs?.length ? `<button class="btn small danger" data-stop-user="${u.id}" data-confirm="确认全部停止">停止全部任务</button>` : ""}
+            <small class="sans">${u.jobs?.some((j) => j.state !== "queued") ? "学习中" : u.jobs?.length ? "排队中" : u.paused?.length ? "有暂停的任务" : u.last_login ? `上次在线 ${ago(u.last_login)}` : "还没登录过"}</small></span><span></span>
+            <span class="row_btns">${u.jobs?.length || u.paused?.length ? `<button class="btn small" data-user-jobs="${u.id}" aria-pressed="${openJobs(u)}">任务 ${u.jobs.length + u.paused.length}</button>` : ""}
+              ${u.jobs?.length ? `<button class="btn small danger" data-stop-user="${u.id}" data-confirm="确认全部停止">停止全部任务</button>` : ""}
               <button class="btn small" data-row-edit="limit" data-uid="${u.id}" aria-pressed="${edit(u, "limit")}">任务上限</button>
               <button class="btn small" data-row-edit="password" data-uid="${u.id}" aria-pressed="${edit(u, "password")}">重置密码</button>
               ${u.id === session.user.id ? "" : u.disabled ? `<button class="btn small" data-enable="${u.id}">启用</button>` : `<button class="btn small danger" data-disable="${u.id}" data-confirm="确认停用">停用</button>`}</span>
+            ${openJobs(u) ? `<div class="row_jobs">${jobLines(u) || '<div class="job_line"><small>没有正在跑或暂停的任务</small></div>'}</div>` : ""}
             ${edit(u, "limit") ? `<form class="row_form" data-row-form="limit" data-uid="${u.id}">
                 <label>同时最多<input class="inline_num" type="number" min="1" max="20" name="value" value="${esc(u.max_jobs || "")}" placeholder="${esc(u.job_limit)}">个任务</label>
                 <small>留空用站点默认</small><span class="grow"></span>
@@ -515,6 +533,17 @@ const VIEWS = {
     on("[data-copy]", (el) => navigator.clipboard?.writeText(el.dataset.copy).then(() => toast("已复制"), () => toast(el.dataset.copy)));
     on("[data-revoke]", (el) => act(`/api/admin/invites/${el.dataset.revoke}/revoke`, null, "邀请码已作废"));
     on("[data-stop-user]", (el) => act(`/api/admin/users/${el.dataset.stopUser}/stop`, null, "已发出停止指令"));
+    on("[data-user-jobs]", (el) => {
+      state.adminUser = state.adminUser === el.dataset.userJobs ? null : el.dataset.userJobs;
+      VIEWS.admin(true, tab);
+    });
+    on("[data-job-action]", async (el) => {
+      const { uid, jid, jobAction } = el.dataset;
+      const done = { pause: "已暂停，可稍后继续", resume: "已继续", promote: "已提前", switch: "已切换", stop: "已停止" };
+      try { await api(`/api/admin/users/${uid}/jobs/${jid}/${jobAction}`, { method: "POST" }); toast(done[jobAction] || "已执行"); }
+      catch (error) { toast(error.message); }
+      VIEWS.admin(true, tab);
+    });
     on("[data-enable]", (el) => act(`/api/admin/users/${el.dataset.enable}/enable`, null, "已启用"));
     on("[data-disable]", (el) => act(`/api/admin/users/${el.dataset.disable}/disable`, null, "已停用，对方已被登出"));
   },
@@ -1504,6 +1533,12 @@ document.addEventListener("click", (event) => {
   const siteStop = t.closest("[data-stop-job]");
   if (siteStop) api(`/api/admin/users/${siteStop.dataset.stopJob.replace("/", "/jobs/")}/stop`, { method: "POST" })
     .then(() => { toast("已发出停止指令"); loadSiteJobs(); }, (e) => toast(e.message));
+  const sitePause = t.closest("[data-pause-job]");
+  if (sitePause) api(`/api/admin/users/${sitePause.dataset.pauseJob.replace("/", "/jobs/")}/pause`, { method: "POST" })
+    .then(() => { toast("已暂停，可在「用户」里继续"); loadSiteJobs(); }, (e) => toast(e.message));
+  const sitePromote = t.closest("[data-promote-job]");
+  if (sitePromote) api(`/api/admin/users/${sitePromote.dataset.promoteJob.replace("/", "/jobs/")}/promote`, { method: "POST" })
+    .then(() => { toast("已提前"); loadSiteJobs(); }, (e) => toast(e.message));
   const focus = t.closest("[data-focus]"); if (focus) { state.focus = focus.dataset.focus; renderFocus(); renderPlayer(); }
   if (t.closest("[data-dismiss]")) { state.lastDone = null; repaint(); }
   const filter = t.closest("[data-filter]"); if (filter) { state.logFilter = filter.dataset.filter; renderFocus(); }

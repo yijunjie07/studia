@@ -113,6 +113,43 @@ class HostedServerTest(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/admin/settings", {"max_jobs": 20},
                                       cookie=user_token, csrf=user_csrf)[0], 403)
 
+    def test_admin_pauses_promotes_and_switches_a_users_jobs(self):
+        token, csrf = self.login("admin", "admin-password")
+        alice = self.hub.accounts.create_user("alice", "alice-password")
+        app = self.hub.app(alice)
+
+        def job(jid, state, kind="study", started=1):
+            return {"id": jid, "kind": kind, "title": "自动学习" if kind == "study" else "AI 答题",
+                    "course": "c" + jid, "course_name": "课", "platform": "zhs", "state": state,
+                    "started": started, "cancel": threading.Event(),
+                    "body": {"platform": "zhs", "type": kind, "course": "c" + jid}}
+
+        app.jobs = {"run": job("run", "running"), "q1": job("q1", "queued", started=2),
+                    "q2": job("q2", "queued", started=3), "ans": job("ans", "running", kind="answer", started=4)}
+        post = lambda path: self.request("POST", path, {}, cookie=token, csrf=csrf)
+        self.assertEqual(post("/api/admin/users/%s/jobs/q1/promote" % alice)[0], 200)
+        self.assertTrue(app.jobs["q1"]["promoted"])
+        self.assertEqual(post("/api/admin/users/%s/jobs/run/promote" % alice)[0], 400)
+        self.assertEqual(post("/api/admin/users/%s/jobs/q2/switch" % alice)[0], 200)
+        self.assertTrue(app.jobs["q2"]["promoted"])
+        self.assertTrue(app.jobs["run"]["cancel"].is_set())     # the running learning job steps aside
+        self.assertFalse(app.jobs["ans"]["cancel"].is_set())    # answering is a different queue
+        self.assertEqual(post("/api/admin/users/%s/jobs/ans/pause" % alice)[0], 400)
+        self.assertEqual(post("/api/admin/users/%s/jobs/q1/pause" % alice)[0], 200)
+        self.assertTrue(app.jobs["q1"]["paused"])
+        self.assertEqual([j["id"] for j in app.paused_jobs()], ["q1"])
+        self.assertEqual(post("/api/admin/users/%s/jobs/q1/pause" % alice)[0], 200)   # pressing again is harmless
+        self.assertEqual(post("/api/admin/users/%s/jobs/nope/stop" % alice)[0], 404)
+        overview = self.request("GET", "/api/admin/users", cookie=token)[1]["users"]
+        mine = next(u for u in overview if u["id"] == alice)
+        self.assertEqual([j["id"] for j in mine["paused"]], ["q1"])
+        # Resuming needs that user's platform sign-in; the pause entry must survive the failure.
+        self.assertEqual(post("/api/admin/users/%s/jobs/q1/resume" % alice)[0], 401)
+        self.assertEqual([j["id"] for j in app.paused_jobs()], ["q1"])
+        # "Stop" on a paused job discards it instead of cancelling a thread.
+        self.assertEqual(post("/api/admin/users/%s/jobs/q1/stop" % alice)[0], 200)
+        self.assertEqual(app.paused_jobs(), [])
+
     def test_login_cookie_csrf_and_logout(self):
         status, _, token, header = self.request("POST", "/api/auth/login", {"username": "ADMIN", "password": "admin-password"})
         self.assertEqual(status, 200)
@@ -242,6 +279,7 @@ class IsolationUnitTest(unittest.TestCase):
     def test_jobs_beyond_the_personal_limit_wait_their_turn(self):
         app = Studia.__new__(Studia)
         app.lock, app.history, app.events, app.jobs = threading.RLock(), [], [], {}
+        app.paused = {}
         app.store, app.closing = None, False
         app.publish = app.events.append
         app.job_limit = lambda: 1

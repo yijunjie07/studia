@@ -109,6 +109,79 @@ class WebServerTest(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "排队的任务已有"):
             check("mooc", "m99", "answer")
 
+    def test_a_promoted_job_goes_ahead_of_the_queue(self):
+        self.app.job_limit = lambda: 1
+        self.app.jobs = {"q1": {"id": "q1", "kind": "study", "state": "queued", "started": 1, "cancel": threading.Event()},
+                         "q2": {"id": "q2", "kind": "study", "state": "queued", "started": 2, "cancel": threading.Event()}}
+        self.app.promote_job("q2")
+        self.assertFalse(self.app._take_turn(self.app.jobs["q1"]))    # q2 is now ahead
+        self.assertTrue(self.app._take_turn(self.app.jobs["q2"]))
+
+    def test_pause_stops_a_learning_job_and_resume_starts_it_again(self):
+        platform = self.app.platforms["zhs"]
+        platform.rows = [{"courseName": "网络课", "zhs": {"kind": "ai", "courseId": "c1"}}]
+        platform.client = Mock()
+        runs = []
+
+        def handler(**kwargs):
+            runs.append(1)
+            if len(runs) == 1:
+                kwargs["cancel_event"].wait(5)      # a video playing until the admin pauses it
+            return "学习完成"
+
+        platform.spec = dict(platform.spec, handler=handler)
+        status, body = self.request("POST", "/api/jobs", body={"platform": "zhs", "type": "study", "course": "ai-c1"})
+        self.assertEqual(status, 200)
+        job_id = json.loads(body)["id"]
+        for _ in range(150):
+            if self.app.jobs.get(job_id, {}).get("state") == "running":
+                break
+            time.sleep(0.02)
+        self.app.pause_job(job_id)
+        for _ in range(150):
+            if job_id not in self.app.jobs:
+                break
+            time.sleep(0.02)
+        self.assertNotIn(job_id, self.app.jobs)
+        self.assertEqual(self.app.history[0]["state"], "paused")
+        self.assertEqual([j["id"] for j in self.app.paused_jobs()], [job_id])
+        self.assertEqual(json.loads(self.request("GET", "/api/jobs")[1])["history"][0]["state"], "paused")
+        with self.app.lock:
+            self.app._save()
+        reloaded = Studia(SettingsStore(self.app.store.directory), oauth=Mock(return_value=None))
+        self.assertEqual([j["id"] for j in reloaded.paused_jobs()], [job_id])   # survives an update
+        self.app.resume_job(job_id)
+        self.assertEqual(self.app.paused_jobs(), [])
+        for _ in range(150):
+            if not self.app.jobs and self.app.history[0]["state"] == "done":
+                break
+            time.sleep(0.02)
+        self.assertEqual(self.app.history[0]["state"], "done")
+        self.assertEqual(len(runs), 2)
+
+    def test_answering_and_qa_jobs_cannot_be_paused(self):
+        self.app.jobs["a1"] = {"id": "a1", "kind": "answer", "state": "running", "started": 1,
+                               "cancel": threading.Event(), "body": {}}
+        with self.assertRaisesRegex(Exception, "不能暂停"):
+            self.app.pause_job("a1")
+        self.assertFalse(self.app.jobs["a1"]["cancel"].is_set())
+
+    def test_stopping_a_paused_job_persists_without_a_running_worker(self):
+        self.app.paused["p1"] = {"id": "p1", "kind": "study", "paused_at": 1}
+        with self.app.lock:
+            self.app._save()
+        self.app.stop_job("p1")
+        reloaded = Studia(SettingsStore(self.app.store.directory), oauth=Mock(return_value=None))
+        self.assertEqual(reloaded.paused_jobs(), [])
+
+    def test_failed_resume_keeps_the_pause_record(self):
+        entry = {"id": "p1", "body": {"platform": "zhs", "type": "study", "course": "c1"}}
+        self.app.paused["p1"] = entry
+        with patch.object(self.app, "start_job", side_effect=PlatformUnavailable("网络不可用")):
+            with self.assertRaises(PlatformUnavailable):
+                self.app.resume_job("p1")
+        self.assertEqual(self.app.paused["p1"], entry)
+
     def test_finished_job_lands_in_history_with_its_lines(self):
         platform = self.app.platforms["zhs"]
         platform.rows = [{"courseName": "网络课", "zhs": {"kind": "ai", "courseId": "c1"}}]

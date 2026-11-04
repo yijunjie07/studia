@@ -221,6 +221,7 @@ class Hub:
         for user in users:
             app = self.apps.get(user["id"])
             user["jobs"] = app._running() if app else []
+            user["paused"] = app.paused_jobs() if app else []
             user["job_limit"] = user["max_jobs"] or self.default_job_limit()
         return users
 
@@ -436,12 +437,24 @@ class HostedAccess:
             if "zhs_parallel_study" in body:
                 hub.accounts.set_setting("zhs_parallel_study", body.get("zhs_parallel_study") is True)
             return hub.site_settings()
-        match = re.fullmatch(r"/api/admin/users/(\w+)/jobs/(\w+)/stop", path)
+        match = re.fullmatch(r"/api/admin/users/(\w+)/jobs/(\w+)/(stop|pause|resume|promote|switch)", path)
         if method == "POST" and match:
             app = hub.apps.get(match[1])
-            if app is None or match[2] not in app.jobs:
+            if app is None:
+                raise HttpError(404, "用户不存在")
+            job_id, action = match[2], match[3]
+            if action == "resume":
+                return app.resume_job(job_id)          # a paused job lives outside app.jobs
+            if job_id not in app.jobs and job_id not in app.paused:
                 raise HttpError(404, "任务已经结束")
-            app.stop_job(match[2])
+            if action == "stop":
+                app.stop_job(job_id)                   # cancels a running job, forgets a paused one
+            elif action == "pause":
+                app.pause_job(job_id)
+            elif action == "promote":
+                app.promote_job(job_id)
+            else:
+                app.switch_job(job_id)
             return {}
         if method == "POST" and path == "/api/admin/invites":
             days = min(max(int(body.get("days") or 7), 1), 30)
