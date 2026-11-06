@@ -1,0 +1,12 @@
+# aiohttp==3.8.3
+lxml==6.1.0
+numpy>=1.24
+opencv_python_headless>=4.6
+playwright>=1.40
+# Pillow==10.0.0
+pycryptodome~=3.18.0
+requests==2.31.0
+python-docx~=1.1.0
+urllib3<2; sys_platform == 'darwin' and python_version < '3.10'
+rich>=13.9,<15
+prompt_toolkit>=3.0.48,<4

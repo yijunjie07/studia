@@ -1,0 +1,26 @@
+# docker compose up -d，然后看日志里的设置码：docker compose logs studia
+# 更新：docker compose pull && docker compose up -d
+services:
+  studia:
+    # 镜像由仓库的 GitHub Actions 构建发布，服务器只需拉取。自己改了代码想本地构建：
+    # docker build -t ghcr.io/yijunjie07/studia:latest .
+    image: ghcr.io/yijunjie07/studia:latest
+    restart: unless-stopped
+    # 更新时先让任务停稳、记下进度，重启后自动接着学。
+    stop_grace_period: 30s
+    ports:
+      - "8080:8080"
+    environment:
+      # 浏览器里访问的地址，必须和地址栏一致（域名或 IP 加端口）。
+      STUDIA_PUBLIC_URL: ${STUDIA_PUBLIC_URL:-http://localhost:8080}
+      # 日志用的时区。
+      TZ: ${TZ:-Asia/Shanghai}
+      # 放在 Nginx / Caddy 等反向代理后面时设为 1。
+      STUDIA_TRUST_PROXY: ${STUDIA_TRUST_PROXY:-0}
+      # 可选：主密钥。不设置时首次启动会在数据卷里生成 secret.key。
+      STUDIA_SECRET_KEY: ${STUDIA_SECRET_KEY:-}
+    volumes:
+      - studia-data:/data
+
+volumes:
+  studia-data:

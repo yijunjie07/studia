@@ -1,0 +1,21 @@
+[project]
+name = "icve-ai-assistant"
+version = "4.4.0"
+description = "智慧职教与智慧树的自动学习和 AI 答题工具，提供终端版、网页版和多人服务器模式"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "rich>=13.9,<15",
+    "prompt_toolkit>=3.0.48,<4",
+    "lxml==6.1.0",
+    "pycryptodome~=3.18.0",
+    "requests==2.31.0",
+    "python-docx~=1.1.0",
+    "urllib3<2; sys_platform == 'darwin' and python_version < '3.10'",
+    "numpy>=1.24",
+    "opencv-python-headless>=4.6",
+    "playwright>=1.40",
+]
+
+[tool.uv]
+package = false
