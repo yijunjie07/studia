@@ -1,7 +1,4 @@
-import base64
-
 import requests
-from Crypto.Cipher import AES
 
 from core.log import Logger
 
@@ -162,45 +159,3 @@ def get_mp3_duration(mp3_url: str) -> float:
     # 计算时长
     duration = (file_size * 8) / avg_bitrate
     return duration
-
-
-'''
-加解密
-'''
-
-
-def pad(text):
-    """PKCS7 填充，使数据长度为 16 的倍数"""
-    padding_size = 16 - len(text) % 16
-    return text + chr(padding_size) * padding_size
-
-
-def unpad(text):
-    """去除 PKCS7 填充"""
-    return text[:-ord(text[-1])]
-
-
-def aes_encrypt_ecb(aes_key, plain_text):
-    """
-    AES-ECB 加密（Base64 编码）
-    :param aes_key: 密钥
-    :param plain_text: 待加密的文本
-    :return: Base64 编码的密文
-    """
-    cipher = AES.new(aes_key, AES.MODE_ECB)
-    padded_text = pad(plain_text)
-    encrypted_bytes = cipher.encrypt(padded_text.encode('utf-8'))
-    return base64.b64encode(encrypted_bytes).decode('utf-8')
-
-
-def aes_decrypt_ecb(aes_key, encrypted_text):
-    """
-    AES-ECB 解密（Base64 解码）
-    :param aes_key: 密钥
-    :param encrypted_text: Base64 编码的密文
-    :return: 解密后的明文
-    """
-    cipher = AES.new(aes_key, AES.MODE_ECB)
-    encrypted_bytes = base64.b64decode(encrypted_text)
-    decrypted_text = cipher.decrypt(encrypted_bytes).decode('utf-8')
-    return unpad(decrypted_text)

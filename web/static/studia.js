@@ -16,7 +16,7 @@ const store = {
 
 /* ---------------------------------------------------------------- icons */
 
-const COLOR = { mooc: "var(--mooc)", zyk: "var(--zyk)", zhs: "var(--zhs)" };
+const COLOR = { mooc: "var(--mooc)", zhs: "var(--zhs)" };
 function ring(percent, color = "var(--indigo)", size = 16) {
   const p = Math.max(0, Math.min(100, Number(percent) || 0));
   const r = size / 2 - 1.5, c = 2 * Math.PI * r, mid = size / 2;
@@ -179,7 +179,7 @@ function toggleTheme() {
 
 /* ---------------------------------------------------------------- sidebar */
 
-const INITIAL = { mooc: "M", zyk: "资", zhs: "智" };
+const INITIAL = { mooc: "M", zhs: "智" };
 // The sign-in centre's ticket lapsed: studying carries on, the Q&A board waits for a fresh scan.
 const rescanLink = (p) => `#/login/${p.id}/again`;
 // It lasts eight hours from the scan (rescan_at); the last stretch is the time to finish today's Q&A or scan early.
@@ -970,7 +970,7 @@ function coverHtml(p, c) {
 function studyActions(p, c) {
   const f = c.features || {};
   const study = p.id === "zhs" ? (c.kind === "shared" ? "1.5 倍速看完剩下的视频，弹题自动答" : "完成文档、课件和视频")
-    : p.id === "mooc" ? "学完课件和视频，自动讨论和评价" : "学完资源库里的资源";
+    : "学完课件和视频，自动讨论和评价";
   return [["study", ICON.play, "自动学习", study],
     ...(f.review ? [["review", ICON.repeat, "每日复习", "重看 30 分钟攒习惯分，每天一次"]] : [])];
 }

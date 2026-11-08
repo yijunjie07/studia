@@ -18,7 +18,6 @@ from terminal.ui import TerminalUI
 from terminal.model_ui import ModelChoice, ModelEdit
 from core.auth import AuthenticationExpired, PlatformUnavailable, authenticated_get
 from mooc.api import AIMoocApi
-from mooc.zyk.api import ZYKMoocApi
 
 
 class PersistenceTests(unittest.TestCase):
@@ -34,15 +33,15 @@ class PersistenceTests(unittest.TestCase):
     def test_restart_keeps_config_and_separate_platform_sessions(self):
         self.store.save_ai(self.config)
         self.store.save_session("mooc", Mock(access_token="mooc-secret"))
-        self.store.save_session("zyk", Mock(access_token="zyk-secret"))
+        self.store.save_session("zhs", Mock(access_token="zhs-secret"))
         self.store.set("confidence", 0.9)
         restarted = SettingsStore(self.store.directory)
         self.assertEqual(restarted.ai_config(), self.config)
-        self.assertEqual(restarted.session("zyk")["access_token"], "zyk-secret")
+        self.assertEqual(restarted.session("zhs")["access_token"], "zhs-secret")
         restarted.clear_session("mooc")
         self.assertIsNone(restarted.session("mooc"))
         self.assertEqual(restarted.get("confidence"), 0.9)
-        self.assertIsNotNone(restarted.session("zyk"))
+        self.assertIsNotNone(restarted.session("zhs"))
         self.assertNotIn("secret-key", repr(restarted.ai_config()))
         if os.name != "nt":
             self.assertEqual(self.store.path.stat().st_mode & 0o777, 0o600)
@@ -133,12 +132,12 @@ class PersistenceTests(unittest.TestCase):
     def test_settings_logout_keeps_model_and_other_platform_credentials(self):
         self.store.save_ai(self.config)
         self.store.save_session("mooc", Mock(access_token="m"))
-        self.store.save_session("zyk", Mock(access_token="z"))
+        self.store.save_session("zhs", Mock(access_token="z"))
         with patch.object(self.ui, "settings_menu", side_effect=[3, 0]):
             self.app.manage_settings()
         self.assertEqual(self.store.ai_config(), self.config)
         self.assertIsNone(self.store.session("mooc"))
-        self.assertIsNotNone(self.store.session("zyk"))
+        self.assertIsNotNone(self.store.session("zhs"))
 
     def test_logout_returns_immediately_without_escape(self):
         self.store.save_session("mooc", Mock(access_token="m"))
@@ -152,7 +151,7 @@ class PersistenceTests(unittest.TestCase):
     def test_other_platform_logout_keeps_current_identity_and_visible_notice(self):
         from terminal.course_flow import CourseWorkspace
         self.store.save_session('mooc', Mock(access_token='m'))
-        self.store.save_session('zyk', Mock(access_token='z'))
+        self.store.save_session('zhs', Mock(access_token='z'))
         self.ui.set_user({'displayName': '张三'})
         workspace = CourseWorkspace(self.app)
         client = workspace.client = object()
@@ -162,19 +161,19 @@ class PersistenceTests(unittest.TestCase):
         self.assertIs(workspace.client, client)
         self.assertEqual(self.ui.account_name, '张三')
         self.assertIsNotNone(self.store.session('mooc'))
-        self.assertIsNone(self.store.session('zyk'))
-        self.assertIn('已退出资源库登录', self.output.getvalue())
+        self.assertIsNone(self.store.session('zhs'))
+        self.assertIn('已退出智慧树登录', self.output.getvalue())
 
-    def test_resource_library_logout_returns_immediately(self):
+    def test_current_platform_logout_returns_immediately(self):
         from terminal.course_flow import CourseWorkspace
         workspace = CourseWorkspace(self.app)
         workspace.platform = 1
         workspace.client = object()
-        self.store.save_session('zyk', Mock(access_token='z'))
+        self.store.save_session('zhs', Mock(access_token='z'))
         self.ui.input_fn = Mock(side_effect=['4', 'q'])
         workspace.root_action('s')
         self.assertIsNone(workspace.client)
-        self.assertIsNone(self.store.session('zyk'))
+        self.assertIsNone(self.store.session('zhs'))
 
     def test_logout_opens_login_before_any_further_menu_input(self):
         from terminal.ui import Cancelled
@@ -230,7 +229,6 @@ class AuthenticationTests(unittest.TestCase):
     def test_both_platforms_restore_identity_without_sso_exchange(self):
         for cls, module, payload, attribute in (
             (AIMoocApi, "mooc.api", {"code": 200, "data": {"id": "user", "displayName": "用户"}}, "user_id"),
-            (ZYKMoocApi, "mooc.zyk.api", {"code": 200, "user": {"userId": "user", "nickName": "用户"}}, "student_id"),
         ):
             with self.subTest(platform=module):
                 session = Mock(headers={})

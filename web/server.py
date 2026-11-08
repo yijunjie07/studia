@@ -42,8 +42,6 @@ from zhs.memory import AnswerMemory
 from zhs.qa import ANSWER_CAP, ASK_PACE, DAILY_ANSWERS, DAILY_QUESTIONS, QA_PACE, QUESTION_CAP, REFERENCE_ANSWERS, \
     MAX_QUESTION, QaBridge, _clean_question, answer_questions, publish_questions, qa_room, question_flaw, write_questions
 from ai.memory import MoocAnswerMemory
-from mooc.zyk.api import ZYKMoocApi
-from mooc.zyk.main import ZYKMoocHandler
 
 STATIC = Path(__file__).resolve().parent / "static"
 REVIEW_MINUTES = 30
@@ -104,8 +102,6 @@ logger = core.log.Logger(__name__).get_log()
 PLATFORMS = {
     "mooc": {"name": "MOOC", "short": "MOOC", "login": "browser", "api": AIMoocApi,
              "handler": AIMoocHandler, "units": mooc_units, "answer": True, "review": False, "needs_ai": True},
-    "zyk": {"name": "资源库", "short": "资源库", "login": "browser", "api": ZYKMoocApi,
-            "handler": ZYKMoocHandler, "units": None, "answer": False, "review": False, "needs_ai": False, "hidden": True},
     "zhs": {"name": "智慧树", "short": "智慧树", "login": "qr", "api": ZHSApi,
             "handler": ZHSHandler, "units": zhs_units, "answer": True, "review": True, "qa": True, "needs_ai": False},
 }
@@ -154,7 +150,7 @@ class Studia:
         self.store = store or SettingsStore()
         self.token = secrets.token_urlsafe(24)
         self.lock = threading.RLock()
-        self.platforms = {pid: Platform(pid) for pid, spec in PLATFORMS.items() if not spec.get("hidden")}
+        self.platforms = {pid: Platform(pid) for pid in PLATFORMS}
         self.oauth = oauth
         # Hosted mode: answer reports stay in the user's own directory, jobs share
         # a site-wide slot pool, and browser login returns to the server instead

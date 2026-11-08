@@ -16,7 +16,6 @@ from core.reporting import ProgressEvent, Reporter
 from terminal.ui import TerminalUI, Cancelled, legacy_input, run_console_tool
 from mooc.export_questions import QuizExportHandler
 from mooc.main import AIMoocHandler
-from mooc.zyk.main import ZYKMoocHandler
 
 
 def view(width=100, **kwargs):
@@ -130,7 +129,7 @@ class RenderingTests(unittest.TestCase):
         self.assertNotIn("never-show-key", output.getvalue())
         ui.input_fn = Mock(return_value="q")
         with self.assertRaises(Cancelled):
-            ui.home()
+            ui.choose_platform(0)
 
     def test_interrupt_cleans_live_and_emits_one_summary(self):
         import StartWork
@@ -172,7 +171,7 @@ class ObservationTests(unittest.TestCase):
                 self.assertEqual(sum(e.status == "error" for e in events), 2 if merged else 1)
 
     def test_study_observer_preserves_calls_and_partial_failure(self):
-        for cls, module, kind in [(AIMoocHandler, "mooc.main", "ppt"), (ZYKMoocHandler, "mooc.zyk.main", "zip")]:
+        for cls, module, kind in [(AIMoocHandler, "mooc.main", "ppt")]:
             for callback_fails in (False, True):
                 with self.subTest(cls=cls, callback_fails=callback_fails):
                     api = Mock()

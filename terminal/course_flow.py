@@ -32,18 +32,18 @@ class CourseWorkspace:
     def run(self):
         # Import here so the legacy entry points and dependency injection share
         # the same client factories.
-        from terminal.app import AIMoocApi, ZYKMoocApi, ZHSApi
+        from terminal.app import AIMoocApi, ZHSApi
 
         self.view.workspace = True
         while True:
             try:
                 if self.platform is None:
-                    saved = [index for index, name in enumerate(("mooc", "zyk", "zhs"))
+                    saved = [index for index, name in enumerate(("mooc", "zhs"))
                              if self.store.session(name)]
                     self.platform = saved[0] if len(saved) == 1 else self.view.choose_platform(0)
                 if self.client is None:
                     try:
-                        cls = {1: ZYKMoocApi, 2: ZHSApi}.get(self.platform, AIMoocApi)
+                        cls = ZHSApi if self.platform == 1 else AIMoocApi
                         self.client, self.rows = self.app.client_and_courses(cls, choose=False)
                     except Cancelled:
                         raise
@@ -62,7 +62,7 @@ class CourseWorkspace:
 
     def root_action(self, action):
         if action == "s":
-            if self.app.manage_settings(current_platform={1: "zyk", 2: "zhs"}.get(self.platform, "mooc")):
+            if self.app.manage_settings(current_platform="zhs" if self.platform == 1 else "mooc"):
                 self.view.set_user()
                 self.client, self.rows = None, []
                 self.library_state.clear()
@@ -79,7 +79,7 @@ class CourseWorkspace:
 
     def course_loop(self, courses):
         task_state = {}
-        offers = self.zhs_offers(courses) if self.platform == 2 else None
+        offers = self.zhs_offers(courses) if self.platform == 1 else None
         while True:
             try:
                 mode = self.view.course_menu(courses, self.platform, offers)
@@ -91,9 +91,9 @@ class CourseWorkspace:
                         courses, max_workers=self.store.concurrency()['study'],
                         activities=self.platform == 0,
                         notice=("逐个视频实时播放，耗时约为视频时长的三分之二；"
-                                "平台限制同一账号同时只能看一个视频。") if self.platform == 2 else "")
+                                "平台限制同一账号同时只能看一个视频。") if self.platform == 1 else "")
                     result = self.execute(lambda: self.app.study(self.platform, self.client, courses))
-                elif mode == 3 and self.platform == 2:
+                elif mode == 3 and self.platform == 1:
                     targets = offers["review"]  # 只复习考核里有学习习惯分的课
                     self.view.review_study(
                         targets, title="每日复习",
@@ -139,7 +139,7 @@ class CourseWorkspace:
         return found
 
     def catalog_for(self, courses):
-        if self.platform == 2:
+        if self.platform == 1:
             return self.app.zhs_task_catalog(self.client, courses)
         return self.app.task_catalog(self.client, courses)
 
@@ -200,7 +200,7 @@ class CourseWorkspace:
                         connection_status=self.app.ai_status_text)
                     config = answer_options["config"]
                     def answer():
-                        if self.platform == 2:
+                        if self.platform == 1:
                             # 智慧树没有本地报告文件，执行器已记录结果与错误。
                             self.app.execute_zhs_ai(self.client, selected, config, auto_submit)
                             return []

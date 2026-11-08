@@ -86,7 +86,6 @@ class WebServerTest(unittest.TestCase):
         self.assertEqual(self.request("GET", "/api/platforms/nope/courses")[0], 404)
         self.assertEqual(self.request("POST", "/api/jobs", body={"platform": "zhs", "type": "rm", "course": "x"})[0], 400)
         self.assertEqual(self.request("POST", "/api/jobs", body={"platform": "mooc", "type": "review", "course": "x"})[0], 400)
-        self.assertEqual(self.request("GET", "/api/platforms/zyk/courses")[0], 404)
         self.assertEqual(self.request("GET", "/api/platforms/mooc/tasks?course=x")[0], 401)
 
     def test_jobs_run_in_parallel_except_on_the_same_course_or_zhs_video(self):
@@ -167,7 +166,6 @@ class WebServerTest(unittest.TestCase):
                              units=lambda client, row: [{"name": "第一章", "units": []}])
         status, body = self.request("GET", "/api/platforms/zhs/units?course=ai-c1")
         self.assertEqual((status, json.loads(body)["chapters"][0]["name"]), (200, "第一章"))
-        self.assertEqual(self.request("GET", "/api/platforms/zyk/units?course=x")[0], 404)
         self.assertEqual(self.request("POST", "/api/jobs", body={"platform": "zhs", "type": "study", "course": "ai-c1"})[0], 200)
         for _ in range(50):
             if not self.app.jobs:

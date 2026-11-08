@@ -575,7 +575,7 @@ class TerminalUI:
             self.note("请输入当前列表的编号。" if multiple else "请输入一个课程编号。", "warning")
 
     def library(self, rows, platform, state):
-        platform_name = {1: "资源库", 2: "智慧树"}.get(platform, "MOOC / AI 优课")
+        platform_name = "智慧树" if platform == 1 else "MOOC / AI 优课"
         if not rows:
             return self.empty_library(platform_name)
         return self.select(f"我的课程 · {platform_name}", rows,
@@ -622,7 +622,7 @@ class TerminalUI:
         choices = [(1, "自动学习", "完成课程学习任务")]
         if platform == 0:
             choices += [(2, "AI 答题", "AI 作答并自动交卷"), (3, "导出题目", "保存题目和已有答案")]
-        elif platform == 2:
+        elif platform == 1:
             def only(rows, text):
                 if offers is None or len(rows) == len(courses):
                     return text
@@ -635,8 +635,7 @@ class TerminalUI:
 
     def choose_platform(self, current):
         return self.choice("切换平台", [(0, "MOOC / AI 优课", "ai.icve.com.cn"),
-                                        (1, "资源库", "zyk.icve.com.cn"),
-                                        (2, "智慧树", "zhihuishu.com")], default=current,
+                                        (1, "智慧树", "zhihuishu.com")], default=current,
                            help_text="Esc 返回 · q 退出")
 
     def connection_problem(self, error):
@@ -1182,23 +1181,6 @@ class TerminalUI:
             return
         options["auto_submit"] = mode == 2
 
-    def home(self, platform_default=0):
-        mode = self.choice("1 / 选择功能", [
-            (1, "自动学习", "完成课程学习任务"),
-            (2, "AI 答题", "AI 作答并自动交卷"),
-            (3, "导出题目", "保存题目和已有答案"),
-            (4, "本机设置", "修改模型配置、清除 Key、退出登录"),
-        ], default=1)
-        platform = 0
-        if mode == 1:
-            platform = self.choice("2 / 选择平台", [
-                (0, "常规 MOOC / AI 优课", "ai.icve.com.cn"),
-                (1, "资源库", "zyk.icve.com.cn"),
-            ], default=platform_default if platform_default in (0, 1) else 0)
-        elif mode != 4:
-            self.note("平台：常规 MOOC / AI 优课")
-        return mode, platform
-
     def login_hint(self):
         self.note("接下来在浏览器登录，支持扫码或短信；完成后自动返回。")
         self.note("等待登录期间可按 Ctrl+C 退出。")
@@ -1301,8 +1283,7 @@ class TerminalUI:
             (1, "模型配置", "添加、编辑、切换 · " + ai_status),
             (2, "并发设置", f"AI 答题 {concurrency['ai']} · 自动学习 {concurrency['study']} · 可设 1–8"),
             (3, "退出 MOOC 登录", "下次浏览器登录先退出共享 SSO，可切换账号"),
-            (4, "退出资源库登录", "下次浏览器登录先退出共享 SSO；MOOC 本机登录保留"),
-            (5, "退出智慧树登录", "下次使用智慧树时重新扫码"),
+            (4, "退出智慧树登录", "下次使用智慧树时重新扫码"),
             (0, "返回", "回到功能选择"),
         ], default=0, help_text=f"配置含凭证，请勿分享：{path}", message=message)
 

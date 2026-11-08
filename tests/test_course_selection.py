@@ -7,7 +7,6 @@ from terminal.ui import TerminalUI, Back
 from terminal.app import Application
 from terminal import theme
 from mooc.main import AIMoocHandler
-from mooc.zyk.main import ZYKMoocHandler
 
 
 class CourseSelectionTests(unittest.TestCase):
@@ -69,7 +68,7 @@ class CourseSelectionTests(unittest.TestCase):
         handler.assert_not_called()
 
     def test_both_handlers_process_only_selected_rows_without_refetch(self):
-        for cls in (AIMoocHandler, ZYKMoocHandler):
+        for cls in (AIMoocHandler,):
             with self.subTest(handler=cls.__name__):
                 client = Mock()
                 with patch.object(cls, 'process_course') as process:

@@ -84,7 +84,7 @@ class TerminalMenuTest(unittest.TestCase):
         view, _ = make_view(["q"])
         captured = []
         with patch.object(view, "choice", side_effect=lambda title, choices, **kw: captured.extend(choices) or 1):
-            view.course_menu(courses, 2, offers)
+            view.course_menu(courses, 1, offers)
         return {name: note for _, name, note in captured}
 
     def test_items_follow_the_courses_they_apply_to(self):
@@ -103,7 +103,7 @@ class TerminalMenuTest(unittest.TestCase):
         view.course_menu.side_effect = [3, Back()]
         app = MagicMock()
         workspace = CourseWorkspace(app)
-        workspace.view, workspace.store, workspace.platform = view, app.store, 2
+        workspace.view, workspace.store, workspace.platform = view, app.store, 1
         workspace.client = Mock()
         workspace.client.score_shares.side_effect = lambda cid, rid: EARNS if cid == 1000091138 else NEITHER
         workspace.course_loop([SHARED, MOOC_LIKE])

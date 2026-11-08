@@ -8,8 +8,6 @@ from mooc.api import AIMoocApi
 from mooc.main import AIMoocHandler
 from mooc.exam_api import ExamAPI, ExamError, ExamServiceError, TaskUnavailableError
 from mooc.export_questions import QuizExportHandler, collect_quiz_catalog, paper_display_name, paper_exam_id
-from mooc.zyk.api import ZYKMoocApi
-from mooc.zyk.main import ZYKMoocHandler
 from zhs.api import CaptchaRequired, StudyTimeLimit, ZHSApi
 from zhs.main import ZHSHandler
 import zhs.answer
@@ -85,7 +83,7 @@ class Application:
 
     def client_and_courses(self, api_class, login=None, *, choose=True):
         self.view.set_user()
-        platform = {ZYKMoocApi: "zyk", ZHSApi: "zhs"}.get(api_class, "mooc")
+        platform = "zhs" if api_class is ZHSApi else "mooc"
         saved = self.store.session(platform) if login is None else None
         if saved:
             try:
@@ -242,8 +240,7 @@ class Application:
         return self.ai_status_text(config)
 
     def study(self, version, client=None, selected=None, review_minutes=0):
-        api_class, handler = {1: (ZYKMoocApi, ZYKMoocHandler),
-                              2: (ZHSApi, ZHSHandler)}.get(version, (AIMoocApi, AIMoocHandler))
+        api_class, handler = (ZHSApi, ZHSHandler) if version == 1 else (AIMoocApi, AIMoocHandler)
         if client is None:
             client, selected = self.client_and_courses(api_class)
         if not selected:
@@ -259,16 +256,16 @@ class Application:
             # reporting a successful study run.
             activity_ai = self.verify_ai(self.ai_configuration())
             inject['activity_ai'] = activity_ai
-        elif version == 2:
+        elif version == 1:
             config = self.store.ai_config()
             if config is not None:
                 captcha_ai = AIClient(config)
                 inject['captcha_ai'] = captcha_ai
         try:
             self.view.plan("学习管理", selected)
-            if version == 2 and review_minutes:
+            if version == 1 and review_minutes:
                 note = "智慧树每日复习：共享课 1 倍速重看已学视频 %d 分钟。" % review_minutes
-            elif version == 2:
+            elif version == 1:
                 note = ("智慧树学习：逐个视频实时播放（约 1.5 倍速），同一账号不能同时观看多个视频；"
                         "遇到验证码或当日学习时长上限会停止。")
             else:
@@ -495,12 +492,12 @@ class Application:
             elif action == 2:
                 if self.manage_concurrency():
                     message = '并发设置已保存，下次运行生效。'
-            elif action in (3, 4, 5):
-                platform = {3: "mooc", 4: "zyk", 5: "zhs"}[action]
+            elif action in (3, 4):
+                platform = {3: "mooc", 4: "zhs"}[action]
                 if self.remember(lambda: self.store.clear_session(platform)):
                     if platform != "zhs":
                         self.browser_logout_pending = True
-                    label = {"mooc": "MOOC", "zyk": "资源库", "zhs": "智慧树"}[platform]
+                    label = {"mooc": "MOOC", "zhs": "智慧树"}[platform]
                     if platform == current_platform:
                         self.view.set_user()
                         self.view.note(f"已退出{label}登录，正在打开浏览器重新登录。", "success")

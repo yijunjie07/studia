@@ -12,7 +12,6 @@ from terminal.app import Application
 from terminal.course_flow import CourseWorkspace
 from core.settings import SettingsStore
 from terminal.ui import TerminalUI
-from mooc.zyk.api import ZYKMoocApi
 
 
 class AccountNameTests(unittest.TestCase):
@@ -95,8 +94,3 @@ class AccountNameTests(unittest.TestCase):
             view.shortcuts('Esc 返回')
             self.assertNotIn('旧账号', out.getvalue())
 
-    def test_resource_platform_keeps_authenticated_display_name(self):
-        with patch('mooc.zyk.api.authenticated_get', return_value={
-                'user': {'userId': 'user', 'nickName': '赵六'}}):
-            client = ZYKMoocApi(access_token='synthetic-token')
-        self.assertEqual(client.user_info['nickName'], '赵六')

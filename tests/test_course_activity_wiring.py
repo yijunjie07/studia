@@ -1,7 +1,7 @@
 """MOOC course activities: fixed API wrappers, entry wiring, and summary wording."""
 import io
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from rich.console import Console
 
@@ -123,15 +123,6 @@ class StudyWiringTests(unittest.TestCase):
                 self.app.study(0, self.client, self.courses)
         ai_client.session.close.assert_called_once()
 
-    def test_library_never_touches_ai_configuration(self):
-        with patch.object(self.app, "ai_configuration") as configured, \
-             patch.object(self.app, "verify_ai") as verified, \
-             patch("terminal.app.ZYKMoocHandler") as handler:
-            self.app.study(1, self.client, self.courses)
-        configured.assert_not_called()
-        verified.assert_not_called()
-        self.assertNotIn("activity_ai", handler.call_args.kwargs)
-
     def test_ai_configuration_failure_is_raised_not_silently_skipped(self):
         with patch.object(self.app, "ai_configuration", side_effect=RuntimeError("无配置")), \
              patch("terminal.app.AIMoocHandler") as handler:
@@ -193,7 +184,7 @@ class SummaryWordingTests(unittest.TestCase):
         from terminal import course_flow
         for platform, expected in ((0, True), (1, False)):
             with self.subTest(platform=platform):
-                view = Mock()
+                view = MagicMock()
                 view.course_menu.side_effect = [1, Back()]
                 view.operation_result.return_value = 1
                 app = Mock()

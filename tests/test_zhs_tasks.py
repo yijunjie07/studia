@@ -39,12 +39,9 @@ class CourseMenuTest(unittest.TestCase):
         return [name for _, name, _ in captured]
 
     def test_zhs_has_ai_answer_but_no_export(self):
-        names = self.menu(2)
+        names = self.menu(1)
         self.assertIn("AI 答题", names)
         self.assertNotIn("导出题目", names)
-
-    def test_resource_library_keeps_study_only(self):
-        self.assertEqual(self.menu(1), ["自动学习"])
 
 
 class CatalogTest(unittest.TestCase):
@@ -141,7 +138,7 @@ class WorkspaceTest(unittest.TestCase):
         app.ai_configuration = Mock(return_value=Mock())
         app.ai_status_text = Mock(return_value="未测试")
         workspace = CourseWorkspace(app)
-        workspace.platform = 2
+        workspace.platform = 1
         view.review_ai = Mock(side_effect=review_ai)
         view.operation_result = Mock(return_value=1)
         workspace.tasks([COURSE], 2, {})
@@ -160,7 +157,7 @@ class WorkspaceTest(unittest.TestCase):
             captured.extend(operation() or [])
             return 1
         workspace = CourseWorkspace(app)
-        workspace.platform = 2
+        workspace.platform = 1
         workspace.execute = answer
         app.zhs_task_catalog = Mock(return_value=[(COURSE, {"id": "h1", "name": "作业"}, 1)])
         app.execute_zhs_ai = Mock(return_value=[])

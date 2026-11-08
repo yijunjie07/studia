@@ -8,7 +8,6 @@ from unittest.mock import Mock, patch
 import requests
 
 from mooc.main import AIMoocHandler
-from mooc.zyk.main import ZYKMoocHandler
 from core.api_client import BaseAPIClient
 from core.auth import AuthenticationExpired
 from core.util import get_mp3_duration
@@ -110,7 +109,6 @@ class StudyConcurrencyTests(unittest.TestCase):
             events.append(event)
         with ExitStack() as stack:
             stack.enter_context(patch('mooc.main.time.sleep'))
-            stack.enter_context(patch('mooc.zyk.main.time.sleep'))
             if workers is not None:
                 kwargs['max_workers'] = workers
             handler = cls(client=StudyAPI(transport, cls is AIMoocHandler),
@@ -121,7 +119,7 @@ class StudyConcurrencyTests(unittest.TestCase):
         return handler, events
 
     def test_same_course_overlaps_and_respects_two_and_eight_worker_caps(self):
-        for cls in (AIMoocHandler, ZYKMoocHandler):
+        for cls in (AIMoocHandler,):
             for workers in (2, 8):
                 with self.subTest(cls=cls, workers=workers):
                     transport = StudyTransport(workers)
@@ -139,7 +137,7 @@ class StudyConcurrencyTests(unittest.TestCase):
         # The barrier admits only the first eight writes (the index is claimed
         # under the lock before waiting), so the 9th is never gated by it.
         workers = 8
-        for cls in (AIMoocHandler, ZYKMoocHandler):
+        for cls in (AIMoocHandler,):
             with self.subTest(cls=cls):
                 release = threading.Event()
 
@@ -190,14 +188,14 @@ class StudyConcurrencyTests(unittest.TestCase):
                 self.assertCountEqual(transport.closed, transport.clones)
 
     def test_default_worker_preserves_resource_order(self):
-        for cls in (AIMoocHandler, ZYKMoocHandler):
+        for cls in (AIMoocHandler,):
             transport = StudyTransport(count=4)
             self.run_study(cls, transport)
             self.assertEqual([w[1] for w in transport.writes], ['0', '1', '2', '3'])
             self.assertEqual(transport.maximum, 1)
 
     def test_duplicates_write_once_and_courses_finish_before_next_discovery(self):
-        for cls in (AIMoocHandler, ZYKMoocHandler):
+        for cls in (AIMoocHandler,):
             transport = StudyTransport(2, count=4)
             transport.duplicate = True
             self.run_study(cls, transport, 2, courses=('one', 'two'))
@@ -212,7 +210,7 @@ class StudyConcurrencyTests(unittest.TestCase):
                          {('one', '2'), ('one', '3'), ('two', '0'), ('two', '1'), ('two', '2'), ('two', '3')})
 
     def test_business_error_and_partial_failure_are_not_success(self):
-        for cls in (AIMoocHandler, ZYKMoocHandler):
+        for cls in (AIMoocHandler,):
             for failure in ({'code': 500, 'msg': 'failed'}, RuntimeError('failed'), None):
                 # None is a successful transport response in this fixture.
                 transport = StudyTransport(2, count=4, failure=failure)
@@ -222,7 +220,7 @@ class StudyConcurrencyTests(unittest.TestCase):
                 self.assertEqual(len(transport.writes), 4)
 
     def test_fatal_auth_stops_pending_resources_and_next_course(self):
-        for cls in (AIMoocHandler, ZYKMoocHandler):
+        for cls in (AIMoocHandler,):
             cancel = threading.Event()
             transport = StudyTransport(2, failure=AuthenticationExpired('expired'),
                                        cancel_event=cancel)
@@ -235,7 +233,7 @@ class StudyConcurrencyTests(unittest.TestCase):
             self.assertCountEqual(transport.closed, transport.clones)
 
     def test_pre_cancelled_run_does_not_write(self):
-        for cls in (AIMoocHandler, ZYKMoocHandler):
+        for cls in (AIMoocHandler,):
             event = threading.Event()
             event.set()
             transport = StudyTransport(count=4)
@@ -245,7 +243,7 @@ class StudyConcurrencyTests(unittest.TestCase):
 
     def test_rate_limit_stops_pending_work_without_retrying(self):
         from core.api_client import RequestRateLimited
-        for cls in (AIMoocHandler, ZYKMoocHandler):
+        for cls in (AIMoocHandler,):
             cancel = threading.Event()
             transport = StudyTransport(2, failure=RequestRateLimited('rate limited'),
                                        cancel_event=cancel)
@@ -257,7 +255,7 @@ class StudyConcurrencyTests(unittest.TestCase):
             self.assertNotIn('success', [e.status for e in events])
 
     def test_cancellation_during_preparation_prevents_writes(self):
-        for cls in (AIMoocHandler, ZYKMoocHandler):
+        for cls in (AIMoocHandler,):
             event = threading.Event()
             transport = StudyTransport(count=4)
             with patch('mooc.main.time.sleep', side_effect=lambda _: event.set()):
@@ -269,12 +267,6 @@ class StudyConcurrencyTests(unittest.TestCase):
             self.assertEqual(transport.writes, [])
             self.assertNotIn('success', [e.status for e in events])
 
-    def test_zyk_accepts_unwrapped_saved_record_but_mooc_requires_acknowledgement(self):
-        for cls, expected in ((ZYKMoocHandler, 'success'), (AIMoocHandler, 'error')):
-            transport = StudyTransport(count=1, failure={'id': 'saved-record'})
-            _, events = self.run_study(cls, transport)
-            self.assertEqual([e.status for e in events if e.kind == 'result'], [expected])
-
     def test_failed_completed_record_read_starts_no_workers(self):
         transport = StudyTransport(count=4)
         transport.completed['one'] = None
@@ -284,8 +276,7 @@ class StudyConcurrencyTests(unittest.TestCase):
         self.assertEqual([e.status for e in events if e.kind == 'result'], ['error'])
 
     def test_owned_client_is_closed_but_injected_client_is_retained(self):
-        for cls, module, api_name in ((AIMoocHandler, 'mooc.main', 'AIMoocApi'),
-                                      (ZYKMoocHandler, 'mooc.zyk.main', 'ZYKMoocApi')):
+        for cls, module, api_name in ((AIMoocHandler, 'mooc.main', 'AIMoocApi'),):
             transport = StudyTransport(count=0)
             client = StudyAPI(transport, cls is AIMoocHandler)
             with patch(module + '.' + api_name, return_value=client):
@@ -296,7 +287,7 @@ class StudyConcurrencyTests(unittest.TestCase):
             self.assertEqual(transport.closed, [])
 
     def test_worker_interruption_stops_dispatch_and_closes_all_clones(self):
-        for cls in (AIMoocHandler, ZYKMoocHandler):
+        for cls in (AIMoocHandler,):
             cancel = threading.Event()
             transport = StudyTransport(2, failure=KeyboardInterrupt(),
                                        cancel_event=cancel)
@@ -307,7 +298,7 @@ class StudyConcurrencyTests(unittest.TestCase):
             self.assertCountEqual(transport.closed, transport.clones)
 
     def test_legacy_ack_and_raw_failure_are_classified_in_single_worker_path(self):
-        for cls in (AIMoocHandler, ZYKMoocHandler):
+        for cls in (AIMoocHandler,):
             for body, expected in (({'msg': 'ok'}, 'success'), ({'code': 500, 'msg': 'failed'}, 'error')):
                 transport = StudyTransport(count=1, failure=body)
                 _, events = self.run_study(cls, transport)
