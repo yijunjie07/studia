@@ -225,7 +225,7 @@ class PrepareTest(unittest.TestCase):
             prepare(raw_question(6, content='看图<img src="x.png">'))
         with self.assertRaises(ValueError):
             prepare(raw_question(7, content=""))
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "暂不支持题型 5"):
             prepare(raw_question(8, kind=5))
         with self.assertRaises(ValueError):
             prepare(raw_question(9, options=[{"id": 1, "content": "only"}]))
