@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from settings import SettingsStore
+from core.settings import SettingsStore
 from web.hosting import Hub
 from web.server import PEER_DELAY, PEERS_MARKER, Studia, _Board, drain
 

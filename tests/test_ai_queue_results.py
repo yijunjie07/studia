@@ -5,15 +5,15 @@ import unittest
 from unittest.mock import Mock, patch
 
 from rich.console import Console
-from AIMoocMain import exam_api
-from AIMoocMain.exam_api import ExamAPI, ExamError
+from mooc import exam_api
+from mooc.exam_api import ExamAPI, ExamError
 from ai.runner import AnswerRunner, AttemptClock, report_path
-from app import Application
-from reporting import ProgressEvent
-from settings import SettingsStore
+from terminal.app import Application
+from core.reporting import ProgressEvent
+from core.settings import SettingsStore
 from tests.test_ai import FakeClock, question
-from ui import TerminalUI
-import theme
+from terminal.ui import TerminalUI
+from terminal import theme
 
 
 class QueueResultTests(unittest.TestCase):
@@ -37,7 +37,7 @@ class QueueResultTests(unittest.TestCase):
         def factory(*args,**kwargs):
             return AnswerRunner(*args,**kwargs,output_dir=self.temp.name,clock_factory=FakeClock,
                                 on_log=lambda message:None)
-        with patch.object(self.app,'verify_ai',return_value=self.ai),patch('app.AnswerRunner',side_effect=factory):
+        with patch.object(self.app,'verify_ai',return_value=self.ai),patch('terminal.app.AnswerRunner',side_effect=factory):
             return self.app.execute_ai(Mock(),selected or self.selected,Mock(),True,api=self.api)
 
     def paper(self,exam_id):
@@ -95,7 +95,7 @@ class QueueResultTests(unittest.TestCase):
                 runner.run_paper.side_effect = [error] + [
                     {'status': 'preview', 'paper': '试卷%s' % i} for i in range(4)]
                 with patch.object(self.app, 'verify_ai', return_value=self.ai), \
-                        patch('app.AnswerRunner', return_value=runner):
+                        patch('terminal.app.AnswerRunner', return_value=runner):
                     reports = self.app.execute_ai(Mock(), self.selected, Mock(), True, api=self.api)
                 self.assertEqual(runner.run_paper.call_count, expected)
                 self.assertEqual(len(reports), expected)

@@ -9,7 +9,7 @@ import io
 import unittest
 from unittest.mock import patch
 
-import native_ui
+from terminal import native_ui
 from tests.test_native_controls import (DOWN, ENTER, ESC, STAB, TAB, run)
 
 START = 'start'
@@ -154,9 +154,9 @@ class ActionPageTests(unittest.TestCase):
 
 class RoutingTests(unittest.TestCase):
     def view(self, **kwargs):
-        import theme
+        from terminal import theme
         from rich.console import Console
-        import ui
+        from terminal import ui
         return ui.TerminalUI(console=Console(file=io.StringIO(), force_terminal=True,
                                              theme=theme.THEME), **kwargs)
 
@@ -178,7 +178,7 @@ class RoutingTests(unittest.TestCase):
         editor.assert_called_once_with(options)
 
     def test_export_summary_back_propagates(self):
-        import ui
+        from terminal import ui
         view = self.view()
         with self.native(native_ui.PageResult('back')), \
              patch('sys.stdin.isatty', return_value=True):
@@ -186,7 +186,7 @@ class RoutingTests(unittest.TestCase):
                 view.review_export([], {})
 
     def test_ai_summary_without_a_model_cannot_start_and_reopens(self):
-        import ui
+        from terminal import ui
         view = self.view()
         with self.native(native_ui.PageResult('start', 'start'), native_ui.PageResult('back')), \
              patch('sys.stdin.isatty', return_value=True):
@@ -219,7 +219,7 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(managed, [1])
 
     def test_operation_result_default_switch_and_escape_contracts(self):
-        import ui
+        from terminal import ui
         view = self.view()
         view.begin_operation()
         with self.native(native_ui.PageResult('start', 'start')), \
@@ -246,7 +246,7 @@ class RoutingTests(unittest.TestCase):
             self.assertIsNone(view.empty_tasks())
 
     def test_study_summary_starts_and_backs_out(self):
-        import ui
+        from terminal import ui
         view = self.view()
         with self.native(native_ui.PageResult('start', 'start')), \
              patch('sys.stdin.isatty', return_value=True):
@@ -257,7 +257,7 @@ class RoutingTests(unittest.TestCase):
                 view.review_study([{'courseName': '课程'}])
 
     def test_study_summary_backs_out_from_the_visible_back_button(self):
-        import ui
+        from terminal import ui
         view = self.view()
         with self.native(native_ui.PageResult('action', 'back')), \
              patch('sys.stdin.isatty', return_value=True):

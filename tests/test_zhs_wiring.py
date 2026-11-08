@@ -10,14 +10,14 @@ from urllib.parse import unquote, urlparse
 import requests
 from rich.console import Console
 
-import theme
-from app import Application
-from base.auth import PlatformUnavailable
-from course_flow import CourseWorkspace
-from settings import SettingsStore
-from ui import Cancelled, TerminalUI
-from ZHSMain.api import ZHSApi
-from ZHSMain.login import qr_login
+from terminal import theme
+from terminal.app import Application
+from core.auth import PlatformUnavailable
+from terminal.course_flow import CourseWorkspace
+from core.settings import SettingsStore
+from terminal.ui import Cancelled, TerminalUI
+from zhs.api import ZHSApi
+from zhs.login import qr_login
 
 
 def make_view(answers=()):
@@ -161,8 +161,8 @@ class ZhsApplicationTests(unittest.TestCase):
     def test_saved_zhs_login_is_reused(self):
         self.store.save_session("zhs", Mock(access_token='[{"name": "CASLOGC", "value": "x"}]'))
         client = Mock(access_token="cookies")
-        with patch("ZHSMain.api.ZHSApi.my_course_list", return_value={"rows": self.courses}) as listed, \
-             patch("app.qr_login") as qr:
+        with patch("zhs.api.ZHSApi.my_course_list", return_value={"rows": self.courses}) as listed, \
+             patch("terminal.app.qr_login") as qr:
             result, rows = self.app.client_and_courses(ZHSApi, choose=False)
         qr.assert_not_called()
         listed.assert_called_once()
@@ -172,7 +172,7 @@ class ZhsApplicationTests(unittest.TestCase):
         cookies = json.dumps([{"name": "CASLOGC", "value": "x"}])
         with patch.object(self.app, "zhs_login", return_value=("", "", cookies)) as zhs, \
              patch.object(self.app, "login") as browser_login, \
-             patch("ZHSMain.api.ZHSApi.my_course_list", return_value={"rows": self.courses}):
+             patch("zhs.api.ZHSApi.my_course_list", return_value={"rows": self.courses}):
             client, rows = self.app.client_and_courses(ZHSApi, choose=False)
         zhs.assert_called_once()
         browser_login.assert_not_called()
@@ -182,16 +182,16 @@ class ZhsApplicationTests(unittest.TestCase):
 
     def test_zhs_login_uses_the_qr_flow_and_returns_the_cookie(self):
         client = Mock(access_token="cookies")
-        with patch("app.ZHSApi", return_value=client), \
-             patch("app.qr_login", return_value=True) as qr:
+        with patch("terminal.app.ZHSApi", return_value=client), \
+             patch("terminal.app.qr_login", return_value=True) as qr:
             self.assertEqual(self.app.zhs_login(), ("", "", "cookies"))
         qr.assert_called_once()
         self.assertIs(qr.call_args[0][0], client)
 
     def test_zhs_login_failure_closes_the_client_and_can_retry(self):
         client = Mock(access_token="cookies")
-        with patch("app.ZHSApi", return_value=client), \
-             patch("app.qr_login", return_value=False), \
+        with patch("terminal.app.ZHSApi", return_value=client), \
+             patch("terminal.app.qr_login", return_value=False), \
              patch.object(self.view, "confirm", return_value=False):
             with self.assertRaises(Cancelled):
                 self.app.zhs_login()
@@ -200,7 +200,7 @@ class ZhsApplicationTests(unittest.TestCase):
     def test_study_version_two_uses_the_zhs_handler_without_ai(self):
         handler = Mock()
         client = Mock(access_token="cookies")
-        with patch("app.ZHSHandler", handler) as cls, \
+        with patch("terminal.app.ZHSHandler", handler) as cls, \
              patch.object(self.app, "verify_ai") as verify:
             self.app.study(2, client, self.courses)
         cls.assert_called_once()

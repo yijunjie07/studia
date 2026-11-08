@@ -1,7 +1,7 @@
 """Offline terminal preview: python -m tools.ui_demo [snapshot.html | --native]."""
 import sys
 
-from ui import demo
+from terminal.ui import demo
 
 
 if __name__ == "__main__":

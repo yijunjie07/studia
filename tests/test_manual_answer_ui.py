@@ -8,9 +8,9 @@ from unittest.mock import Mock, patch
 from ai.questions import prepare_question
 from ai.runner import AnswerRunner
 from rich.console import Console
-import theme
+from terminal import theme
 from tests.test_ai import FakeClock, question
-from ui import Back, TerminalUI
+from terminal.ui import Back, TerminalUI
 
 
 class ManualPromptTests(unittest.TestCase):
@@ -129,7 +129,7 @@ class ConfirmSubmitTests(unittest.TestCase):
 
 class PausedStatusTests(unittest.TestCase):
     def test_a_paused_paper_is_reported_as_waiting_for_a_human_answer(self):
-        from reporting import ProgressEvent
+        from core.reporting import ProgressEvent
         view, output = ConfirmSubmitTests().make_view([])
         view.on_progress(ProgressEvent("begin", "AI 答题", total=1, unit="份试卷"))
         view.on_progress(ProgressEvent("result", "测验", status="paused"))

@@ -7,8 +7,8 @@ from unittest.mock import Mock
 import requests
 
 from ai.client import AIClient, AIConfig, AIError
-from app import Application
-from settings import SettingsStore
+from terminal.app import Application
+from core.settings import SettingsStore
 from tests.test_ai_protocols import ANSWER, response_payload
 
 

@@ -7,13 +7,13 @@ from unittest.mock import Mock, patch
 
 from rich.console import Console
 
-import theme
-from app import Application
+from terminal import theme
+from terminal.app import Application
 from ai.runner import AnswerRunner
-from AIMoocMain.exam_api import ExamError
-from AIMoocMain.export_questions import QuizExportHandler
-from settings import SettingsStore
-from ui import TerminalUI, Back
+from mooc.exam_api import ExamError
+from mooc.export_questions import QuizExportHandler
+from core.settings import SettingsStore
+from terminal.ui import TerminalUI, Back
 
 
 COURSE = {'id': 'ci', 'courseId': 'c', 'courseName': '课程'}
@@ -55,7 +55,7 @@ class AttachmentWorkflowTests(unittest.TestCase):
         api = Mock()
         api.catalog.side_effect = lambda course, category: [ATTACHMENT, NORMAL] if category == 1 else []
         api.completion_status.return_value = 'not_started'
-        with patch('app.ExamAPI', return_value=api):
+        with patch('terminal.app.ExamAPI', return_value=api):
             catalog = app.task_catalog(Mock(), [COURSE])
         self.assertEqual(catalog[0][1]['_completion_status'], 'unsupported')
         api.completion_status.assert_called_once_with('normal')
@@ -65,7 +65,7 @@ class AttachmentWorkflowTests(unittest.TestCase):
         view, _ = self.view([])
         with tempfile.TemporaryDirectory() as directory:
             app = Application(view, SettingsStore(directory))
-            with patch.object(app, 'verify_ai') as verify, patch('app.AnswerRunner') as runner:
+            with patch.object(app, 'verify_ai') as verify, patch('terminal.app.AnswerRunner') as runner:
                 reports = app.execute_ai(Mock(), [(COURSE, ATTACHMENT, 1)], Mock(), True)
         self.assertEqual(reports[0]['status'], 'skipped')
         self.assertIn('附件作业', reports[0]['message'])
@@ -76,7 +76,7 @@ class AttachmentWorkflowTests(unittest.TestCase):
         view, _ = self.view([])
         with tempfile.TemporaryDirectory() as directory:
             app = Application(view, SettingsStore(directory))
-            with patch.object(app, 'verify_ai'), patch('app.AnswerRunner') as factory:
+            with patch.object(app, 'verify_ai'), patch('terminal.app.AnswerRunner') as factory:
                 factory.return_value.run_paper.return_value = {'status': 'preview', 'paper': '普通作业'}
                 reports = app.execute_ai(Mock(), [(COURSE, ATTACHMENT, 1), (COURSE, NORMAL, 1)],
                                          Mock(), False, api=Mock())

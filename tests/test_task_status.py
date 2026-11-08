@@ -5,9 +5,9 @@ from unittest.mock import Mock
 
 from rich.console import Console
 
-import theme
-from app import Application
-from ui import TerminalUI
+from terminal import theme
+from terminal.app import Application
+from terminal.ui import TerminalUI
 
 
 COURSE = {'id': 'ci', 'courseId': 'c', 'courseName': '课程'}
@@ -32,7 +32,7 @@ class TaskStatusTests(unittest.TestCase):
                 raise result
             return result
 
-        with patch('AIMoocMain.exam_api.ExamAPI.request', autospec=True, side_effect=request):
+        with patch('mooc.exam_api.ExamAPI.request', autospec=True, side_effect=request):
             return app.task_catalog(client, [COURSE])
 
     def test_catalog_distinguishes_submitted_draft_and_no_attempts(self):
@@ -42,7 +42,7 @@ class TaskStatusTests(unittest.TestCase):
                          ['submitted', 'draft', 'not_started'])
 
     def test_unknown_or_failed_history_never_means_not_started(self):
-        from AIMoocMain.exam_api import ExamError
+        from mooc.exam_api import ExamError
         rows = self.catalog({'未知状态': [{'status': 7}], '缺少状态': [{}],
                              '异常结构': {'unexpected': []}, '失败': ExamError('读取失败'),
                              '已交卷': [{'status': 2}]})
@@ -64,8 +64,8 @@ class TaskStatusTests(unittest.TestCase):
 
     def test_refresh_reloads_history_in_place(self):
         from unittest.mock import patch
-        from course_flow import CourseWorkspace
-        from ui import Cancelled
+        from terminal.course_flow import CourseWorkspace
+        from terminal.ui import Cancelled
         output = io.StringIO()
         answers = iter(['r', 'q'])
         view = TerminalUI(console=Console(file=output, width=80, height=30, theme=theme.THEME),
@@ -84,7 +84,7 @@ class TaskStatusTests(unittest.TestCase):
             self.assertEqual(endpoint, '/course/exam/record/getStudentRecordByExamId')
             return next(histories)
 
-        with patch('AIMoocMain.exam_api.ExamAPI.request', autospec=True, side_effect=request):
+        with patch('mooc.exam_api.ExamAPI.request', autospec=True, side_effect=request):
             with self.assertRaises(Cancelled):
                 workspace.tasks([COURSE], 2, {})
         before, after = output.getvalue().split('已提交', 1)
@@ -92,8 +92,8 @@ class TaskStatusTests(unittest.TestCase):
         self.assertNotIn('未作答', after)
 
     def test_refresh_preserves_selection_when_status_changes(self):
-        from course_flow import CourseWorkspace
-        from ui import Cancelled
+        from terminal.course_flow import CourseWorkspace
+        from terminal.ui import Cancelled
         answers = iter(['all', 'b', 'r', '', 'q'])
         view = TerminalUI(console=Console(file=io.StringIO(), width=80, height=30, theme=theme.THEME),
                           input_fn=lambda: next(answers))

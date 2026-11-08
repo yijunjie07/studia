@@ -2,13 +2,13 @@ import random
 import threading
 import unittest
 
-from AIMoocMain.export_questions import paper_exam_id
+from mooc.export_questions import paper_exam_id
 from ai.client import AIError, AITransientServiceError
-from base.auth import PlatformUnavailable
-from course_flow import task_identity
+from core.auth import PlatformUnavailable
+from terminal.course_flow import task_identity
 from unittest.mock import Mock
-from ZHSMain.answer import ZHSAnswerRunner, catalog, download_images, encode, prepare
-from ZHSMain.api import CaptchaRequired
+from zhs.answer import ZHSAnswerRunner, catalog, download_images, encode, prepare
+from zhs.api import CaptchaRequired
 
 
 class FixedRng(random.Random):
@@ -309,7 +309,7 @@ class PacingTest(unittest.TestCase):
 class LogTest(unittest.TestCase):
     def test_answer_logs_progress(self):
         client = FakeClient({1: raw_question(1)})
-        with self.assertLogs("ZHSMain.answer", "INFO") as captured:
+        with self.assertLogs("zhs.answer", "INFO") as captured:
             runner(client, FakeAI(["B"])).run_paper(COURSE, homework_item(), 1)
         text = "\n".join(captured.output)
         self.assertIn("AI 作答 1/", text)

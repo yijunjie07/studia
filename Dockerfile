@@ -1,4 +1,4 @@
-# Studia 服务器模式（多用户）。用法见 docs/USAGE.md 的「Docker 部署」。
+# Studia 服务器模式（多用户）。部署方法见 README 的「部署」。
 FROM python:3.12-slim
 # Links the published image to the repository (public repo → public image).
 LABEL org.opencontainers.image.source=https://github.com/yijunjie07/studia

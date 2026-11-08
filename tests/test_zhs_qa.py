@@ -6,9 +6,9 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from ai.client import AIResponseError
-from base.auth import PlatformUnavailable
-from ZHSMain.api import AuthenticationExpired, CaptchaRequired, ZHSApiError
-from ZHSMain.qa import (ASK_PACE, MAX_REFERENCES, QaBridge, SIGNED_POST, WHO_AM_I, _clean_question,
+from core.auth import PlatformUnavailable
+from zhs.api import AuthenticationExpired, CaptchaRequired, ZHSApiError
+from zhs.qa import (ASK_PACE, MAX_REFERENCES, QaBridge, SIGNED_POST, WHO_AM_I, _clean_question,
                         answer_questions, browser_cookies, own_question_flaw, publish_questions, qa_room,
                         question_flaw, reply_flaw, worth_answering, write_questions, write_reply)
 
@@ -75,7 +75,7 @@ class BridgeTest(unittest.TestCase):
     def test_a_page_that_never_gets_ready_is_unavailable(self):
         qa = QaBridge("[]", course_id=7, recruit_id=8)
         qa._page = page = Page(me={})
-        with self.assertLogs("ZHSMain.qa", "WARNING"), self.assertRaises(PlatformUnavailable):
+        with self.assertLogs("zhs.qa", "WARNING"), self.assertRaises(PlatformUnavailable):
             qa._open()
         self.assertEqual(page.visits, 3)
 
@@ -196,7 +196,7 @@ class AnswerQuestionsTest(unittest.TestCase):
 
     def test_one_failure_does_not_stop_the_rest(self):
         board = Board([thread(1), thread(2), thread(3)], fail={2}, no_id={3})
-        with self.assertLogs("ZHSMain.qa", "WARNING"):
+        with self.assertLogs("zhs.qa", "WARNING"):
             stats = self.run_board(board, limit=3)
         self.assertEqual((stats["answered"], stats["failed"], stats["skipped"]), (1, 1, 1))
 
@@ -241,7 +241,7 @@ class PublishQuestionsTest(unittest.TestCase):
 
     def test_failures_are_counted_and_skipped(self):
         board = Board(fail={QUESTIONS[0]}, no_id={QUESTIONS[1]})
-        with self.assertLogs("ZHSMain.qa", "WARNING"):
+        with self.assertLogs("zhs.qa", "WARNING"):
             stats = publish_questions(board, QUESTIONS, interval=0)
         self.assertEqual((stats["published"], stats["failed"]), (0, 2))
 
@@ -270,18 +270,18 @@ class WriteQuestionsTest(unittest.TestCase):
 
     def test_a_flawed_or_repeated_one_is_rewritten_with_the_reason(self):
         ai = Ai("请问云计算好吗？", QUESTIONS[0], QUESTIONS[0], QUESTIONS[1])
-        with self.assertLogs("ZHSMain.qa", "WARNING"):
+        with self.assertLogs("zhs.qa", "WARNING"):
             self.assertEqual(write_questions(ai, [], 2), QUESTIONS)
         self.assertIn("请问", ai.prompts[1]["title"])
         self.assertIn("重复", ai.prompts[3]["title"])
 
     def test_three_bad_tries_drop_that_one(self):
-        with self.assertLogs("ZHSMain.qa", "WARNING"):
+        with self.assertLogs("zhs.qa", "WARNING"):
             self.assertEqual(write_questions(Ai("云计算好吗？"), [], 1), [])
 
     def test_an_empty_reply_is_asked_again(self):
         ai = Ai(AIResponseError("只有思考"), ASK)
-        with self.assertLogs("ZHSMain.qa", "WARNING"):
+        with self.assertLogs("zhs.qa", "WARNING"):
             self.assertEqual(write_questions(ai, [], 1), [ASK])
 
     def test_existing_questions_are_listed_to_avoid_and_capped(self):
@@ -291,7 +291,7 @@ class WriteQuestionsTest(unittest.TestCase):
         prompt = ai.prompts[0]["title"]
         self.assertIn(reference[0], prompt)
         self.assertNotIn(reference[-1], prompt)
-        with self.assertLogs("ZHSMain.qa", "WARNING"):
+        with self.assertLogs("zhs.qa", "WARNING"):
             self.assertEqual(write_questions(Ai(reference[0]), reference, 1), [])
 
     def test_each_question_takes_a_lesson_and_reports_progress(self):
@@ -310,12 +310,12 @@ class WriteQuestionsTest(unittest.TestCase):
 class ReplyTest(unittest.TestCase):
     def test_listed_or_stock_answers_are_rewritten(self):
         ai = Ai("首先，样本有偏差。其次，结论会失真。", "1. 样本偏 2. 结论偏", REPLY)
-        with self.assertLogs("ZHSMain.qa", "INFO"):
+        with self.assertLogs("zhs.qa", "INFO"):
             self.assertEqual(write_reply(ai, ASK, voice=1), REPLY)
         self.assertIn("首先", ai.prompts[1]["context"])
 
     def test_three_bad_tries_give_up(self):
-        with self.assertLogs("ZHSMain.qa", "INFO"), self.assertRaises(ValueError):
+        with self.assertLogs("zhs.qa", "INFO"), self.assertRaises(ValueError):
             write_reply(Ai("总之很重要。" * 3), ASK, voice=1)
 
     def test_answers_already_there_are_named_to_steer_clear_of(self):

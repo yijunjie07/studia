@@ -15,13 +15,13 @@ KEYS = {'up': '\x1b[A', 'down': '\x1b[B', 'left': '\x1b[D', 'right': '\x1b[C',
 
 class ConcurrencyUITests(unittest.TestCase):
     def form(self, keys, current=None):
-        from concurrency_ui import edit_concurrency
+        from terminal.concurrency_ui import edit_concurrency
         with create_pipe_input() as pipe:
             pipe.send_text(keys)
             return edit_concurrency(current, input=pipe, output=DummyOutput())
 
     def terminal_form(self, keys, current=None, columns=80, rows=24):
-        from concurrency_ui import edit_concurrency
+        from terminal.concurrency_ui import edit_concurrency
         stream = io.StringIO()
         output = Vt100_Output(stream, lambda: Size(rows=rows, columns=columns),
                               term='xterm-256color', default_color_depth=ColorDepth.DEPTH_8_BIT,
@@ -102,7 +102,7 @@ class ConcurrencyUITests(unittest.TestCase):
                          {'ai': 8, 'study': 8})
 
     def test_invalid_digit_frame_keeps_the_form_open_at_the_draft_value(self):
-        from concurrency_ui import edit_concurrency
+        from terminal.concurrency_ui import edit_concurrency
         stream = io.StringIO()
         output = Vt100_Output(stream, lambda: Size(rows=24, columns=80),
                               term='xterm-256color', default_color_depth=ColorDepth.DEPTH_8_BIT,

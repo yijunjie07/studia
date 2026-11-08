@@ -5,14 +5,14 @@ from datetime import datetime
 from unittest.mock import Mock, patch
 from contextlib import nullcontext
 
-from AIMoocMain.api import AIMoocApi
-from app import Application
+from mooc.api import AIMoocApi
+from terminal.app import Application
 
-from AIMoocMain.activities import CourseActivities, discussion_open
-from AIMoocMain.main import AIMoocHandler
+from mooc.activities import CourseActivities, discussion_open
+from mooc.main import AIMoocHandler
 from ai.client import AIError, AIServiceError
-from base.auth import AuthenticationExpired
-from base.api_client import RequestRateLimited
+from core.auth import AuthenticationExpired
+from core.api_client import RequestRateLimited
 
 COURSE = {"id": "ci", "courseId": "c", "courseName": "数据结构"}
 OPEN = {"id": "d", "title": "第一章讨论", "zt": 1}
@@ -188,7 +188,7 @@ class ActivityTests(unittest.TestCase):
 
     def test_window_is_checked_again_after_ai_generation(self):
         client = ActivityClient()
-        with patch('AIMoocMain.activities.discussion_open', side_effect=[True, True, False]):
+        with patch('mooc.activities.discussion_open', side_effect=[True, True, False]):
             self.run_course(client)
         self.assertEqual(client.writes, [])
 

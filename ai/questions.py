@@ -2,7 +2,7 @@
 import json
 import re
 
-from AIMoocMain.export_questions import clean_html_text
+from mooc.export_questions import clean_html_text
 
 
 TYPES = {1: "单选题", 2: "多选题", 3: "判断题", 4: "填空题", 5: "主观填空", 6: "问答题"}

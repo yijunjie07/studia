@@ -23,11 +23,11 @@ from urllib.parse import urlencode, urlsplit
 
 from Crypto.Cipher import AES
 
-from MoocMain.log import Logger
-from NewMoocMain.oauth_login import SSO_AUTH_URL, SSO_SOURCE
-from ZHSMain.memory import DatabaseAnswerMemory
+from core.log import Logger
+from mooc.oauth_login import SSO_AUTH_URL, SSO_SOURCE
+from zhs.memory import DatabaseAnswerMemory
 from ai.memory import MoocDatabaseAnswerMemory
-from settings import SettingsError, SettingsStore
+from core.settings import SettingsError, SettingsStore
 from web.accounts import AccountError, Accounts, Sessions, Throttle
 from web.server import MAX_JOBS, MAX_PENDING, NOT_HANDLED, PEERS_MARKER, HttpError, Reply, Studia, _EventLogHandler, drain, \
     keep_passports, make_handler

@@ -8,7 +8,7 @@ import requests
 
 from ai.client import AIClient, AIConfig
 from ai.runner import AnswerRunner
-from AIMoocMain.exam_api import ExamError
+from mooc.exam_api import ExamError
 from tests.test_ai import FakeClock, question
 
 

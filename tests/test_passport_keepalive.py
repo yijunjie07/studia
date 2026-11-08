@@ -7,10 +7,10 @@ from unittest.mock import Mock
 
 import requests
 
-from base.auth import PlatformUnavailable
-from settings import SettingsStore
+from core.auth import PlatformUnavailable
+from core.settings import SettingsStore
 from web.server import Studia, keep_passports
-from ZHSMain.api import ZHSApi
+from zhs.api import ZHSApi
 
 
 class PassportAliveTest(unittest.TestCase):

@@ -14,11 +14,11 @@ from urllib.parse import parse_qs, urlparse
 
 from rich.console import Console
 
-import theme
-from NewMoocMain.oauth_login import OAuthLoginHandler, oauth_login
-from app import Application
-from settings import SettingsStore, SettingsError
-from ui import Cancelled, TerminalUI
+from terminal import theme
+from mooc.oauth_login import OAuthLoginHandler, oauth_login
+from terminal.app import Application
+from core.settings import SettingsStore, SettingsError
+from terminal.ui import Cancelled, TerminalUI
 
 AUTH = "https://sso.icve.com.cn/sso/auth"
 LOGOUT = "https://sso.icve.com.cn/loginOut"
@@ -34,7 +34,7 @@ class LoginUrlTests(unittest.TestCase):
 
     def open_url(self, **kwargs):
         handler = OAuthLoginHandler(port=45678)
-        with patch("NewMoocMain.oauth_login.webbrowser.open") as opened:
+        with patch("mooc.oauth_login.webbrowser.open") as opened:
             handler.open_login_page(**kwargs)
         return opened.call_args[0][0]
 
@@ -61,7 +61,7 @@ class LoginUrlTests(unittest.TestCase):
         self.assertEqual(next_url.count("source="), 1)
 
     def test_convenience_entry_forwards_force_logout_to_the_browser(self):
-        with patch("NewMoocMain.oauth_login.webbrowser.open") as opened, \
+        with patch("mooc.oauth_login.webbrowser.open") as opened, \
              patch.object(OAuthLoginHandler, "wait_for_token", return_value="synthetic"):
             oauth_login(timeout=1, force_logout=True)
         self.assertTrue(opened.call_args[0][0].startswith(LOGOUT + "?"))
@@ -85,7 +85,7 @@ class BrowserLogoutTests(unittest.TestCase):
             calls.append(kwargs)
             return "browser-token"
 
-        return calls, patch("app.oauth_login", side_effect=fake)
+        return calls, patch("terminal.app.oauth_login", side_effect=fake)
 
     def next_login_forces_logout(self):
         calls, login = self.login_calls()
@@ -102,7 +102,7 @@ class BrowserLogoutTests(unittest.TestCase):
         client = Mock(access_token="fresh")
         client.my_course_list.return_value = {"rows": []}
         self.ui.input_fn = Mock(side_effect=["s", "3", "q"])
-        with patch("app.AIMoocApi", return_value=client), patch("app.oauth_login") as login:
+        with patch("terminal.app.AIMoocApi", return_value=client), patch("terminal.app.oauth_login") as login:
             with self.assertRaises(Cancelled):
                 self.app.run()
         login.assert_called_once()
@@ -127,7 +127,7 @@ class BrowserLogoutTests(unittest.TestCase):
             attempts.append(kwargs.get("force_logout"))
             return None if len(attempts) == 1 else "browser-token"
 
-        with patch("app.oauth_login", side_effect=flaky), \
+        with patch("terminal.app.oauth_login", side_effect=flaky), \
              patch.object(self.ui, "confirm", return_value=True):
             self.app.login()
         self.assertEqual(attempts, [True, True])
@@ -141,7 +141,7 @@ class BrowserLogoutTests(unittest.TestCase):
             attempts.append(kwargs.get("force_logout"))
             return None
 
-        with patch("app.oauth_login", side_effect=failing), \
+        with patch("terminal.app.oauth_login", side_effect=failing), \
              patch.object(self.ui, "confirm", return_value=False):
             with self.assertRaises(Cancelled):
                 self.app.login()

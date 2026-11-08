@@ -7,9 +7,9 @@ from unittest.mock import Mock, patch
 
 from ai.client import AIResponseError, AIServiceError, AITransientServiceError
 from ai.runner import AnswerRunner
-from AIMoocMain.exam_api import ExamError
-from app import Application
-from settings import SettingsStore
+from mooc.exam_api import ExamError
+from terminal.app import Application
+from core.settings import SettingsStore
 from tests.test_ai import FakeClock, question
 
 
@@ -251,7 +251,7 @@ class FullyAIApplicationTests(unittest.TestCase):
             return AnswerRunner(*args, **kwargs, output_dir=self.temp.name, clock_factory=FakeClock,
                                 on_log=lambda message: None)
         with patch.object(self.app, "verify_ai", return_value=self.ai), \
-                patch("app.AnswerRunner", side_effect=factory):
+                patch("terminal.app.AnswerRunner", side_effect=factory):
             return self.app.execute_ai(Mock(), self.selected, Mock(), auto_submit, api=self.api)
 
     def test_legacy_saved_confidence_cannot_block_a_low_confidence_valid_answer(self):
@@ -274,7 +274,7 @@ class FullyAIApplicationTests(unittest.TestCase):
                 runner.run_paper.return_value = {"status": "preview", "paper": "测验"}
                 self.view.begin_operation()
                 with patch.object(self.app, "verify_ai", return_value=self.ai), \
-                        patch("app.AnswerRunner", return_value=runner) as factory:
+                        patch("terminal.app.AnswerRunner", return_value=runner) as factory:
                     self.app.execute_ai(Mock(), self.selected, Mock(), False, api=self.api)
                 self.assertEqual(factory.call_args.kwargs["max_workers"], workers)
 

@@ -5,11 +5,11 @@ from unittest.mock import Mock, patch
 
 from rich.console import Console
 
-import native_ui
-import theme
-from AIMoocMain.api import AIMoocApi
-from app import Application
-from ui import Back, TerminalUI
+from terminal import native_ui
+from terminal import theme
+from mooc.api import AIMoocApi
+from terminal.app import Application
+from terminal.ui import Back, TerminalUI
 
 RAW_BODY = {"code": 200, "msg": "ok", "data": {"total": 1, "rows": [{"id": "d1"}]}}
 
@@ -94,7 +94,7 @@ class StudyWiringTests(unittest.TestCase):
         config, ai_client = Mock(), Mock()
         with patch.object(self.app, "ai_configuration", return_value=config) as configured, \
              patch.object(self.app, "verify_ai", return_value=ai_client) as verified, \
-             patch("app.AIMoocHandler") as handler:
+             patch("terminal.app.AIMoocHandler") as handler:
             self.app.study(0, self.client, self.courses)
         configured.assert_called_once_with()
         verified.assert_called_once_with(config)
@@ -107,7 +107,7 @@ class StudyWiringTests(unittest.TestCase):
         ai_client = Mock()
         with patch.object(self.app, "ai_configuration", return_value=Mock()), \
              patch.object(self.app, "verify_ai", return_value=ai_client), \
-             patch("app.AIMoocHandler", side_effect=RuntimeError("boom")):
+             patch("terminal.app.AIMoocHandler", side_effect=RuntimeError("boom")):
             with self.assertRaises(RuntimeError):
                 self.app.study(0, self.client, self.courses)
         ai_client.session.close.assert_called_once()
@@ -118,7 +118,7 @@ class StudyWiringTests(unittest.TestCase):
         ai_client.check_connection.side_effect = AIError('鉴权失败')
         with patch.object(self.app, 'ai_configuration',
                           return_value=AIConfig('https://example.invalid/v1', 'model', 'fake')), \
-             patch('app.AIClient', return_value=ai_client):
+             patch('terminal.app.AIClient', return_value=ai_client):
             with self.assertRaises(AIError):
                 self.app.study(0, self.client, self.courses)
         ai_client.session.close.assert_called_once()
@@ -126,7 +126,7 @@ class StudyWiringTests(unittest.TestCase):
     def test_library_never_touches_ai_configuration(self):
         with patch.object(self.app, "ai_configuration") as configured, \
              patch.object(self.app, "verify_ai") as verified, \
-             patch("app.ZYKMoocHandler") as handler:
+             patch("terminal.app.ZYKMoocHandler") as handler:
             self.app.study(1, self.client, self.courses)
         configured.assert_not_called()
         verified.assert_not_called()
@@ -134,7 +134,7 @@ class StudyWiringTests(unittest.TestCase):
 
     def test_ai_configuration_failure_is_raised_not_silently_skipped(self):
         with patch.object(self.app, "ai_configuration", side_effect=RuntimeError("无配置")), \
-             patch("app.AIMoocHandler") as handler:
+             patch("terminal.app.AIMoocHandler") as handler:
             with self.assertRaises(RuntimeError):
                 self.app.study(0, self.client, self.courses)
         handler.assert_not_called()
@@ -143,14 +143,14 @@ class StudyWiringTests(unittest.TestCase):
         from ai.client import AIError
         with patch.object(self.app, "ai_configuration", return_value=Mock()), \
              patch.object(self.app, "verify_ai", side_effect=AIError("连接失败")), \
-             patch("app.AIMoocHandler") as handler:
+             patch("terminal.app.AIMoocHandler") as handler:
             with self.assertRaises(AIError):
                 self.app.study(0, self.client, self.courses)
         handler.assert_not_called()
 
     def test_cancelled_selection_never_tests_ai(self):
         with patch.object(self.app, "ai_configuration") as configured, \
-             patch("app.AIMoocHandler") as handler:
+             patch("terminal.app.AIMoocHandler") as handler:
             self.app.study(0, self.client, [])
         configured.assert_not_called()
         handler.assert_not_called()
@@ -190,7 +190,7 @@ class SummaryWordingTests(unittest.TestCase):
             self.assertEqual("讨论由AI生成，最多20字；课程评价五星，评语由AI生成" in text, expected)
 
     def test_course_loop_passes_platform_activity_flag(self):
-        import course_flow
+        from terminal import course_flow
         for platform, expected in ((0, True), (1, False)):
             with self.subTest(platform=platform):
                 view = Mock()

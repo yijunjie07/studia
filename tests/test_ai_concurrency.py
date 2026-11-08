@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 from ai.client import AIClient, AIConfig, AITransientServiceError
 from ai.concurrency import ParallelAnswers, prepared_questions
 from ai.runner import AnswerRunner, write_report
-from AIMoocMain.exam_api import ExamError
+from mooc.exam_api import ExamError
 from tests.test_ai import FakeClock, question
 from tests.test_ai_retry import response
 

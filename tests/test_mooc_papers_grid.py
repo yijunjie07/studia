@@ -3,9 +3,9 @@ import tempfile
 import unittest
 from unittest.mock import Mock
 
-from AIMoocMain.exam_api import ExamAPI, paper_number
-from settings import SettingsStore
-from task_capabilities import task_availability
+from mooc.exam_api import ExamAPI, paper_number
+from core.settings import SettingsStore
+from core.task_capabilities import task_availability
 from web.server import Studia, _track
 
 

@@ -22,28 +22,28 @@ from urllib.parse import parse_qs, urlsplit
 
 from concurrent.futures import ThreadPoolExecutor
 
-import MoocMain.log
-from AIMoocMain.api import AIMoocApi
-from AIMoocMain.exam_api import ExamAPI, ExamError, ExamServiceError, TaskUnavailableError
-from AIMoocMain.export_questions import paper_display_name, paper_exam_id
-from AIMoocMain.main import AIMoocHandler, course_units as mooc_units
+import core.log
+from mooc.api import AIMoocApi
+from mooc.exam_api import ExamAPI, ExamError, ExamServiceError, TaskUnavailableError
+from mooc.export_questions import paper_display_name, paper_exam_id
+from mooc.main import AIMoocHandler, course_units as mooc_units
 from ai.client import AIClient, AIConfig, AIError
 from ai.runner import AnswerRunner
-from base.concurrency import INTERACTIVE_WORKERS
-from base.auth import AuthenticationExpired, PlatformUnavailable
-from NewMoocMain.oauth_login import oauth_login
-from settings import DEFAULT_PROFILE_ID, SettingsError, SettingsStore
-from task_capabilities import task_availability, task_type_label
-from task_metrics import completion_with_score, score_text
-from ZHSMain.answer import ZHSAnswerRunner, catalog
-from ZHSMain.api import CaptchaRequired, StudyTimeLimit, ZHSApi, ZHSError, course_offers
-from ZHSMain.main import ZHSHandler, course_units as zhs_units
-from ZHSMain.memory import AnswerMemory
-from ZHSMain.qa import ANSWER_CAP, ASK_PACE, DAILY_ANSWERS, DAILY_QUESTIONS, QA_PACE, QUESTION_CAP, REFERENCE_ANSWERS, \
+from core.concurrency import INTERACTIVE_WORKERS
+from core.auth import AuthenticationExpired, PlatformUnavailable
+from mooc.oauth_login import oauth_login
+from core.settings import DEFAULT_PROFILE_ID, SettingsError, SettingsStore
+from core.task_capabilities import task_availability, task_type_label
+from core.task_metrics import completion_with_score, score_text
+from zhs.answer import ZHSAnswerRunner, catalog
+from zhs.api import CaptchaRequired, StudyTimeLimit, ZHSApi, ZHSError, course_offers
+from zhs.main import ZHSHandler, course_units as zhs_units
+from zhs.memory import AnswerMemory
+from zhs.qa import ANSWER_CAP, ASK_PACE, DAILY_ANSWERS, DAILY_QUESTIONS, QA_PACE, QUESTION_CAP, REFERENCE_ANSWERS, \
     MAX_QUESTION, QaBridge, _clean_question, answer_questions, publish_questions, qa_room, question_flaw, write_questions
 from ai.memory import MoocAnswerMemory
-from ZYKMoocMain.api import ZYKMoocApi
-from ZYKMoocMain.main import ZYKMoocHandler
+from mooc.zyk.api import ZYKMoocApi
+from mooc.zyk.main import ZYKMoocHandler
 
 STATIC = Path(__file__).resolve().parent / "static"
 REVIEW_MINUTES = 30
@@ -96,9 +96,9 @@ def _job_context():
     return "%s/%s" % (owner, match[1]) if owner else "任务 %s" % match[1]
 
 
-MoocMain.log.line_context = _job_context
+core.log.line_context = _job_context
 # Into the daily log file like the platform modules, so the admin's log export shows sign-ins and expiries.
-logger = MoocMain.log.Logger(__name__).get_log()
+logger = core.log.Logger(__name__).get_log()
 
 # Order is the sidebar order. "answer"/"review" mark what the web UI can run today.
 PLATFORMS = {
@@ -1341,7 +1341,7 @@ class Studia:
 class _EventLogHandler(logging.Handler):
     """Forward course and answer log lines (already redacted at the source) to the page."""
 
-    PREFIXES = ("ZHSMain", "AIMoocMain", "ZYKMoocMain", "MoocMain", "ai.")
+    PREFIXES = ("zhs.", "mooc.", "core.log", "ai.")
 
     def __init__(self, app=None):
         super().__init__(logging.INFO)
@@ -1553,7 +1553,7 @@ def _course_id(pid, row):
 
 def course_features(pid, row, shares=None):
     """What one course can run: the platform's features, narrowed by the course's assessment rule
-    (ZHSMain.api.course_offers, shared with the terminal menu)."""
+    (zhs.api.course_offers, shared with the terminal menu)."""
     spec = PLATFORMS[pid]
     offers = course_offers(row, shares) if pid == "zhs" else {"review": False, "qa": False}
     return {"answer": bool(spec["answer"]),

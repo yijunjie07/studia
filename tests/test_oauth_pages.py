@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import requests
 
-from NewMoocMain.oauth_login import OAuthLoginHandler
+from mooc.oauth_login import OAuthLoginHandler
 
 
 class CallbackPageTests(unittest.TestCase):
@@ -29,7 +29,7 @@ class CallbackPageTests(unittest.TestCase):
 
     def test_success_delivers_token_to_app_without_embedding_in_page(self):
         token = "synthetic-secret-</script><script>alert(1)</script>"
-        with patch("NewMoocMain.oauth_login.threading.Timer") as timer:
+        with patch("mooc.oauth_login.threading.Timer") as timer:
             response = self.session.get(self.url + "/login", params={"token": token}, timeout=5)
             # Wait until the request handler has completed the handoff.
             self.session.get(self.url + "/", timeout=5)
@@ -71,7 +71,7 @@ class LoginLifecycleTests(unittest.TestCase):
         client.trust_env = False
         idle = None
         try:
-            with patch("NewMoocMain.oauth_login.threading.Timer"):
+            with patch("mooc.oauth_login.threading.Timer"):
                 client.get(f"http://127.0.0.1:{handler.port}/login", params={"token": "synthetic"}, timeout=2)
             accepted = threading.Event()
             original = handler.server.get_request

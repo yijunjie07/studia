@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import cv2
 
-from ZHSMain import slider
+from zhs import slider
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 

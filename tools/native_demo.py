@@ -12,7 +12,7 @@ is to let a human inspect the real keyboard interaction on a real terminal.
 import sys
 
 from ai.client import AIConfig
-from ui import Back, Cancelled, TerminalUI
+from terminal.ui import Back, Cancelled, TerminalUI
 
 COURSES = [
     {'id': 'demo1', 'courseName': '中外音乐与民族技艺实践', 'courseInfoName': '2026 春 · 示范课程', 'studySpeed': 36},

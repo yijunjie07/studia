@@ -7,10 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from AIMoocMain.exam_api import ExamError
+from mooc.exam_api import ExamError
 from ai.runner import AnswerRunner
-from base.study import run_resources
-from reporting import Reporter
+from core.study import run_resources
+from core.reporting import Reporter
 from tests.test_ai import FakeClock, question
 
 

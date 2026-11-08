@@ -10,13 +10,13 @@ from unittest.mock import Mock, patch
 from rich.console import Console
 from rich.cells import cell_len
 
-import theme
-from app import Application
-from reporting import ProgressEvent, Reporter
-from ui import TerminalUI, Cancelled, legacy_input, run_console_tool
-from AIMoocMain.export_questions import QuizExportHandler
-from AIMoocMain.main import AIMoocHandler
-from ZYKMoocMain.main import ZYKMoocHandler
+from terminal import theme
+from terminal.app import Application
+from core.reporting import ProgressEvent, Reporter
+from terminal.ui import TerminalUI, Cancelled, legacy_input, run_console_tool
+from mooc.export_questions import QuizExportHandler
+from mooc.main import AIMoocHandler
+from mooc.zyk.main import ZYKMoocHandler
 
 
 def view(width=100, **kwargs):
@@ -138,7 +138,7 @@ class RenderingTests(unittest.TestCase):
         def interrupt():
             with ui.activity("打断测试"):
                 raise KeyboardInterrupt()
-        with patch("app.Application.run", side_effect=interrupt):
+        with patch("terminal.app.Application.run", side_effect=interrupt):
             StartWork.main(ui)
         self.assertIsNone(ui.live)
         self.assertIn("已取消", output.getvalue())
@@ -166,13 +166,13 @@ class ObservationTests(unittest.TestCase):
                 self.assertTrue(list(Path(tmp).rglob("*.docx")))
             with self.subTest(failed=merged), tempfile.TemporaryDirectory() as tmp:
                 events = []
-                with patch("AIMoocMain.export_questions.write_questions_docx", side_effect=OSError("disk full")):
+                with patch("mooc.export_questions.write_questions_docx", side_effect=OSError("disk full")):
                     self.export(tmp, events, merged)
                 self.assertNotIn("success", [e.status for e in events if e.kind == "result"])
                 self.assertEqual(sum(e.status == "error" for e in events), 2 if merged else 1)
 
     def test_study_observer_preserves_calls_and_partial_failure(self):
-        for cls, module, kind in [(AIMoocHandler, "AIMoocMain.main", "ppt"), (ZYKMoocHandler, "ZYKMoocMain.main", "zip")]:
+        for cls, module, kind in [(AIMoocHandler, "mooc.main", "ppt"), (ZYKMoocHandler, "mooc.zyk.main", "zip")]:
             for callback_fails in (False, True):
                 with self.subTest(cls=cls, callback_fails=callback_fails):
                     api = Mock()
@@ -207,8 +207,8 @@ class ObservationTests(unittest.TestCase):
         with patch.object(app, 'client_and_courses', return_value=(Mock(), [course])), \
              patch.object(ui, 'categories', return_value=[1]), patch.object(ui, 'papers', return_value=selected), \
              patch.object(ui, 'ai_config', return_value=Mock()), patch.object(ui, 'answer_settings', return_value=(True, .8)), \
-             patch('app.ExamAPI') as api_cls, patch('app.AIClient'), patch('app.AnswerRunner', return_value=runner), \
-             patch('app.MoocAnswerMemory'):
+             patch('terminal.app.ExamAPI') as api_cls, patch('terminal.app.AIClient'), patch('terminal.app.AnswerRunner', return_value=runner), \
+             patch('terminal.app.MoocAnswerMemory'):
             api_cls.return_value.catalog.return_value = []
             app.ai()
         runner.run_paper.assert_called_once()

@@ -3,11 +3,11 @@ from unittest.mock import Mock, patch
 
 import io
 from rich.console import Console
-from ui import TerminalUI, Back
-from app import Application
-import theme
-from AIMoocMain.main import AIMoocHandler
-from ZYKMoocMain.main import ZYKMoocHandler
+from terminal.ui import TerminalUI, Back
+from terminal.app import Application
+from terminal import theme
+from mooc.main import AIMoocHandler
+from mooc.zyk.main import ZYKMoocHandler
 
 
 class CourseSelectionTests(unittest.TestCase):
@@ -49,7 +49,7 @@ class CourseSelectionTests(unittest.TestCase):
              patch.object(app, 'ai_configuration', return_value=Mock()), \
              patch.object(app, 'verify_ai', return_value=ai_client), \
              patch.object(view, 'courses', side_effect=choose), \
-             patch('app.AIMoocApi', api_class), patch('app.AIMoocHandler', handler):
+             patch('terminal.app.AIMoocApi', api_class), patch('terminal.app.AIMoocHandler', handler):
             app.study(0)
         handler.assert_called_once_with(client=client, course_rows=[self.courses[1]], on_progress=view.on_progress,
                                         max_workers=1, activity_ai=ai_client)
@@ -64,7 +64,7 @@ class CourseSelectionTests(unittest.TestCase):
         app = Application(view, store=store)
         with patch.object(app, 'login', return_value=('', '', 'token')), \
              patch.object(view, 'courses', return_value=[]), \
-             patch('app.AIMoocApi', return_value=client), patch('app.AIMoocHandler', handler):
+             patch('terminal.app.AIMoocApi', return_value=client), patch('terminal.app.AIMoocHandler', handler):
             app.study(0)
         handler.assert_not_called()
 

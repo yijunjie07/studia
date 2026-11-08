@@ -12,9 +12,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List
 
-from ui import legacy_input, run_console_tool
-from MoocMain.log import Logger
-from AIMoocMain.api import AIMoocApi
+from terminal.ui import legacy_input, run_console_tool
+from core.log import Logger
+from mooc.api import AIMoocApi
 
 logger = Logger(__name__).get_log()
 
@@ -91,7 +91,7 @@ def main() -> bool:
     logger.info("=" * 50)
     legacy_input("* 按回车键打开浏览器登录...")
 
-    from NewMoocMain.oauth_login import oauth_login
+    from mooc.oauth_login import oauth_login
     token = oauth_login(timeout=300)
     if not token:
         logger.error(" 登录失败")

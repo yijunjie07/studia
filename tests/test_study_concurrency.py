@@ -7,11 +7,11 @@ from unittest.mock import Mock, patch
 
 import requests
 
-from AIMoocMain.main import AIMoocHandler
-from ZYKMoocMain.main import ZYKMoocHandler
-from base.api_client import BaseAPIClient
-from base.auth import AuthenticationExpired
-from base.util import get_mp3_duration
+from mooc.main import AIMoocHandler
+from mooc.zyk.main import ZYKMoocHandler
+from core.api_client import BaseAPIClient
+from core.auth import AuthenticationExpired
+from core.util import get_mp3_duration
 
 
 class StudyTransport:
@@ -109,8 +109,8 @@ class StudyConcurrencyTests(unittest.TestCase):
             callback_threads.append(threading.get_ident())
             events.append(event)
         with ExitStack() as stack:
-            stack.enter_context(patch('AIMoocMain.main.time.sleep'))
-            stack.enter_context(patch('ZYKMoocMain.main.time.sleep'))
+            stack.enter_context(patch('mooc.main.time.sleep'))
+            stack.enter_context(patch('mooc.zyk.main.time.sleep'))
             if workers is not None:
                 kwargs['max_workers'] = workers
             handler = cls(client=StudyAPI(transport, cls is AIMoocHandler),
@@ -244,7 +244,7 @@ class StudyConcurrencyTests(unittest.TestCase):
 
 
     def test_rate_limit_stops_pending_work_without_retrying(self):
-        from base.api_client import RequestRateLimited
+        from core.api_client import RequestRateLimited
         for cls in (AIMoocHandler, ZYKMoocHandler):
             cancel = threading.Event()
             transport = StudyTransport(2, failure=RequestRateLimited('rate limited'),
@@ -260,7 +260,7 @@ class StudyConcurrencyTests(unittest.TestCase):
         for cls in (AIMoocHandler, ZYKMoocHandler):
             event = threading.Event()
             transport = StudyTransport(count=4)
-            with patch('AIMoocMain.main.time.sleep', side_effect=lambda _: event.set()):
+            with patch('mooc.main.time.sleep', side_effect=lambda _: event.set()):
                 # run_study patches sleep, so construct directly for this boundary.
                 events = []
                 cls(client=StudyAPI(transport, cls is AIMoocHandler), max_workers=2,
@@ -284,8 +284,8 @@ class StudyConcurrencyTests(unittest.TestCase):
         self.assertEqual([e.status for e in events if e.kind == 'result'], ['error'])
 
     def test_owned_client_is_closed_but_injected_client_is_retained(self):
-        for cls, module, api_name in ((AIMoocHandler, 'AIMoocMain.main', 'AIMoocApi'),
-                                      (ZYKMoocHandler, 'ZYKMoocMain.main', 'ZYKMoocApi')):
+        for cls, module, api_name in ((AIMoocHandler, 'mooc.main', 'AIMoocApi'),
+                                      (ZYKMoocHandler, 'mooc.zyk.main', 'ZYKMoocApi')):
             transport = StudyTransport(count=0)
             client = StudyAPI(transport, cls is AIMoocHandler)
             with patch(module + '.' + api_name, return_value=client):
@@ -359,7 +359,7 @@ class StudyHTTPTests(unittest.TestCase):
 
 
     def test_rate_limit_http_and_business_failures_raise_without_replay(self):
-        from base.api_client import RequestRateLimited
+        from core.api_client import RequestRateLimited
         for status, body in ((429, {}), (200, {'code': 429, 'msg': 'rate limited'})):
             client = BaseAPIClient('https://example.invalid')
             response = Mock(status_code=status)
@@ -382,7 +382,7 @@ class StudyHTTPTests(unittest.TestCase):
     def test_mp3_stream_has_timeout_and_closes_on_read_error(self):
         response = Mock(status_code=200)
         response.raw.read.side_effect = requests.Timeout()
-        with patch('base.util.requests.get', return_value=response) as request:
+        with patch('core.util.requests.get', return_value=response) as request:
             with self.assertRaises(requests.Timeout):
                 get_mp3_duration('https://example.invalid/audio.mp3')
             self.assertEqual(request.call_args.kwargs['timeout'], (10, 30))

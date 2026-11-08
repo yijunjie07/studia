@@ -15,7 +15,7 @@ from prompt_toolkit.data_structures import Size
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-import native_ui
+from terminal import native_ui
 
 DOWN = '\x1b[B'
 UP = '\x1b[A'
@@ -90,8 +90,8 @@ def connection_view():
 
     from rich.console import Console
 
-    import theme
-    import ui
+    from terminal import theme
+    from terminal import ui
     return ui.TerminalUI(console=Console(file=io.StringIO(), force_terminal=True,
                                          theme=theme.THEME))
 
@@ -358,13 +358,13 @@ class TerminalUIRoutingTests(unittest.TestCase):
     def view(self, **kwargs):
         import io
         from rich.console import Console
-        import theme
-        import ui
+        from terminal import theme
+        from terminal import ui
         return ui.TerminalUI(console=Console(file=io.StringIO(), force_terminal=True,
                                              theme=theme.THEME), **kwargs)
 
     def test_choice_returns_scalar_values_including_zero_and_false(self):
-        import ui
+        from terminal import ui
         view = self.view()
         for value in (0, False, 3):
             with self.subTest(value=value), \
@@ -396,7 +396,7 @@ class TerminalUIRoutingTests(unittest.TestCase):
         self.assertTrue(picker.called)
 
     def test_single_select_action_and_navigation(self):
-        import ui
+        from terminal import ui
         view = self.view()
         with patch.object(native_ui, 'single_picker',
                           return_value=native_ui.ChooseResult('action', action='r')), \
@@ -414,7 +414,7 @@ class TerminalUIRoutingTests(unittest.TestCase):
                 view.select('课程', [{'n': 1}], lambda x: 'n', multiple=False)
 
     def test_confirm_returns_bool_including_false_and_navigates(self):
-        import ui
+        from terminal import ui
         view = self.view()
         for value in (True, False):
             with self.subTest(value=value), \
@@ -434,7 +434,7 @@ class TerminalUIRoutingTests(unittest.TestCase):
                 view.confirm('确认')
 
     def test_injected_input_never_calls_the_native_controls(self):
-        import ui
+        from terminal import ui
         view = self.view(input_fn=lambda: '1')
         with patch.object(native_ui, 'option_menu') as native, \
              patch('sys.stdin.isatty', return_value=True):
@@ -511,7 +511,7 @@ class ConnectionProblemRouteTests(unittest.TestCase):
                 self.assertEqual(value, expected)
 
     def test_escape_still_navigates_back(self):
-        import ui
+        from terminal import ui
         with self.assertRaises(ui.Back):
             route(ESC, call=lambda view: view.connection_problem('登录已过期'))
 
@@ -520,7 +520,7 @@ class EmptyLibraryRouteTests(unittest.TestCase):
     """The real empty-library page keeps its keys, account and explanation."""
 
     def test_empty_page_shows_body_account_actions_at_52x20(self):
-        import ui
+        from terminal import ui
 
         def open_page(view):
             view.account_name = '张三'
@@ -539,7 +539,7 @@ class EmptyLibraryRouteTests(unittest.TestCase):
         self.assertNotIn('选择编号', text)
 
     def open_page(self, view):
-        import ui
+        from terminal import ui
         try:
             view.library([], 0, {})
         except ui.Cancelled:
@@ -559,7 +559,7 @@ class EmptyLibraryRouteTests(unittest.TestCase):
 
 
     def test_keys_return_their_action_and_navigation_still_translates(self):
-        import ui
+        from terminal import ui
         for keys, expected in ((ENTER, 'r'), ('r', 'r'), ('t', 't'), ('s', 's')):
             with self.subTest(keys=keys):
                 value, _ = route(keys, call=lambda view: view.library([], 0, {}),

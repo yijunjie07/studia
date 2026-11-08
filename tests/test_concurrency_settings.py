@@ -7,10 +7,10 @@ from unittest.mock import Mock, patch
 
 from rich.console import Console
 
-import theme
-from app import Application
-from settings import SettingsError, SettingsStore
-from ui import TerminalUI
+from terminal import theme
+from terminal.app import Application
+from core.settings import SettingsError, SettingsStore
+from terminal.ui import TerminalUI
 
 
 class ConcurrencySettingsTests(unittest.TestCase):
@@ -26,7 +26,7 @@ class ConcurrencySettingsTests(unittest.TestCase):
         return view, output
 
     def test_worker_bounds_reject_bool_float_strings_and_out_of_range(self):
-        from base.concurrency import validate_workers
+        from core.concurrency import validate_workers
         for value in (1, 2, 8):
             self.assertEqual(validate_workers(value), value)
         for value in (True, False, 1.0, '2', None, 0, -1, 9, 100):
@@ -84,15 +84,15 @@ class ConcurrencySettingsTests(unittest.TestCase):
         course = {'id': 'ci', 'courseId': 'c', 'courseName': 'course'}
         client = Mock()
         # Offline: MOOC study now requires a verified AI client before it starts.
-        with patch('app.Application.ai_configuration', return_value=Mock()), \
-             patch('app.Application.verify_ai', return_value=Mock()), \
-             patch('app.AIMoocHandler') as mooc, patch('app.ZYKMoocHandler') as zyk:
+        with patch('terminal.app.Application.ai_configuration', return_value=Mock()), \
+             patch('terminal.app.Application.verify_ai', return_value=Mock()), \
+             patch('terminal.app.AIMoocHandler') as mooc, patch('terminal.app.ZYKMoocHandler') as zyk:
             app.study(0, client, [course])
             app.study(1, client, [course])
         self.assertEqual(mooc.call_args.kwargs['max_workers'], 2)
         self.assertEqual(zyk.call_args.kwargs['max_workers'], 2)
         self.assertIn('最多 2 项同时处理', output.getvalue())
-        with patch.object(app, 'verify_ai', return_value=Mock()), patch('app.AnswerRunner') as runner:
+        with patch.object(app, 'verify_ai', return_value=Mock()), patch('terminal.app.AnswerRunner') as runner:
             runner.return_value.run_paper.return_value = {'status': 'preview'}
             app.execute_ai(client, [(course, {'id': 'exam'}, 3)], Mock(), False, api=Mock())
             self.assertEqual(runner.call_args.kwargs['max_workers'], 8)

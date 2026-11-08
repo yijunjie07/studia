@@ -1,7 +1,7 @@
 """Recognize attachment homework from the platform catalog, not task names."""
 import unittest
 
-from task_capabilities import is_attachment_task, task_type_label
+from core.task_capabilities import is_attachment_task, task_type_label
 
 
 class TaskCapabilitiesTests(unittest.TestCase):

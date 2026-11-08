@@ -5,10 +5,10 @@ import unittest
 from rich.console import Console
 from rich.text import Text
 
-import theme
+from terminal import theme
 from ai.client import AIConfig
-from reporting import ProgressEvent
-from ui import TerminalUI
+from core.reporting import ProgressEvent
+from terminal.ui import TerminalUI
 
 
 def make_view(answers, width=100):

@@ -2,9 +2,9 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, Mock, patch
 
-from settings import SettingsStore
+from core.settings import SettingsStore
 from web.server import HttpError, Studia, course_features
-from ZHSMain.api import ZHSApi
+from zhs.api import ZHSApi
 
 SHARED = {"courseName": "新一代信息技术导论", "zhs": {"kind": "shared", "courseId": 1000091138, "recruitId": 444872, "secret": "s1"}}
 MOOC_LIKE = {"courseName": "通信基础与计算机网络", "zhs": {"kind": "shared", "courseId": 1000153421, "recruitId": 476565, "secret": "s2"}}
@@ -97,8 +97,8 @@ class TerminalMenuTest(unittest.TestCase):
         self.assertNotIn("只做", menu["每日复习"])
 
     def test_review_runs_only_on_courses_with_a_habit_share(self):
-        from course_flow import CourseWorkspace
-        from ui import Back
+        from terminal.course_flow import CourseWorkspace
+        from terminal.ui import Back
         view = MagicMock()
         view.course_menu.side_effect = [3, Back()]
         app = MagicMock()

@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 
 import web.accounts
 from web.accounts import AccountError, Accounts, Sessions, Throttle
-from settings import SettingsError
+from core.settings import SettingsError
 from web.hosting import COOKIE, EncryptedSettingsStore, HostedAccess, Hub, _key_file, export_logs, load_key, main
 from web.server import JOBS, Studia, _EventLogHandler, make_handler
 
@@ -236,7 +236,7 @@ class IsolationUnitTest(unittest.TestCase):
             app.lines = []
             app.publish = app.lines.append
         handler = _EventLogHandler()
-        record = logging.LogRecord("ZHSMain.main", logging.INFO, __file__, 1, "进度", None, None)
+        record = logging.LogRecord("zhs.main", logging.INFO, __file__, 1, "进度", None, None)
         JOBS["a1"] = alice
         try:
             for name in ("studia-job-a1", "studia-job-a1/study_3", "MainThread", "studia-job-b2"):
@@ -345,8 +345,8 @@ class IsolationUnitTest(unittest.TestCase):
             load_key("")
 
     def test_answer_memory_is_shared_and_old_user_files_are_merged(self):
-        from ZHSMain.answer import prepare
-        from ZHSMain.memory import AnswerMemory
+        from zhs.answer import prepare
+        from zhs.memory import AnswerMemory
         question = prepare({"id": 1, "content": "1+1=?", "questionType": 1,
                             "optionVos": [{"id": 1, "content": "1"}, {"id": 2, "content": "2"}]})
         with tempfile.TemporaryDirectory() as directory:
@@ -390,7 +390,7 @@ class LogExportTest(unittest.TestCase):
 
 class DailyLogFileTest(unittest.TestCase):
     def test_a_long_running_server_writes_each_day_to_its_own_file(self):
-        from MoocMain.log import DailyFileHandler
+        from core.log import DailyFileHandler
         with tempfile.TemporaryDirectory() as directory:
             cwd = os.getcwd()
             os.chdir(directory)
@@ -399,7 +399,7 @@ class DailyLogFileTest(unittest.TestCase):
                 handler.setFormatter(logging.Formatter("%(message)s"))
                 today = time.time()
                 for when, text in ((today, "today"), (today + 86400, "tomorrow")):
-                    record = logging.LogRecord("ZHSMain.api", logging.WARNING, __file__, 1, text, None, None)
+                    record = logging.LogRecord("zhs.api", logging.WARNING, __file__, 1, text, None, None)
                     record.created = when
                     handler.handle(record)
                 handler.close()
@@ -419,14 +419,14 @@ class DailyLogFileTest(unittest.TestCase):
 
 class LogOwnerTest(unittest.TestCase):
     def test_runtime_log_lines_name_the_user_and_job(self):
-        import MoocMain.log
+        import core.log
         from web.server import JOBS
         with tempfile.TemporaryDirectory() as directory:
             cwd = os.getcwd()
             os.chdir(directory)
-            log = logging.getLogger("ZHSMain.owner-test")
+            log = logging.getLogger("zhs.owner-test")
             log.setLevel(logging.INFO)
-            handler = MoocMain.log.DailyFileHandler()
+            handler = core.log.DailyFileHandler()
             handler.setFormatter(logging.Formatter("[%(levelname)s]%(who)s :: %(message)s"))
             log.addHandler(handler)
             JOBS["ab12cd34"] = Mock(owner="alice")

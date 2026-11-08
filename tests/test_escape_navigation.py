@@ -9,12 +9,12 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
-import theme
-import ui
-from app import Application
+from terminal import theme
+from terminal import ui
+from terminal.app import Application
 from ai.client import AIConfig
-from model_ui import ModelChoice, ModelEdit
-from settings import SettingsStore
+from terminal.model_ui import ModelChoice, ModelEdit
+from core.settings import SettingsStore
 
 
 class EscapeNavigationTests(unittest.TestCase):
@@ -38,7 +38,7 @@ class EscapeNavigationTests(unittest.TestCase):
             self.assertEqual(ui.read_terminal_line('输入', input=pipe, output=DummyOutput()), 'abc')
 
     def test_native_menu_and_summary_share_escape_input(self):
-        import native_ui
+        from terminal import native_ui
         view, _ = self.view()
         seen = {}
         with create_pipe_input() as pipe:
@@ -49,7 +49,7 @@ class EscapeNavigationTests(unittest.TestCase):
                 seen.update(kwargs)
                 return native(*args, **kwargs)
 
-            with patch('native_ui.action_page', side_effect=capture), \
+            with patch('terminal.native_ui.action_page', side_effect=capture), \
                  patch('sys.stdin.isatty', return_value=True):
                 with self.assertRaises(ui.Back):
                     view.review_ai([], AIConfig('https://example.org/v1', 'model', 'key'), {})

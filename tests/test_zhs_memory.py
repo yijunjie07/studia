@@ -9,8 +9,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
-from ZHSMain.answer import ZHSAnswerRunner, prepare, prepare_shared
-from ZHSMain.memory import AnswerMemory, Scoped
+from zhs.answer import ZHSAnswerRunner, prepare, prepare_shared
+from zhs.memory import AnswerMemory, Scoped
 
 
 class FixedRng(random.Random):
@@ -116,7 +116,7 @@ class MemoryStoreTest(unittest.TestCase):
 
     def test_broken_file_is_empty_and_silent(self):
         self.path.write_text("{not json", encoding="utf-8")
-        with self.assertLogs("ZHSMain.memory", "WARNING"):
+        with self.assertLogs("zhs.memory", "WARNING"):
             self.assertEqual(AnswerMemory(self.path).lookup(prepared()),
                              {"correct": None, "wrong": []})
 
@@ -318,7 +318,7 @@ class ReuseFlowTest(unittest.TestCase):
         self.assertEqual(memory.lookup(item), {"correct": ["2"], "wrong": []})
 
     def test_shared_homework_after_submit_updates_memory(self):
-        from ZHSMain.answer import prepare_shared
+        from zhs.answer import prepare_shared
         from tests.test_zhs_shared_answer import FakeSharedClient, homework_item
         memory = in_course(AnswerMemory(self.path), "shared/3")
 
@@ -362,7 +362,7 @@ class ReuseFlowTest(unittest.TestCase):
                                 {"id": 202, "content": "4"}]}))["wrong"], [["3"]])
 
     def test_shared_lookup_failure_still_submits(self):
-        from ZHSMain.answer import prepare_shared
+        from zhs.answer import prepare_shared
         from tests.test_zhs_shared_answer import FakeSharedClient, homework_item
         memory = in_course(AnswerMemory(self.path), "shared/3")
 
@@ -373,7 +373,7 @@ class ReuseFlowTest(unittest.TestCase):
         client = SharedClient([{"eid": "e1", "name": "1+1=?", "questionType": 1,
                                 "questionOptions": [{"id": 101, "content": "1"},
                                                     {"id": 102, "content": "2"}]}])
-        with self.assertLogs("ZHSMain.answer", "WARNING"):
+        with self.assertLogs("zhs.answer", "WARNING"):
             result = runner(client, FakeAI(["B"]), memory).run_paper(
                 {"courseName": "共享课", "zhs": {"kind": "shared", "recruitId": 9,
                                                "courseId": 3}}, homework_item(), 1)
@@ -386,7 +386,7 @@ class ReuseFlowTest(unittest.TestCase):
 
 class MemoryPathTest(unittest.TestCase):
     def test_execute_zhs_ai_uses_settings_directory(self):
-        from app import Application
+        from terminal.app import Application
 
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -399,7 +399,7 @@ class MemoryPathTest(unittest.TestCase):
         app.verify_ai = Mock(return_value=Mock(session=Mock()))
         runner = Mock()
         runner.run_paper.return_value = {"paper": "一", "status": "submitted", "message": "ok"}
-        with patch("app.ZHSAnswerRunner", return_value=runner) as factory:
+        with patch("terminal.app.ZHSAnswerRunner", return_value=runner) as factory:
             app.execute_zhs_ai(Mock(), [(COURSE, {"id": "a", "name": "一", "zhs": {}}, 1)],
                                Mock(), True)
         memory = factory.call_args.kwargs["memory"]
@@ -412,7 +412,7 @@ if __name__ == "__main__":
 
 class DatabaseMemoryTest(unittest.TestCase):
     def test_one_users_graded_answer_serves_everyone_and_survives_restart(self):
-        from ZHSMain.memory import DatabaseAnswerMemory
+        from zhs.memory import DatabaseAnswerMemory
         with tempfile.TemporaryDirectory() as directory:
             db = Path(directory) / "studia.db"
             memory = DatabaseAnswerMemory(db)
@@ -426,7 +426,7 @@ class DatabaseMemoryTest(unittest.TestCase):
             self.assertEqual(restarted.stats(), {"questions": 1, "confirmed": 1})
 
     def test_legacy_user_files_merge_without_losing_either_side(self):
-        from ZHSMain.memory import DatabaseAnswerMemory
+        from zhs.memory import DatabaseAnswerMemory
         with tempfile.TemporaryDirectory() as directory:
             question, other = prepared(), prepared(2, content="2+2=?")
             alice = AnswerMemory(Path(directory) / "alice.json")

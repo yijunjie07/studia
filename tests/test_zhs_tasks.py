@@ -7,13 +7,13 @@ from unittest.mock import Mock, patch
 
 from rich.console import Console
 
-import theme
-from app import Application
-from base.auth import AuthenticationExpired
-from course_flow import CourseWorkspace, task_identity
-from settings import SettingsStore
-from ui import Cancelled, TerminalUI
-from ZHSMain.api import CaptchaRequired
+from terminal import theme
+from terminal.app import Application
+from core.auth import AuthenticationExpired
+from terminal.course_flow import CourseWorkspace, task_identity
+from core.settings import SettingsStore
+from terminal.ui import Cancelled, TerminalUI
+from zhs.api import CaptchaRequired
 
 COURSE = {"courseName": "课程", "zhs": {"courseId": 1, "classId": 2}}
 
@@ -53,7 +53,7 @@ class CatalogTest(unittest.TestCase):
         app = Application(view, store=Mock())
         first = [(COURSE, {"id": "1", "name": "A"}, 1)]
         second = [(dict(COURSE, courseName="课程二"), {"id": "2", "name": "B"}, 2)]
-        with patch("ZHSMain.answer.catalog", side_effect=[first, second]) as catalog:
+        with patch("zhs.answer.catalog", side_effect=[first, second]) as catalog:
             result = app.zhs_task_catalog(Mock(), [COURSE, dict(COURSE, courseName="课程二")])
         self.assertEqual(result, first + second)
         self.assertEqual(catalog.call_count, 2)
@@ -75,7 +75,7 @@ class ExecuteTest(unittest.TestCase):
     def run_execute(self, outcomes, auto_submit=True):
         runner = Mock()
         runner.run_paper.side_effect = outcomes
-        with patch("app.ZHSAnswerRunner", return_value=runner) as factory:
+        with patch("terminal.app.ZHSAnswerRunner", return_value=runner) as factory:
             results = self.app.execute_zhs_ai(Mock(), [task("一"), task("二")], Mock(), auto_submit)
         self.runner = runner
         self.factory = factory

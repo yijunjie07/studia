@@ -5,13 +5,13 @@ import unittest
 from unittest.mock import Mock, patch
 
 from rich.console import Console
-import theme
+from terminal import theme
 
 from ai.client import AIResponseError
 from ai.runner import AnswerRunner
-from reporting import ProgressEvent
+from core.reporting import ProgressEvent
 from tests.test_ai import FakeClock, question
-from ui import TerminalUI
+from terminal.ui import TerminalUI
 
 
 class AnswerProgressTests(unittest.TestCase):

@@ -24,7 +24,7 @@ class TerminalLifecycleTests(unittest.TestCase):
         def controlling_terminal():
             os.setsid()
             fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-        code = ('import os,json,time\nfrom ui import TerminalUI\n'
+        code = ('import os,json,time\nfrom terminal.ui import TerminalUI\n'
                 f'def report(value): os.write({writer}, (json.dumps(value)+"\\n").encode())\n'
                 f'def wait(): os.read({gate},1)\n'
                 'u=TerminalUI()\n' + body + '\nimport termios\nreport({"restored_echo": bool(termios.tcgetattr(0)[3] & termios.ECHO)})\n')
@@ -174,7 +174,7 @@ report('done')
         self.until(lambda: {'restored_echo': True} in self.messages)
 
     def test_runtime_input_handoff_returns_to_runtime_mode(self):
-        self.launch('''from ui import legacy_input
+        self.launch('''from terminal.ui import legacy_input
 with u.session():
  with u.activity('synthetic'):
   report('running')
