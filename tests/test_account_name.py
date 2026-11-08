@@ -7,12 +7,12 @@ from unittest.mock import Mock, patch
 from rich.cells import cell_len
 from rich.console import Console
 
-import theme
-from app import Application
-from course_flow import CourseWorkspace
-from settings import SettingsStore
-from ui import TerminalUI
-from ZYKMoocMain.api import ZYKMoocApi
+from terminal import theme
+from terminal.app import Application
+from terminal.course_flow import CourseWorkspace
+from core.settings import SettingsStore
+from terminal.ui import TerminalUI
+from mooc.zyk.api import ZYKMoocApi
 
 
 class AccountNameTests(unittest.TestCase):
@@ -67,8 +67,8 @@ class AccountNameTests(unittest.TestCase):
             app = Application(view, store)
             client = Mock(access_token='token', user_info={'displayName': '王五'})
             client.my_course_list.return_value = {'rows': []}
-            with patch('app.AIMoocApi', return_value=client):
-                import app as module
+            with patch('terminal.app.AIMoocApi', return_value=client):
+                from terminal import app as module
                 app.client_and_courses(module.AIMoocApi, choose=False)
                 view.shortcuts('Esc 返回')
                 self.assertIn('王五', out.getvalue())
@@ -96,7 +96,7 @@ class AccountNameTests(unittest.TestCase):
             self.assertNotIn('旧账号', out.getvalue())
 
     def test_resource_platform_keeps_authenticated_display_name(self):
-        with patch('ZYKMoocMain.api.authenticated_get', return_value={
+        with patch('mooc.zyk.api.authenticated_get', return_value={
                 'user': {'userId': 'user', 'nickName': '赵六'}}):
             client = ZYKMoocApi(access_token='synthetic-token')
         self.assertEqual(client.user_info['nickName'], '赵六')

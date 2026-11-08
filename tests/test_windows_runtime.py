@@ -1,7 +1,7 @@
 """Win32 input-mode boundary tests, runnable without a Windows host."""
 import unittest
 from unittest.mock import patch
-import terminal_runtime
+from terminal import runtime as terminal_runtime
 
 
 class Console:

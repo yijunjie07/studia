@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from docx import Document
-from AIMoocMain.export_questions import QuizExportHandler, parse_index_input
+from mooc.export_questions import QuizExportHandler, parse_index_input
 
 
 class ExportTests(unittest.TestCase):

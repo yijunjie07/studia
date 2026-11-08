@@ -7,10 +7,10 @@ from unittest.mock import Mock
 
 import requests
 
-from base.auth import AuthenticationExpired, PlatformUnavailable
-from settings import SettingsStore
+from core.auth import AuthenticationExpired, PlatformUnavailable
+from core.settings import SettingsStore
 from web.server import HttpError, Studia, drain
-from ZHSMain.api import ZHSApi
+from zhs.api import ZHSApi
 
 
 class ExpireTest(unittest.TestCase):

@@ -8,7 +8,7 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.utils import get_cwidth
 
-import checklist
+from terminal import checklist
 
 
 class SizedOutput(DummyOutput):
@@ -33,7 +33,7 @@ def render(rows, columns, *, extra_headers=(), cursor=1, keys='q', account_name=
                 ])
         return Application(*args, **kwargs2, after_render=capture)
 
-    with create_pipe_input() as pipe, patch('checklist.Application', side_effect=application):
+    with create_pipe_input() as pipe, patch('terminal.checklist.Application', side_effect=application):
         pipe.send_text(keys)
         result = checklist.choose_many('选择任务', rows, cursor=cursor,
                                        extra_headers=extra_headers,

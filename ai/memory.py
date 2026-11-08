@@ -13,7 +13,7 @@ import json
 import re
 
 from ai.questions import prepare_question
-from ZHSMain.memory import AnswerMemory, DatabaseAnswerMemory
+from zhs.memory import AnswerMemory, DatabaseAnswerMemory
 
 JUDGEMENT = {"1": "正确", "0": "错误"}
 

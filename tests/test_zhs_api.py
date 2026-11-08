@@ -4,9 +4,9 @@ import urllib.parse
 from unittest.mock import Mock, patch
 
 import requests
-from base.auth import AuthenticationExpired, PlatformUnavailable
-from ZHSMain import api
-from ZHSMain.api import (
+from core.auth import AuthenticationExpired, PlatformUnavailable
+from zhs import api
+from zhs.api import (
     CaptchaRequired,
     KEYS,
     WatchPoints,
@@ -70,7 +70,7 @@ class SecureTest(unittest.TestCase):
             json_response({"status": "200", "rt": {"statu": 1}}),
         ]
         vision = Mock()
-        with patch("ZHSMain.slider.solve", return_value=("test-token", [])):
+        with patch("zhs.slider.solve", return_value=("test-token", [])):
             result = client.shared_save_answer({"examId": 200, "eid": "e1"}, 9,
                                                exam=False, captcha_vision=vision)
         self.assertEqual(result["rt"]["statu"], 1)
@@ -87,7 +87,7 @@ class SecureTest(unittest.TestCase):
             json_response({"status": "-1", "msg": "滑块验证未通过，不能答题"}),
             json_response({"status": "200", "pass": False}),
         ]
-        with patch("ZHSMain.slider.solve", return_value=("test-token", [])):
+        with patch("zhs.slider.solve", return_value=("test-token", [])):
             with self.assertRaises(CaptchaRequired):
                 client.shared_save_answer({"examId": 200, "eid": "e1"}, 9,
                                           exam=False, captcha_vision=Mock())
@@ -103,7 +103,7 @@ class SecureTest(unittest.TestCase):
             with self.subTest(message=message, exam=exam, item=item):
                 client = make_api()
                 client.session.request.return_value = json_response({"status": "-1", "msg": message})
-                with patch("ZHSMain.slider.solve") as solve, self.assertRaises(CaptchaRequired):
+                with patch("zhs.slider.solve") as solve, self.assertRaises(CaptchaRequired):
                     client.shared_save_answer(item, 9, exam=exam, captcha_vision=vision)
                 solve.assert_not_called()
                 self.assertEqual(client.session.request.call_count, 1)
@@ -114,7 +114,7 @@ class SecureTest(unittest.TestCase):
         client.session.request.side_effect = [json_response(blocked),
                                               json_response({"status": "200", "pass": True}),
                                               json_response(blocked)]
-        with patch("ZHSMain.slider.solve", return_value=("test-token", [])) as solve:
+        with patch("zhs.slider.solve", return_value=("test-token", [])) as solve:
             with self.assertRaises(CaptchaRequired):
                 client.shared_save_answer({"examId": 200}, 9, exam=False, captcha_vision=Mock())
         self.assertEqual(client.session.request.call_count, 3)
@@ -163,7 +163,7 @@ class SecureTest(unittest.TestCase):
 
     def test_captcha_is_accepted_only_when_platform_confirms(self):
         client = make_api()
-        with patch("ZHSMain.slider.solve", return_value=("test-token", [])):
+        with patch("zhs.slider.solve", return_value=("test-token", [])):
             client.session.request.return_value = json_response({"data": {"status": 200, "pass": True}})
             self.assertTrue(client.pass_captcha("test-context"))
             form = client.session.request.call_args.kwargs["data"]
@@ -234,7 +234,7 @@ class FailureDiagnosticsTest(unittest.TestCase):
 
     def test_decode_error_names_the_endpoint_code_message_and_fields(self):
         client = self.client({"code": -1, "message": "参数解码发生错误", "data": None, "success": False})
-        with self.assertLogs("ZHSMain.api", "WARNING") as logs, self.assertRaises(ZHSApiError) as ctx:
+        with self.assertLogs("zhs.api", "WARNING") as logs, self.assertRaises(ZHSApiError) as ctx:
             client.secure(self.URL, {"uuid": "U-9", "password": "alice-password", "studentNo": "student-no-778899"})
         self.assertEqual(ctx.exception.code, -1)            # behaviour unchanged
         line = logs.output[0]
@@ -248,7 +248,7 @@ class FailureDiagnosticsTest(unittest.TestCase):
 
     def test_captcha_logs_the_platform_message_and_an_unknown_type_when_none_is_given(self):
         client = self.client({"code": -12, "message": "请完成安全验证 13800138000", "data": {"token": "abcdefghijklmnopqrstuvwxyz"}})
-        with self.assertLogs("ZHSMain.api", "WARNING") as logs, self.assertRaises(CaptchaRequired):
+        with self.assertLogs("zhs.api", "WARNING") as logs, self.assertRaises(CaptchaRequired):
             client.secure(self.URL, {})
         line = logs.output[0]
         self.assertIn("业务码 -12", line)
@@ -260,25 +260,25 @@ class FailureDiagnosticsTest(unittest.TestCase):
 
     def test_captcha_type_is_logged_only_when_the_platform_names_it(self):
         client = self.client({"code": -12, "msg": "", "data": {"captchaType": "slide"}})
-        with self.assertLogs("ZHSMain.api", "WARNING") as logs, self.assertRaises(CaptchaRequired):
+        with self.assertLogs("zhs.api", "WARNING") as logs, self.assertRaises(CaptchaRequired):
             client.secure(self.URL, {})
         self.assertIn("验证类型：captchaType=slide", logs.output[0])
 
     def test_http_and_connection_failures_keep_their_errors_and_hide_the_query(self):
         client = self.client({}, status=502)
-        with self.assertLogs("ZHSMain.api", "WARNING") as logs, self.assertRaises(PlatformUnavailable):
+        with self.assertLogs("zhs.api", "WARNING") as logs, self.assertRaises(PlatformUnavailable):
             client.secure(self.URL, {})
         self.assertIn("HTTP 502", logs.output[0])
         self.assert_nothing_secret(logs.output[0])
         client.session.request.side_effect = requests.ConnectionError("Max retries exceeded with url: " + self.URL)
-        with self.assertLogs("ZHSMain.api", "WARNING") as logs, self.assertRaises(PlatformUnavailable):
+        with self.assertLogs("zhs.api", "WARNING") as logs, self.assertRaises(PlatformUnavailable):
             client.secure(self.URL, {})
         self.assertIn("HTTP 无响应 · 提示：ConnectionError", logs.output[0])
         self.assert_nothing_secret(logs.output[0])
 
     def test_shared_exam_slider_block_is_logged_and_still_asks_the_user(self):
         client = self.client({"status": "403", "msg": "请完成滑块验证", "rt": None})
-        with self.assertLogs("ZHSMain.api", "WARNING") as logs, self.assertRaises(CaptchaRequired):
+        with self.assertLogs("zhs.api", "WARNING") as logs, self.assertRaises(CaptchaRequired):
             client.exam_form("https://studentexam-api.zhihuishu.com/studentExam/gateway/t/v1/answer/saveStudentAnswer",
                              {"answer": "B", "uuid": "U-9"})
         line = logs.output[0]
@@ -289,7 +289,7 @@ class FailureDiagnosticsTest(unittest.TestCase):
 
     def test_optional_cache_save_refused_by_the_platform_stays_out_of_the_log(self):
         client = self.client({"code": -1, "message": "系统发生了不可预期的错误了", "data": None})
-        with self.assertLogs("ZHSMain.api", "DEBUG") as logs:  # assertNoLogs needs Python 3.10
+        with self.assertLogs("zhs.api", "DEBUG") as logs:  # assertNoLogs needs Python 3.10
             self.assertIsNone(client.shared_save_cache({"courseId": 1}))
         self.assertEqual([r.levelname for r in logs.records], ["DEBUG"])
 
@@ -299,7 +299,7 @@ class FailureDiagnosticsTest(unittest.TestCase):
         from web.server import JOBS, _EventLogHandler
         app = Mock()
         handler = _EventLogHandler()
-        log = logging.getLogger("ZHSMain.api")
+        log = logging.getLogger("zhs.api")
         log.addHandler(handler)
         JOBS["ab12"] = app
         try:

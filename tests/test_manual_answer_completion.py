@@ -4,19 +4,19 @@ import json
 import tempfile
 import unittest
 
-import theme
+from terminal import theme
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 from ai.client import AIClient, AIConfig, AIServiceError
 from ai.questions import answer_record, model_question, prepare_question, question_fingerprint
 from ai.runner import AnswerRunner, report_path
-from AIMoocMain.exam_api import ExamError, ExamServiceError
-from app import Application
+from mooc.exam_api import ExamError, ExamServiceError
+from terminal.app import Application
 from rich.console import Console
-from settings import SettingsStore
+from core.settings import SettingsStore
 from tests.test_ai import FakeClock, question
-from ui import TerminalUI
+from terminal.ui import TerminalUI
 
 
 class RunnerMixin:
@@ -515,7 +515,7 @@ class ConfirmCancelTests(unittest.TestCase):
 
         def factory(*args, **kwargs):
             return AnswerRunner(*args, **kwargs, output_dir=self.temp.name, clock_factory=FakeClock, output=Mock())
-        with patch.object(app, "verify_ai", return_value=self.ai), patch("app.AnswerRunner", side_effect=factory):
+        with patch.object(app, "verify_ai", return_value=self.ai), patch("terminal.app.AnswerRunner", side_effect=factory):
             return app.execute_ai(Mock(), self.selected, Mock(), True, api=self.api)
 
     def saved_first(self):

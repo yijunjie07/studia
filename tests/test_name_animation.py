@@ -9,9 +9,9 @@ from prompt_toolkit.application import Application
 from prompt_toolkit.input import create_pipe_input
 from rich.console import Console
 
-import checklist
-import theme
-import ui
+from terminal import checklist
+from terminal import theme
+from terminal import ui
 from tests.test_checklist_layout import SizedOutput
 
 
@@ -67,7 +67,7 @@ class NameAnimationTests(unittest.TestCase):
                                                  width=80, theme=theme.THEME))
             view.set_user({'displayName': '王治程'})
             with patch('sys.stdin.isatty', return_value=True), \
-                 patch('native_ui.Application', application):
+                 patch('terminal.native_ui.Application', application):
                 self.assertEqual(view.choice('菜单', [(1, '学习', ''), (2, '答题', '')],
                                              help_text='Esc 返回 · q 退出'), 2)
             self.assert_animation(frames)
@@ -81,7 +81,7 @@ class NameAnimationTests(unittest.TestCase):
                 result.pre_run_callables.append(
                     lambda: asyncio.get_running_loop().call_later(.2, pipe.send_text, ' \x1b[B \x1b[A \r'))
                 return result
-            with patch('checklist.Application', application):
+            with patch('terminal.checklist.Application', application):
                 result = checklist.choose_many('任务', [('甲', '', ''), ('乙', '', '')],
                                                account_name='王治程', input=pipe, output=SizedOutput(80))
             self.assertEqual(result.indexes, [1])

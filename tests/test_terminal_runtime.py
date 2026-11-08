@@ -32,7 +32,7 @@ from prompt_toolkit.output.vt100 import Vt100_Output
 
 from rich.console import Console
 
-from terminal_runtime import RuntimeInput, TerminalScreen, wrap_output
+from terminal.runtime import RuntimeInput, TerminalScreen, wrap_output
 
 
 POSIX_PTY = os.name == "posix" and pty is not None and termios is not None
@@ -348,7 +348,7 @@ class RuntimeInputPTYTests(unittest.TestCase):
         self.assertEqual(self.attrs(), self.saved)
 
     def test_setup_failure_does_not_leave_the_terminal_modified(self):
-        import terminal_runtime
+        from terminal import runtime as terminal_runtime
         with patch.object(terminal_runtime.termios, "tcsetattr", side_effect=termios.error("nope")):
             runtime = RuntimeInput(self.stream())
             with runtime:

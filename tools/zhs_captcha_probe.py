@@ -19,7 +19,7 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ZHSMain.api import (  # noqa: E402
+from zhs.api import (  # noqa: E402
     CaptchaRequired, ZHSApi, ZHSError, _captcha_type, _shape,
 )
 

@@ -5,7 +5,7 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
-from settings import SettingsStore
+from core.settings import SettingsStore
 from web.server import JOBS, HttpError, Studia, _ask_texts, _Board, drain
 
 ROW = {"courseName": "新一代信息技术导论", "zhs": {"kind": "shared", "courseId": 1000091138, "recruitId": 444872}}

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # Original entry point author: Melon. Application orchestration now lives in app.py.
 """Entry point. No terminal rendering or business rules here."""
-from MoocMain.log import Logger, is_dev_mode
+from core.log import Logger, is_dev_mode
 
 
 def _read_pyproject_version() -> str:
@@ -22,8 +22,8 @@ APP_VERSION = _read_pyproject_version()
 
 
 def main(view=None):
-    from app import Application
-    from ui import TerminalUI, Cancelled
+    from terminal.app import Application
+    from terminal.ui import TerminalUI, Cancelled
     view = view or TerminalUI(dev=is_dev_mode())
     with view.session():
         try:

@@ -8,10 +8,10 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
-import theme
-from checklist import choose_many
-from reporting import ProgressEvent
-from ui import TerminalUI
+from terminal import theme
+from terminal.checklist import choose_many
+from core.reporting import ProgressEvent
+from terminal.ui import TerminalUI
 
 
 class ResourceBarTests(unittest.TestCase):
@@ -63,7 +63,7 @@ class DisabledChecklistTests(unittest.TestCase):
         with create_pipe_input() as pipe:
             pipe.send_text('\x1b[A \r')
             native = partial(choose_many, input=pipe, output=DummyOutput())
-            with patch('checklist.choose_many', side_effect=native), patch('sys.stdin.isatty', return_value=True):
+            with patch('terminal.checklist.choose_many', side_effect=native), patch('sys.stdin.isatty', return_value=True):
                 self.assertEqual(view.papers(catalog), [catalog[1]])
 
     def choose(self, keys, disabled, selected=()):

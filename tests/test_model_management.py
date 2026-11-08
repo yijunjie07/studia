@@ -6,14 +6,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from rich.console import Console
-import theme
+from terminal import theme
 
 from ai.client import AIConfig, AIError
-from app import Application
-from course_flow import CourseWorkspace
-from model_ui import ModelChoice, ModelEdit
-from settings import SettingsStore, SettingsError
-from ui import TerminalUI, Back
+from terminal.app import Application
+from terminal.course_flow import CourseWorkspace
+from terminal.model_ui import ModelChoice, ModelEdit
+from core.settings import SettingsStore, SettingsError
+from terminal.ui import TerminalUI, Back
 
 
 class ModelManagementTests(unittest.TestCase):
@@ -53,7 +53,7 @@ class ModelManagementTests(unittest.TestCase):
         self.assertNotIn('private-key', rendered)
 
     def test_legacy_configuration_custom_url_and_deepseek_sequences_use_auto(self):
-        from ui import prompt_ai_config
+        from terminal.ui import prompt_ai_config
         for values, expected in [(['1', 'https://one.example/v1', 'model'], 'auto'),
                                   (['1', 'https://one.example/v1/responses', 'model'], 'responses'),
                                   (['2', '1'], 'auto')]:
@@ -111,7 +111,7 @@ class ModelManagementTests(unittest.TestCase):
     def test_add_saves_tests_and_reuses_without_reentering_credentials(self):
         with patch.object(self.view, 'model_picker', side_effect=[ModelChoice('add'), ModelChoice('back')]), \
              patch.object(self.view, 'model_editor', return_value=ModelEdit('save', self.a)), \
-             patch('app.AIClient.check_connection', return_value=None):
+             patch('terminal.app.AIClient.check_connection', return_value=None):
             self.assertEqual(self.app.ai_configuration(), self.a)
         self.assertEqual(self.store.ai_health(self.a)['status'], 'ok')
         self.assertEqual(Application(self.view, SettingsStore(self.store.directory)).ai_configuration(), self.a)
@@ -121,7 +121,7 @@ class ModelManagementTests(unittest.TestCase):
         self.store.save_ai_profile(self.a)
         with patch.object(self.view, 'model_picker', side_effect=[ModelChoice('add'), ModelChoice('back')]), \
              patch.object(self.view, 'model_editor', return_value=ModelEdit('save', self.b)), \
-             patch('app.AIClient.check_connection', side_effect=AIError('网络超时')):
+             patch('terminal.app.AIClient.check_connection', side_effect=AIError('网络超时')):
             self.assertEqual(self.app.manage_models(), self.a)
         self.assertEqual(len(self.store.ai_profiles()), 2)
         self.assertEqual(self.store.ai_health(self.b)['status'], 'error')
@@ -141,7 +141,7 @@ class ModelManagementTests(unittest.TestCase):
         with patch.object(self.view, 'model_picker', side_effect=[ModelChoice('edit', first), ModelChoice('back')]), \
              patch.object(self.view, 'model_editor', return_value=ModelEdit('save', self.b)), \
              patch.object(self.store, 'save_ai_profile', side_effect=SettingsError('磁盘已满')), \
-             patch('app.AIClient.check_connection', side_effect=AssertionError('must not test unsaved model')):
+             patch('terminal.app.AIClient.check_connection', side_effect=AssertionError('must not test unsaved model')):
             self.assertEqual(self.app.manage_models(), self.a)
         self.assertEqual(self.store.ai_config(), self.a)
         self.assertIn('磁盘已满', self.output.getvalue())
@@ -158,7 +158,7 @@ class ModelManagementTests(unittest.TestCase):
             return ModelChoice('back')
 
         with patch.object(self.view, 'model_picker', side_effect=picker), \
-             patch('app.AIClient.check_connection', autospec=True, return_value=None) as check:
+             patch('terminal.app.AIClient.check_connection', autospec=True, return_value=None) as check:
             self.assertEqual(self.app.manage_models(), self.a)
         self.assertEqual(self.store.ai_config(), self.a)
         self.assertEqual(self.store.ai_health(self.b)['status'], 'ok')
@@ -172,7 +172,7 @@ class ModelManagementTests(unittest.TestCase):
         statuses = []
         with patch.object(self.view, 'model_picker', side_effect=lambda rows, active_id, **kwargs:
                           statuses.append(kwargs['test_connection'](second)) or ModelChoice('back')), \
-             patch('app.AIClient.check_connection', autospec=True, side_effect=AIError('网络超时')):
+             patch('terminal.app.AIClient.check_connection', autospec=True, side_effect=AIError('网络超时')):
             self.assertEqual(self.app.manage_models(), self.a)
         self.assertEqual(self.store.ai_config(), self.a)
         self.assertIn('网络超时', statuses[0])
@@ -184,14 +184,14 @@ class ModelManagementTests(unittest.TestCase):
         statuses = []
         with patch.object(self.view, 'model_picker', side_effect=lambda rows, active_id, **kwargs:
                           statuses.append(kwargs['test_connection'](default.id)) or ModelChoice('back')), \
-             patch('app.AIClient.check_connection', autospec=True, return_value=None) as check:
+             patch('terminal.app.AIClient.check_connection', autospec=True, return_value=None) as check:
             self.app.manage_models()
         self.assertIn('通过', statuses[0])
         self.assertEqual(check.call_args.args[0].config, default.config)
 
     def test_unexpected_test_error_is_safe_and_never_opens_a_live_renderer(self):
         profile = self.store.save_ai_profile(self.a)
-        with patch('app.AIClient.check_connection', side_effect=OSError('socket token=never-show')), \
+        with patch('terminal.app.AIClient.check_connection', side_effect=OSError('socket token=never-show')), \
              patch.object(self.view, 'activity', side_effect=AssertionError('nested renderer')) as activity:
             status = self.app.test_profile_connection(profile)
         self.assertIn('失败', status)
@@ -256,7 +256,7 @@ class ModelManagementTests(unittest.TestCase):
         with patch.object(self.app, 'task_catalog', return_value=selected), \
              patch.object(self.view, 'papers', return_value=selected), \
              patch.object(self.view, 'model_picker', return_value=ModelChoice('select', second)), \
-             patch('app.AIClient.check_connection', autospec=True, side_effect=lambda client: seen.append(client.config)), \
+             patch('terminal.app.AIClient.check_connection', autospec=True, side_effect=lambda client: seen.append(client.config)), \
              patch.object(self.app, 'execute_ai', side_effect=execute), \
              patch.object(self.view, 'operation_result', return_value=1):
             CourseWorkspace(self.app).tasks([selected[0][0]], 2, state)

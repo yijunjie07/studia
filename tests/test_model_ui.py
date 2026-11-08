@@ -18,7 +18,7 @@ ROWS = [('a', '供应商一', 'same', '?'), ('b', '供应商二', 'same', '?')]
 
 class ModelUITests(unittest.TestCase):
     def picker(self, keys, active='a', rows=None, **kwargs):
-        from model_ui import choose_model
+        from terminal.model_ui import choose_model
         rows = rows if rows is not None else [('a', '供应商一', 'same', '✓'),
                                               ('b', '供应商二', 'same', '?')]
         with create_pipe_input() as pipe:
@@ -26,7 +26,7 @@ class ModelUITests(unittest.TestCase):
             return choose_model(rows, active, input=pipe, output=DummyOutput(), **kwargs)
 
     def terminal_picker(self, keys, active='a', rows=None, **kwargs):
-        from model_ui import choose_model
+        from terminal.model_ui import choose_model
         rows = rows if rows is not None else ROWS
         stream = io.StringIO()
         output = Vt100_Output(stream, lambda: Size(rows=24, columns=80),
@@ -38,7 +38,7 @@ class ModelUITests(unittest.TestCase):
         return result, stream.getvalue()
 
     def form(self, keys, current=None):
-        from model_ui import edit_model
+        from terminal.model_ui import edit_model
         with create_pipe_input() as pipe:
             pipe.send_text(keys)
             return edit_model(current, input=pipe, output=DummyOutput())
@@ -53,7 +53,7 @@ class ModelUITests(unittest.TestCase):
         self.assertEqual(old.provider_name, '')
 
     def test_draft_retains_detected_format_only_when_connection_fields_are_unchanged(self):
-        from model_ui import draft_config
+        from terminal.model_ui import draft_config
         old = AIConfig('https://one.example/v1', 'old', 'secret-key', api_format='responses')
         renamed = draft_config(' https://one.example/v1/ ', ' old ', '', old, provider_name='新名称')
         self.assertEqual(renamed.api_format, 'responses')
@@ -68,7 +68,7 @@ class ModelUITests(unittest.TestCase):
             draft_config('https://two.example/v1', 'new', '', old)
 
     def test_new_draft_uses_auto_but_complete_endpoint_specifies_format(self):
-        from model_ui import draft_config
+        from terminal.model_ui import draft_config
         self.assertEqual(draft_config('https://one.example/v1', 'model', 'key').api_format, 'auto')
         self.assertEqual(draft_config('https://one.example/v1/responses', 'model', 'key').api_format,
                          'responses')
@@ -102,7 +102,7 @@ class ModelUITests(unittest.TestCase):
         self.assertEqual(self.picker('\r', rows=[]).action, 'add')
 
     def test_default_picker_ignores_edit_but_still_allows_selection(self):
-        from model_ui import choose_model
+        from terminal.model_ui import choose_model
         rows = [('builtin-default', '默认供应商', 'shared-model', '?'), ('custom', '自定义供应商', 'same', '?')]
         for keys, expected in (('e\r', ('select', 'builtin-default')),
                                ('e\x1b[Be', ('edit', 'custom'))):
@@ -149,7 +149,7 @@ class ModelUITests(unittest.TestCase):
         self.fail('timed out waiting for ' + description)
 
     def running_picker(self, keys, rows=None, **kwargs):
-        from model_ui import choose_model
+        from terminal.model_ui import choose_model
         stream = io.StringIO()
         output = Vt100_Output(stream, lambda: Size(rows=24, columns=80),
                               term='xterm-256color', enable_cpr=False)
@@ -236,8 +236,8 @@ class ModelUITests(unittest.TestCase):
 
     def context_screen(self, keys, rows=None, **kwargs):
         """Full rendered screen after the keys are processed, as plain lines."""
-        from model_ui import choose_model
-        import model_ui
+        from terminal.model_ui import choose_model
+        from terminal import model_ui
         screens = []
 
         def application(*args, **kw):
@@ -271,15 +271,15 @@ class ModelUITests(unittest.TestCase):
     def test_custom_row_exposes_a_visible_back_button(self):
         # Every row context offers an explicit primary and return action; the
         # custom row keeps Use/Test/Edit order and adds 返回 after Edit.
-        from model_ui import ModelChoice, choose_model
+        from terminal.model_ui import ModelChoice, choose_model
         with create_pipe_input() as pipe:
             pipe.send_text('\t\t\t\t\r')  # body → 使用 → 测试 → 编辑 → 返回
             result = choose_model(ROWS, 'a', input=pipe, output=DummyOutput())
         self.assertEqual(result.action, 'back')
 
     def test_custom_row_back_button_is_escape_and_keeps_focus_order(self):
-        from model_ui import choose_model, ModelChoice
-        import model_ui
+        from terminal.model_ui import choose_model, ModelChoice
+        from terminal import model_ui
         screens = []
 
         def application(*args, **kw):
@@ -299,7 +299,7 @@ class ModelUITests(unittest.TestCase):
         self.assertTrue(any('返回' in frame for frame in screens))
 
     def test_passwords_are_masked_in_real_terminal_rendering(self):
-        from model_ui import edit_model
+        from terminal.model_ui import edit_model
         old = AIConfig('https://one.example/v1', 'old', 'old-private-key')
         for width in (40, 52, 80):
             with self.subTest(width=width), create_pipe_input() as pipe:

@@ -10,15 +10,15 @@ from unittest.mock import Mock, patch
 import requests
 from rich.console import Console
 
-import theme
+from terminal import theme
 from ai.client import AIConfig
-from app import Application
-from settings import SettingsStore, SettingsError
-from ui import TerminalUI
-from model_ui import ModelChoice, ModelEdit
-from base.auth import AuthenticationExpired, PlatformUnavailable, authenticated_get
-from AIMoocMain.api import AIMoocApi
-from ZYKMoocMain.api import ZYKMoocApi
+from terminal.app import Application
+from core.settings import SettingsStore, SettingsError
+from terminal.ui import TerminalUI
+from terminal.model_ui import ModelChoice, ModelEdit
+from core.auth import AuthenticationExpired, PlatformUnavailable, authenticated_get
+from mooc.api import AIMoocApi
+from mooc.zyk.api import ZYKMoocApi
 
 
 class PersistenceTests(unittest.TestCase):
@@ -51,7 +51,7 @@ class PersistenceTests(unittest.TestCase):
     def test_failed_atomic_write_preserves_old_config(self):
         self.store.save_ai(self.config)
         before = self.store.path.read_bytes()
-        with patch("settings.os.replace", side_effect=OSError("disk full")):
+        with patch("core.settings.os.replace", side_effect=OSError("disk full")):
             with self.assertRaises(SettingsError):
                 self.store.set("ai", None)
         self.assertEqual(self.store.path.read_bytes(), before)
@@ -68,7 +68,7 @@ class PersistenceTests(unittest.TestCase):
     def test_first_ai_configuration_saved_then_reused_without_prompt(self):
         with patch.object(self.ui, "model_picker", side_effect=[ModelChoice('add'), ModelChoice('back')]), \
              patch.object(self.ui, "model_editor", return_value=ModelEdit('save', self.config)), \
-             patch('app.AIClient.check_connection', return_value=None):
+             patch('terminal.app.AIClient.check_connection', return_value=None):
             self.assertEqual(self.app.ai_configuration(), self.config)
             restarted = Application(self.ui, SettingsStore(self.store.directory))
             self.assertEqual(restarted.ai_configuration(), self.config)
@@ -150,7 +150,7 @@ class PersistenceTests(unittest.TestCase):
         self.assertIn('正在打开浏览器', self.output.getvalue())
 
     def test_other_platform_logout_keeps_current_identity_and_visible_notice(self):
-        from course_flow import CourseWorkspace
+        from terminal.course_flow import CourseWorkspace
         self.store.save_session('mooc', Mock(access_token='m'))
         self.store.save_session('zyk', Mock(access_token='z'))
         self.ui.set_user({'displayName': '张三'})
@@ -166,7 +166,7 @@ class PersistenceTests(unittest.TestCase):
         self.assertIn('已退出资源库登录', self.output.getvalue())
 
     def test_resource_library_logout_returns_immediately(self):
-        from course_flow import CourseWorkspace
+        from terminal.course_flow import CourseWorkspace
         workspace = CourseWorkspace(self.app)
         workspace.platform = 1
         workspace.client = object()
@@ -177,7 +177,7 @@ class PersistenceTests(unittest.TestCase):
         self.assertIsNone(self.store.session('zyk'))
 
     def test_logout_opens_login_before_any_further_menu_input(self):
-        from ui import Cancelled
+        from terminal.ui import Cancelled
         self.store.save_session('mooc', Mock(access_token='old'))
         self.ui.input_fn = Mock(side_effect=['s', '3', 'q'])
         old = Mock(access_token='old', user_info={'displayName': '旧账号'})
@@ -189,8 +189,8 @@ class PersistenceTests(unittest.TestCase):
             self.assertIsNone(self.store.session('mooc'))
             self.assertEqual(self.ui.account_name, '')
             return 'fresh-sso'
-        with patch('app.AIMoocApi', side_effect=[old, new]), \
-             patch('app.oauth_login', side_effect=browser_login) as login:
+        with patch('terminal.app.AIMoocApi', side_effect=[old, new]), \
+             patch('terminal.app.oauth_login', side_effect=browser_login) as login:
             with self.assertRaises(Cancelled):
                 self.app.run()
         login.assert_called_once()
@@ -198,7 +198,7 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(self.ui.account_name, '新账号')
 
     def test_failed_logout_keeps_session_and_identity(self):
-        from course_flow import CourseWorkspace
+        from terminal.course_flow import CourseWorkspace
         self.store.save_session('mooc', Mock(access_token='old'))
         self.ui.set_user({'displayName': '张三'})
         self.ui.input_fn = Mock(side_effect=['3', '0'])
@@ -229,14 +229,14 @@ class PersistenceTests(unittest.TestCase):
 class AuthenticationTests(unittest.TestCase):
     def test_both_platforms_restore_identity_without_sso_exchange(self):
         for cls, module, payload, attribute in (
-            (AIMoocApi, "AIMoocMain.api", {"code": 200, "data": {"id": "user", "displayName": "用户"}}, "user_id"),
-            (ZYKMoocApi, "ZYKMoocMain.api", {"code": 200, "user": {"userId": "user", "nickName": "用户"}}, "student_id"),
+            (AIMoocApi, "mooc.api", {"code": 200, "data": {"id": "user", "displayName": "用户"}}, "user_id"),
+            (ZYKMoocApi, "mooc.zyk.api", {"code": 200, "user": {"userId": "user", "nickName": "用户"}}, "student_id"),
         ):
             with self.subTest(platform=module):
                 session = Mock(headers={})
                 session.get.return_value.status_code = 200
                 session.get.return_value.json.return_value = payload
-                with patch("base.api_client.create_session", return_value=session), patch.object(cls, "_get_access_token") as exchange:
+                with patch("core.api_client.create_session", return_value=session), patch.object(cls, "_get_access_token") as exchange:
                     client = cls(access_token="cached")
                 exchange.assert_not_called()
                 self.assertEqual(getattr(client, attribute), "user")

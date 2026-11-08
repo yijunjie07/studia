@@ -12,7 +12,7 @@ import requests
 from ai.client import AIClient, AIConfig, AIError, prompt_config
 from ai.questions import answer_record, prepare_question
 from ai.runner import AnswerRunner, AttemptClock, report_path
-from AIMoocMain.exam_api import ExamAPI, ExamError, checked_list
+from mooc.exam_api import ExamAPI, ExamError, checked_list
 
 
 def question(kind=1, qid="paper-question-1"):
@@ -366,16 +366,16 @@ class MainResultTests(unittest.TestCase):
     def test_failed_ai_task_is_not_reported_as_normal_success(self):
         import io
         import StartWork
-        import theme
+        from terminal import theme
         from rich.console import Console
-        from reporting import ProgressEvent
-        from ui import TerminalUI
+        from core.reporting import ProgressEvent
+        from terminal.ui import TerminalUI
         from unittest.mock import patch
         stream = io.StringIO()
         view = TerminalUI(console=Console(file=stream, theme=theme.THEME, width=120))
         def fail():
             view.on_progress(ProgressEvent("result", "作业", status="error"))
-        with patch("app.Application.run", side_effect=fail):
+        with patch("terminal.app.Application.run", side_effect=fail):
             StartWork.main(view)
         text = stream.getvalue()
         self.assertIn("成功 0 · 失败 1", text)

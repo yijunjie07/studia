@@ -74,7 +74,7 @@ class AIConfig:
 
 def prompt_config(input_fn=None, secret_fn=None, output=None):
     """Compatibility adapter; interactive configuration belongs to ui.py."""
-    from ui import prompt_ai_config
+    from terminal.ui import prompt_ai_config
     return prompt_ai_config(input_fn, secret_fn, output)
 
 

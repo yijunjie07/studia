@@ -7,14 +7,14 @@ from unittest.mock import Mock, patch
 
 from rich.console import Console
 
-import theme
-import ui as ui_module
-from base.auth import PlatformUnavailable
-from ui import TerminalUI, Cancelled
-from app import Application
-from settings import SettingsStore
+from terminal import theme
+from terminal import ui as ui_module
+from core.auth import PlatformUnavailable
+from terminal.ui import TerminalUI, Cancelled
+from terminal.app import Application
+from core.settings import SettingsStore
 from ai.client import AIConfig
-from reporting import ProgressEvent
+from core.reporting import ProgressEvent
 
 
 def make_view(answers, width=100):
@@ -153,8 +153,8 @@ class EmptyLibraryTests(unittest.TestCase):
         client.my_course_list.side_effect = [{"rows": []}, {"rows": COURSES}]
         view, output = make_view(["", "q"])
         app = Application(view, self.store)
-        with patch("app.AIMoocApi", return_value=client) as api, \
-             patch("app.oauth_login") as oauth, \
+        with patch("terminal.app.AIMoocApi", return_value=client) as api, \
+             patch("terminal.app.oauth_login") as oauth, \
              patch.object(app, "login") as login:
             with self.assertRaises(Cancelled):
                 app.run()
@@ -181,7 +181,7 @@ class EmptyLibraryTests(unittest.TestCase):
         client.my_course_list.return_value = {"unexpected": True}
         view, output = make_view(["q"])
         app = Application(view, self.store)
-        with patch("app.AIMoocApi", return_value=client), \
+        with patch("terminal.app.AIMoocApi", return_value=client), \
              patch.object(app, "login") as login:
             with self.assertRaises(Cancelled):
                 app.run()
@@ -284,10 +284,10 @@ class WorkspaceTests(unittest.TestCase):
             view.on_progress(ProgressEvent("result", "课程", status="success"))
 
         with patch.object(app, "login", side_effect=ui_module.Back()), \
-             patch("app.AIMoocApi", return_value=self.client), \
-             patch("app.ZYKMoocApi") as zyk, patch("app.AIMoocHandler", side_effect=study), \
-             patch("app.ExamAPI", return_value=api), patch("app.AIClient"), \
-             patch("app.AnswerRunner") as runner:
+             patch("terminal.app.AIMoocApi", return_value=self.client), \
+             patch("terminal.app.ZYKMoocApi") as zyk, patch("terminal.app.AIMoocHandler", side_effect=study), \
+             patch("terminal.app.ExamAPI", return_value=api), patch("terminal.app.AIClient"), \
+             patch("terminal.app.AnswerRunner") as runner:
             runner.return_value.run_paper.return_value = result or {"status": "preview", "paper": "第一章"}
             runner.return_value.reused = False
             with self.assertRaises(Cancelled):
@@ -353,8 +353,8 @@ class WorkspaceTests(unittest.TestCase):
         self.assertNotIn("批量操作请使用 m", text)
 
     def test_export_workspace_writes_only_chosen_paper_and_returns_to_course(self):
-        from AIMoocMain.export_questions import QuizExportHandler
-        import course_flow
+        from mooc.export_questions import QuizExportHandler
+        from terminal import course_flow
         catalog = [(COURSES[0], {"id": "a", "name": "第一章"}, 3),
                    (COURSES[0], {"id": "b", "name": "第二章"}, 3)]
         self.client.get_exam_paper.return_value = {"questions": [{"id": "q", "typeId": 3, "title": "判断题", "stdAnswer": "0"}]}
@@ -376,7 +376,7 @@ class WorkspaceTests(unittest.TestCase):
         root = Path(self.temp.name)
         (root / "a.md").write_text("结果未知")
         (root / "b.md").write_text("旧报告")
-        with patch("course_flow.report_path", side_effect=lambda directory, user, course, exam: root / (exam + ".json")):
+        with patch("terminal.course_flow.report_path", side_effect=lambda directory, user, course, exam: root / (exam + ".json")):
             _, text, _, runner = self.run_workspace(["1", "2", "all", "", "", "q"], catalog,
                                                     {"status": "submission_unknown", "paper": "第一章"})
         self.assertEqual(runner.return_value.run_paper.call_count, 1)
@@ -390,7 +390,7 @@ class WorkspaceTests(unittest.TestCase):
         view.begin_operation()
         view.on_progress(ProgressEvent("result", "上一轮", status="success"))
         view.finish()
-        with patch("app.Application.run", side_effect=RuntimeError("读取配置失败")):
+        with patch("terminal.app.Application.run", side_effect=RuntimeError("读取配置失败")):
             StartWork.main(view)
         self.assertIn("读取配置失败", output.getvalue())
 

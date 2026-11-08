@@ -10,15 +10,15 @@ from unittest.mock import Mock, patch
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
-import checklist
-import task_capabilities as capability
-import theme
+from terminal import checklist
+from core import task_capabilities as capability
+from terminal import theme
 from ai.runner import AnswerRunner, report_path, write_report
-from app import Application
-from AIMoocMain.exam_api import ExamError
-from AIMoocMain.export_questions import QuizExportHandler
-from settings import SettingsStore
-from ui import TerminalUI
+from terminal.app import Application
+from mooc.exam_api import ExamError
+from mooc.export_questions import QuizExportHandler
+from core.settings import SettingsStore
+from terminal.ui import TerminalUI
 from tests.test_ai import FakeClock, question
 
 NOW=datetime(2026,10,10,15,tzinfo=timezone(timedelta(hours=8)))
@@ -94,14 +94,14 @@ class AvailabilityWorkflowTests(unittest.TestCase):
             with create_pipe_input() as pipe:
                 pipe.send_text(keys)
                 native=partial(checklist.choose_many,input=pipe,output=DummyOutput())
-                with patch('checklist.choose_many',side_effect=native),patch('sys.stdin.isatty',return_value=True):
+                with patch('terminal.checklist.choose_many',side_effect=native),patch('sys.stdin.isatty',return_value=True):
                     self.assertEqual(view.papers(catalog),[catalog[-1]])
 
     def test_unavailable_only_does_not_test_ai_or_read_paper(self):
         view,_=self.view()
         with tempfile.TemporaryDirectory() as directory:
             app=Application(view,SettingsStore(directory))
-            with patch.object(app,'verify_ai') as verify,patch('app.AnswerRunner') as runner:
+            with patch.object(app,'verify_ai') as verify,patch('terminal.app.AnswerRunner') as runner:
                 runner.return_value.run_paper.return_value={'status':'preview'}
                 reports=app.execute_ai(Mock(),[(COURSE,FUTURE,2),(COURSE,CLOSED,2)],Mock(),True,api=Mock())
         self.assertEqual([r['status'] for r in reports],['skipped','skipped'])
@@ -112,7 +112,7 @@ class AvailabilityWorkflowTests(unittest.TestCase):
         view,_=self.view()
         with tempfile.TemporaryDirectory() as directory:
             app=Application(view,SettingsStore(directory))
-            with patch.object(app,'verify_ai'),patch('app.AnswerRunner') as factory:
+            with patch.object(app,'verify_ai'),patch('terminal.app.AnswerRunner') as factory:
                 factory.return_value.run_paper.return_value={'status':'preview','paper':'可答测验'}
                 results=app.execute_ai(Mock(),[(COURSE,FUTURE,2),(COURSE,OPEN,3)],Mock(),False,api=Mock())
         self.assertEqual([r['status'] for r in results],['skipped','preview'])
@@ -153,13 +153,13 @@ class AvailabilityWorkflowTests(unittest.TestCase):
         def verify(config):
             now[0]+=timedelta(seconds=1)
             return ai
-        with tempfile.TemporaryDirectory() as directory,patch('task_capabilities.datetime') as clock:
+        with tempfile.TemporaryDirectory() as directory,patch('core.task_capabilities.datetime') as clock:
             clock.fromisoformat.side_effect=datetime.fromisoformat
             clock.now.side_effect=lambda tz:now[0]
             app=Application(view,SettingsStore(directory))
             def runner(*args,**kwargs):
                 return AnswerRunner(*args,**kwargs,output_dir=directory,clock_factory=FakeClock)
-            with patch.object(app,'verify_ai',side_effect=verify),patch('app.AnswerRunner',side_effect=runner):
+            with patch.object(app,'verify_ai',side_effect=verify),patch('terminal.app.AnswerRunner',side_effect=runner):
                 reports=app.execute_ai(Mock(),[(COURSE,first,3),(COURSE,OPEN,3)],Mock(),False,api=api)
         self.assertEqual([r['status'] for r in reports],['skipped','preview'])
         api.paper.assert_called_once_with('open')
@@ -176,7 +176,7 @@ class AvailabilityWorkflowTests(unittest.TestCase):
             now[0]+=timedelta(seconds=1)
             return {'answer':'A','confidence':.95,'explanation':'ok'}
         ai.answer.side_effect=answer
-        with tempfile.TemporaryDirectory() as directory,patch('task_capabilities.datetime') as clock:
+        with tempfile.TemporaryDirectory() as directory,patch('core.task_capabilities.datetime') as clock:
             clock.fromisoformat.side_effect=datetime.fromisoformat
             clock.now.side_effect=lambda tz:now[0]
             report=AnswerRunner(api,ai,directory,auto_submit=True,clock_factory=FakeClock,
@@ -214,7 +214,7 @@ class AvailabilityWorkflowTests(unittest.TestCase):
                 api.records.side_effect=records
                 ai=Mock()
                 ai.config.model='test'
-                with patch('task_capabilities.datetime') as clock:
+                with patch('core.task_capabilities.datetime') as clock:
                     clock.fromisoformat.side_effect=datetime.fromisoformat
                     clock.now.side_effect=lambda tz:now[0]
                     report=AnswerRunner(api,ai,directory,on_log=lambda message:None).run_paper(COURSE,item,3)

@@ -6,15 +6,15 @@ import threading
 import time
 from pathlib import Path
 
-from AIMoocMain.exam_api import ExamError, ExamServiceError, TaskUnavailableError
-from AIMoocMain.export_questions import get_questions_from_paper, paper_display_name, paper_exam_id, safe_filename
-from reporting import Reporter, child_thread_name, log_callback
+from mooc.exam_api import ExamError, ExamServiceError, TaskUnavailableError
+from mooc.export_questions import get_questions_from_paper, paper_display_name, paper_exam_id, safe_filename
+from core.reporting import Reporter, child_thread_name, log_callback
 from ai.memory import learn as learn_answers, remembered_value, scope as answer_scope
 from ai.client import AIError, AIServiceError
 from ai.concurrency import ParallelAnswers, prepared_items
-from base.concurrency import validate_workers
+from core.concurrency import validate_workers
 from ai.questions import answer_record, model_question, question_fingerprint
-from task_capabilities import task_availability
+from core.task_capabilities import task_availability
 
 
 

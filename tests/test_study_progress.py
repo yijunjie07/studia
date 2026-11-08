@@ -3,9 +3,9 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from AIMoocMain.main import AIMoocHandler
-from ZYKMoocMain.main import ZYKMoocHandler
-from base.auth import AuthenticationExpired
+from mooc.main import AIMoocHandler
+from mooc.zyk.main import ZYKMoocHandler
+from core.auth import AuthenticationExpired
 from tests import test_study_concurrency as fixtures
 from tests.test_study_concurrency import StudyAPI, StudyTransport
 
@@ -19,7 +19,7 @@ class StudyProgressTests(unittest.TestCase):
                 with self.subTest(platform=cls.__name__, workers=workers):
                     transport = StudyTransport(count=1)
                     events = []
-                    with patch('AIMoocMain.main.time.sleep', side_effect=KeyboardInterrupt):
+                    with patch('mooc.main.time.sleep', side_effect=KeyboardInterrupt):
                         with self.assertRaises(KeyboardInterrupt):
                             cls(client=StudyAPI(transport, cls is AIMoocHandler), max_workers=workers,
                                 on_progress=events.append,
@@ -73,7 +73,7 @@ class StudyProgressTests(unittest.TestCase):
             def discover(api, *args):
                 at_discovery.append([(e.completed, e.total) for e in events if e.kind == 'resources'][-1:])
                 return original(api, *args)
-            with patch('AIMoocMain.main.time.sleep'), patch.object(StudyAPI, 'study_design_list', discover):
+            with patch('mooc.main.time.sleep'), patch.object(StudyAPI, 'study_design_list', discover):
                 cls(client=StudyAPI(transport, cls is AIMoocHandler), max_workers=2,
                     on_progress=events.append,
                     course_rows=[{'id': name, 'courseInfoId': name, 'courseName': name}
@@ -91,7 +91,7 @@ class StudyProgressTests(unittest.TestCase):
                 cancel = threading.Event()
                 events = []
                 transport = StudyTransport(count=4)
-                with patch('AIMoocMain.main.time.sleep', side_effect=lambda _: cancel.set()):
+                with patch('mooc.main.time.sleep', side_effect=lambda _: cancel.set()):
                     cls(client=StudyAPI(transport, cls is AIMoocHandler), max_workers=workers,
                         cancel_event=cancel, on_progress=events.append,
                         course_rows=[{'id': 'one', 'courseInfoId': 'one', 'courseName': 'one'}])
@@ -119,7 +119,7 @@ class StudyProgressTests(unittest.TestCase):
                     self.assertTrue(first_finished.wait(timeout=3))
                 return {'code': 200, 'msg': 'ok'}
             transport.write = write
-            with patch('AIMoocMain.main.time.sleep'):
+            with patch('mooc.main.time.sleep'):
                 cls(client=StudyAPI(transport, cls is AIMoocHandler), max_workers=2,
                     cancel_event=cancel, on_progress=events.append,
                     course_rows=[{'id': 'one', 'courseInfoId': 'one', 'courseName': 'one'}])
@@ -147,8 +147,8 @@ class StudyProgressTests(unittest.TestCase):
     def test_fatal_inflight_error_survives_shutdown_and_cleanup_errors(self):
         from concurrent.futures import ThreadPoolExecutor
         import logging
-        from base.study import run_resources
-        from reporting import Reporter
+        from core.study import run_resources
+        from core.reporting import Reporter
 
         transport = StudyTransport(count=4)
         handler = AIMoocHandler.__new__(AIMoocHandler)
@@ -185,7 +185,7 @@ class StudyProgressTests(unittest.TestCase):
         def close(client):
             original_close(client)
             raise RuntimeError('cleanup error must not replace authentication failure')
-        with self.assertLogs('study-progress-test', level='ERROR'), patch('AIMoocMain.main.time.sleep'), patch.object(ThreadPoolExecutor, 'shutdown', shutdown), patch.object(StudyAPI, 'close', close):
+        with self.assertLogs('study-progress-test', level='ERROR'), patch('mooc.main.time.sleep'), patch.object(ThreadPoolExecutor, 'shutdown', shutdown), patch.object(StudyAPI, 'close', close):
             with self.assertRaises(AuthenticationExpired) as raised:
                 run_resources(handler, ((node, 'parent', 0) for node in handler.client.nodes('one')), 'one')
         self.assertIs(raised.exception, failure)
@@ -196,7 +196,7 @@ class StudyProgressTests(unittest.TestCase):
 class CourseUnitsTests(unittest.TestCase):
     def test_units_follow_chapters_with_done_and_skipped_states(self):
         from types import SimpleNamespace
-        from AIMoocMain.main import course_units
+        from mooc.main import course_units
         client = SimpleNamespace(
             study_record_list=lambda info, course: ['v1'],
             study_design_list=lambda info, course: [{'id': 'c1', 'name': '第一章'}, {'id': 'c2', 'name': '期末考试'}],

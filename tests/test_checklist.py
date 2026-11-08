@@ -4,12 +4,12 @@ import unittest
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-import native_ui
+from terminal import native_ui
 
 
 class ChecklistTests(unittest.TestCase):
     def test_row_fitting_preserves_checkbox_indent_and_status_alignment(self):
-        from checklist import fit
+        from terminal.checklist import fit
         from prompt_toolkit.utils import get_cwidth
         rendered = fit('  [x] 作业    已提交', 24)
         self.assertTrue(rendered.startswith('  [x] 作业    已提交'))
@@ -17,7 +17,7 @@ class ChecklistTests(unittest.TestCase):
         self.assertLessEqual(get_cwidth(fit('很长的任务名称' * 20, 12)), 12)
 
     def choose(self, keys, count=3, selected=()):
-        import checklist
+        from terminal import checklist
         self.assertTrue(hasattr(checklist, 'choose_many'), 'keyboard checklist is not implemented')
         with create_pipe_input() as pipe:
             pipe.send_text(keys)
@@ -77,11 +77,11 @@ class ChecklistTests(unittest.TestCase):
         from functools import partial
         from unittest.mock import Mock, patch
         from rich.console import Console
-        import checklist
-        import theme
-        from app import Application
-        from course_flow import CourseWorkspace
-        from ui import TerminalUI, Cancelled
+        from terminal import checklist
+        from terminal import theme
+        from terminal.app import Application
+        from terminal.course_flow import CourseWorkspace
+        from terminal.ui import TerminalUI, Cancelled
         course = {'id': 'ci', 'courseId': 'c', 'courseName': '课程'}
         initial = [(course, {'id': 'a', 'name': '任务', '_completion_status': 'not_started'}, 1)]
         updated = [(course, dict(initial[0][1], _completion_status='submitted'), 1)]
@@ -93,11 +93,11 @@ class ChecklistTests(unittest.TestCase):
         with create_pipe_input() as pipe:
             pipe.send_text(' r\r')
             native = partial(checklist.choose_many, input=pipe, output=DummyOutput())
-            with patch('checklist.choose_many', side_effect=native), \
-                 patch('native_ui.action_page',
+            with patch('terminal.checklist.choose_many', side_effect=native), \
+                 patch('terminal.native_ui.action_page',
                        return_value=native_ui.PageResult('quit')), \
                  patch('sys.stdin.isatty', return_value=True), \
-                 patch('ui.read_terminal_line', return_value='q'), \
+                 patch('terminal.ui.read_terminal_line', return_value='q'), \
                  patch.object(app, 'task_catalog', side_effect=[initial, updated]):
                 with self.assertRaises(Cancelled):
                     CourseWorkspace(app).tasks([course], 3, state)

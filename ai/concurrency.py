@@ -6,7 +6,7 @@ import time
 
 from ai.client import AIClient, AIError, AIServiceError
 from ai.questions import model_question, prepare_question
-from reporting import child_thread_name
+from core.reporting import child_thread_name
 
 
 def prepared_items(raw_questions):

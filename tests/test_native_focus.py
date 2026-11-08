@@ -17,7 +17,7 @@ from prompt_toolkit.data_structures import Size
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-import theme
+from terminal import theme
 
 DOWN = '\x1b[B'
 FOCUS_BG = theme.TEXT.lstrip('#')  # prompt_toolkit reports bgcolor without '#'
@@ -166,7 +166,7 @@ class FocusContrastTests(unittest.TestCase):
         self.assertGreater(checked, 0, f'{label}: no rendered row cells')
 
     def test_model_picker_focused_button_cells_have_contrast(self):
-        import model_ui
+        from terminal import model_ui
         result, frames = run_frames(model_ui, model_ui.choose_model,
                                     ['\t', '\x1b'], [('a', '供应商一', 'same', '?')], 'a')
         self.assertEqual(result.action, 'back')
@@ -180,7 +180,7 @@ class FocusContrastTests(unittest.TestCase):
                         'focused arrows must carry class:button.focused class:button.arrow')
 
     def test_model_picker_add_row_only_offers_add_and_back(self):
-        import model_ui
+        from terminal import model_ui
         rows = [('a', '供应商一', 'same', '?'), ('b', '供应商二', 'same', '?')]
         result, frames = run_frames(model_ui, model_ui.choose_model,
                                     ['\x1b[B\x1b[B\t', '\x1b'], rows, 'a')
@@ -195,7 +195,7 @@ class FocusContrastTests(unittest.TestCase):
         self.assertNotIn('编辑', text)
 
     def test_model_picker_builtin_hides_edit_and_keeps_use_and_test(self):
-        import model_ui
+        from terminal import model_ui
         result, frames = run_frames(model_ui, model_ui.choose_model,
                                     ['\t', '\x1b'], [('a', '默认供应商', 'model', '?')], 'a',
                                     locked_ids={'a'})
@@ -206,7 +206,7 @@ class FocusContrastTests(unittest.TestCase):
         self.assertNotIn('编辑', ''.join(c for c, _, _ in action_row))
 
     def test_model_picker_custom_row_offers_edit(self):
-        import model_ui
+        from terminal import model_ui
         rows = [('a', '供应商一', 'same', '?'), ('b', '供应商二', 'same', '?')]
         _, frames = run_frames(model_ui, model_ui.choose_model, ['\t', '\x1b'], rows, 'a')
         self.assert_readable(focused_row(frames, '使用此模型'), '自定义使用按钮')
@@ -215,7 +215,7 @@ class FocusContrastTests(unittest.TestCase):
         self.assertIn('编辑', ''.join(c for c, _, _ in action_row))
 
     def test_model_picker_highlight_is_not_a_focused_control(self):
-        import model_ui
+        from terminal import model_ui
         _, frames = run_frames(model_ui, model_ui.choose_model, ['\t', '\x1b'],
                                [('a', '供应商一', 'same', '?')], 'a')
         frame = button_focused_frame(frames, '使用此模型')
@@ -226,27 +226,27 @@ class FocusContrastTests(unittest.TestCase):
         self.assert_row_has_no_focus_background(list_row, '模型行')
 
     def test_model_editor_focused_save_button_has_contrast(self):
-        import model_ui
+        from terminal import model_ui
         result, frames = run_frames(model_ui, model_ui.edit_model, ['\t\t\t\t', '\x1b'])
         self.assertEqual(result.action, 'back')
         self.assert_readable(focused_row(frames, '保存并测试'), '模型保存按钮')
 
     def test_concurrency_focused_button_has_contrast(self):
-        import concurrency_ui
+        from terminal import concurrency_ui
         result, frames = run_frames(concurrency_ui, concurrency_ui.edit_concurrency,
                                     ['\t\t\t', '\x1b'], {'ai': 5, 'study': 6})
         self.assertIsNone(result)
         self.assert_readable(focused_row(frames, '恢复默认'), '并发恢复默认按钮')
 
     def test_concurrency_default_actions_have_contrast(self):
-        import concurrency_ui
+        from terminal import concurrency_ui
         result, frames = run_frames(concurrency_ui, concurrency_ui.edit_concurrency,
                                     ['\t', '\x1b'], {'ai': 5, 'study': 6})
         self.assertIsNone(result)
         self.assert_readable(focused_row(frames, '保存'), '并发保存按钮')
 
     def test_concurrency_row_is_not_focused_while_a_button_owns_focus(self):
-        import concurrency_ui
+        from terminal import concurrency_ui
         _, frames = run_frames(concurrency_ui, concurrency_ui.edit_concurrency,
                                ['\t', '\x1b'], {'ai': 5, 'study': 6})
         frame = button_focused_frame(frames, '保存')
@@ -255,7 +255,7 @@ class FocusContrastTests(unittest.TestCase):
         self.assert_row_has_no_focus_background(row, '并发行')
 
     def test_checklist_cursor_row_uses_focused_style(self):
-        import checklist
+        from terminal import checklist
         result, frames = run_frames(checklist, checklist.choose_many, ['\x1b'],
                                     '任务', [('任务0', '', '作业')])
         self.assertEqual(result.action, 'back')
@@ -266,7 +266,7 @@ class FocusContrastTests(unittest.TestCase):
         self.assertTrue(rows, '任务行: no focused cursor row captured')
 
     def test_checklist_row_drops_the_cursor_background_when_a_button_is_focused(self):
-        import checklist
+        from terminal import checklist
         _, frames = run_frames(checklist, checklist.choose_many,
                                [' ', '\t', '\x1b'],
                                '任务', [('任务0', '未作答', '作业'), ('任务1', '未作答', '作业')])
@@ -300,7 +300,7 @@ class LongListAnchorTests(unittest.TestCase):
         return '\n'.join(''.join(c for c, _, _ in line) for line in lines)
 
     def test_model_picker_keeps_the_highlighted_row_visible_after_tab(self):
-        import model_ui
+        from terminal import model_ui
         rows = [(f'm{i:02d}', f'供应商{i:02d}', f'model-{i:02d}', '?') for i in range(30)]
         result, frames = run_frames(model_ui, model_ui.choose_model,
                                     [DOWN * 24, '\t', '\x1b'], rows, 'm00',
@@ -313,7 +313,7 @@ class LongListAnchorTests(unittest.TestCase):
         self.assertNotIn('供应商00', text.split('使用此模型')[0])
 
     def test_checklist_keeps_the_highlighted_row_visible_after_tab(self):
-        import checklist
+        from terminal import checklist
         rows = [(f'任务{i:02d}', '未作答', '作业') for i in range(30)]
         _, frames = run_frames(checklist, checklist.choose_many,
                                [DOWN * 24, '\t', '\x1b'], '选择任务', rows,
@@ -339,7 +339,7 @@ class SharedFrameFillTests(unittest.TestCase):
         return [''.join(c for c, _, _ in line).rstrip() for line in lines]
 
     def test_short_model_page_keeps_actions_at_the_bottom(self):
-        import model_ui
+        from terminal import model_ui
         _, frames = run_frames(model_ui, model_ui.choose_model, ['\x1b'],
                                [('a', '供应商一', 'model', '?')], 'a')
         lines = self.screen(frames[-1])
@@ -355,7 +355,7 @@ class SharedFrameFillTests(unittest.TestCase):
         self.assertIn('Esc 返回', '\n'.join(lines[action:]))
 
     def test_short_checklist_keeps_its_actions_at_the_bottom(self):
-        import checklist
+        from terminal import checklist
         _, frames = run_frames(checklist, checklist.choose_many, ['\x1b'], '选择任务',
                                [('第一章 测验', '已提交', '测验')])
         lines = self.screen(frames[-1])
@@ -366,7 +366,7 @@ class SharedFrameFillTests(unittest.TestCase):
         self.assertIn('空格 勾选', '\n'.join(lines[action:]))
 
     def test_short_page_collapses_the_filler_at_16_rows(self):
-        import model_ui
+        from terminal import model_ui
         result, frames = run_frames(model_ui, model_ui.choose_model, ['\x1b'],
                                     [('a', '供应商一', 'model', '?')], 'a',
                                     columns=40, rows=16)
@@ -378,7 +378,7 @@ class SharedFrameFillTests(unittest.TestCase):
         self.assertEqual(len(self.screen(frames[-1])), 16)
 
     def test_resize_reflows_the_filler_without_hiding_rows(self):
-        import model_ui
+        from terminal import model_ui
         output = SizedOutput(120, 30)
 
         def shrink(app):
@@ -403,7 +403,7 @@ class SharedFrameFillTests(unittest.TestCase):
 
 class ScopedBindingTests(unittest.TestCase):
     def form(self, chunks, current=None):
-        import concurrency_ui
+        from terminal import concurrency_ui
         result, _ = run_frames(concurrency_ui, concurrency_ui.edit_concurrency, chunks, current)
         return result
 

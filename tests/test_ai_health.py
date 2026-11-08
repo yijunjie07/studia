@@ -6,12 +6,12 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from rich.console import Console
-import theme
+from terminal import theme
 import ai.client as client_module
 from ai.client import AIClient, AIConfig, AIError
-from app import Application
-from settings import SettingsStore
-from ui import TerminalUI
+from terminal.app import Application
+from core.settings import SettingsStore
+from terminal.ui import TerminalUI
 
 
 class AIHealthTests(unittest.TestCase):
@@ -63,7 +63,7 @@ class AIHealthTests(unittest.TestCase):
         session.post.return_value.status_code = 401
         api = Mock()
         selected = [({'id': 'ci', 'courseId': 'c'}, {'id': 'paper', 'name': '任务'}, 1)]
-        with patch('app.AIClient', return_value=AIClient(self.config, session)):
+        with patch('terminal.app.AIClient', return_value=AIClient(self.config, session)):
             with self.assertRaises(AIError):
                 self.app.execute_ai(Mock(), selected, self.config, False, api=api)
         api.paper.assert_not_called()

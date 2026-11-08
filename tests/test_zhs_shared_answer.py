@@ -2,10 +2,10 @@ import io
 import random
 import unittest
 
-from base.auth import PlatformUnavailable
-from task_capabilities import task_availability
-from ZHSMain.answer import ZHSAnswerRunner, catalog, catalog_shared, encode, prepare_shared
-from ZHSMain.api import CaptchaRequired
+from core.auth import PlatformUnavailable
+from core.task_capabilities import task_availability
+from zhs.answer import ZHSAnswerRunner, catalog, catalog_shared, encode, prepare_shared
+from zhs.api import CaptchaRequired
 
 
 class FixedRng(random.Random):
@@ -287,8 +287,8 @@ class PapersHintTest(unittest.TestCase):
     def test_selectable_redo_item_shows_hint(self):
         from unittest.mock import patch
         from rich.console import Console
-        import theme
-        from ui import TerminalUI
+        from terminal import theme
+        from terminal.ui import TerminalUI
 
         view = TerminalUI(console=Console(file=io.StringIO(), theme=theme.THEME, width=120))
         task = (COURSE, {"id": "shw-1-2", "name": "作业",
@@ -463,11 +463,11 @@ class CatalogSharedTest(unittest.TestCase):
         client = self.make_client()
 
         def expired(*args):
-            from base.auth import AuthenticationExpired
+            from core.auth import AuthenticationExpired
             raise AuthenticationExpired("expired")
 
         client.shared_homework_list = expired
-        from base.auth import AuthenticationExpired
+        from core.auth import AuthenticationExpired
         with self.assertRaises(AuthenticationExpired):
             catalog(client, COURSE)
 

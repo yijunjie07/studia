@@ -3,10 +3,10 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from base.auth import AuthenticationExpired
-from reporting import ProgressEvent
-from ZHSMain.api import CaptchaRequired, StudyTimeLimit, ZHSApiError
-from ZHSMain.main import ZHSHandler, course_units
+from core.auth import AuthenticationExpired
+from core.reporting import ProgressEvent
+from zhs.api import CaptchaRequired, StudyTimeLimit, ZHSApiError
+from zhs.main import ZHSHandler, course_units
 
 EV_KEY = "zzpttjd"
 
@@ -283,7 +283,7 @@ class StudyLogTest(unittest.TestCase):
         client.videos = two_video_course()
         client.lesson = {"100": {"watchState": 1, "studyTotalTime": 30}}
         client.lv = {"11": {"watchState": 0, "studyTotalTime": 0}}
-        with self.assertLogs("ZHSMain.main", "INFO") as captured:
+        with self.assertLogs("zhs.main", "INFO") as captured:
             run(client, [shared_row()], [])
         text = "\n".join(captured.output)
         self.assertIn("共 2 个视频（已完成 1）", text)
@@ -385,7 +385,7 @@ class RetryTest(unittest.TestCase):
         self.assertEqual(decode_ev(last["sdsew"]).split(";")[7], "3")
 
     def test_network_error_during_report_is_retried(self):
-        from base.auth import PlatformUnavailable
+        from core.auth import PlatformUnavailable
         client = FakeClient()
         client.videos = {
             "courseId": 9,
@@ -521,7 +521,7 @@ class AiStudyTest(unittest.TestCase):
             "resourcesFileId": "f1", "resourcesName": "video"}}
         client.ai_resources_queue = {1: [[item], [dict(item, studyStatus=1)]]}
         clock = iter([0, 2.5, 102.5, 104.5, 106.5, 108.5])
-        with patch("ZHSMain.main.time.monotonic", lambda: next(clock)):
+        with patch("zhs.main.time.monotonic", lambda: next(clock)):
             run(client, [ai_row()], [])
         positions = [args["position"] for args in client.args_of("ai_report")]
         self.assertEqual(positions, [3, 11, 14, 17, 20])

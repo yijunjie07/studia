@@ -5,8 +5,8 @@ import unittest
 import threading
 from unittest.mock import Mock, patch
 
-from base.auth import AuthenticationExpired
-from settings import SettingsStore
+from core.auth import AuthenticationExpired
+from core.settings import SettingsStore
 from web.server import INTERRUPTED, JOBS, HttpError, Studia, _qa_options, drain
 
 

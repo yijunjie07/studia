@@ -3,8 +3,8 @@ import io
 import unittest
 from unittest.mock import Mock, patch
 from rich.console import Console
-import theme
-from ui import Back, TerminalUI
+from terminal import theme
+from terminal.ui import Back, TerminalUI
 
 
 class TaskMetricsTests(unittest.TestCase):
@@ -15,9 +15,9 @@ class TaskMetricsTests(unittest.TestCase):
         ui = TerminalUI(console=Console(file=out, width=120, height=30, theme=theme.THEME,
                                         force_terminal=native), input_fn=None if native else lambda: next(answers))
         if native:
-            from checklist import Selection
+            from terminal.checklist import Selection
             with patch('sys.stdin.isatty', return_value=True), \
-                 patch('checklist.choose_many', return_value=Selection([0], 1)) as choose:
+                 patch('terminal.checklist.choose_many', return_value=Selection([0], 1)) as choose:
                 ui.papers([row])
             return choose.call_args.args[1][0][3:]
         try:
@@ -61,7 +61,7 @@ class TaskMetricsTests(unittest.TestCase):
 
 
     def test_a_graded_mooc_paper_counts_as_submitted_whatever_its_record_code(self):
-        from task_metrics import completion_with_score
+        from core.task_metrics import completion_with_score
         # 第二次测试: 91 points on the list, but its answer record code was neither 2 nor 0.
         self.assertEqual(completion_with_score({'score': 91}, 'unknown'), 'submitted')
         self.assertEqual(completion_with_score({'score': None, 'status': 1}, 'not_started'), 'submitted')  # 待批

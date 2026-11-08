@@ -8,9 +8,9 @@ import unittest.mock
 from http.server import ThreadingHTTPServer
 from unittest.mock import Mock, patch
 
-from base.auth import PlatformUnavailable
-from reporting import ProgressEvent
-from settings import SettingsStore
+from core.auth import PlatformUnavailable
+from core.reporting import ProgressEvent
+from core.settings import SettingsStore
 from web.server import LocalAccess, Studia, _course, make_handler
 
 
@@ -159,7 +159,7 @@ class WebServerTest(unittest.TestCase):
             "sub": {"name": "网络课", "done": 165, "total": 616, "unit": "项"}})
 
     def test_captcha_leaves_the_job_waiting_for_the_user(self):
-        from ZHSMain.api import CaptchaRequired
+        from zhs.api import CaptchaRequired
         platform = self.app.platforms["zhs"]
         platform.rows = [{"courseName": "网络课", "zhs": {"kind": "ai", "courseId": "c1"}}]
         platform.client = Mock()

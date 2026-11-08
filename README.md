@@ -1,106 +1,88 @@
-# Studia · 课程学习与 AI 答题助手
+# Studia
 
-智慧职教和智慧树的学习工具：自动学习课程、AI 答题并交卷、导出题目与答案。有终端版和网页版，也可以部署到服务器给多人用。
+智慧职教和智慧树的刷课工具：自动学习课程，用 AI 答题并交卷。主要用网页版，可以部署到一台服务器上给几个人一起用，每个人的账号和数据分开。
 
-[使用指南](docs/USAGE.md) · [开发与目录说明](docs/DEVELOPMENT.md) · [接口说明](docs/EXAM_PROTOCOL.md) · 维护者 [yijunjie07](https://github.com/yijunjie07)
+维护者 [yijunjie07](https://github.com/yijunjie07) · [开发说明](docs/DEVELOPMENT.md) · [接口说明](docs/EXAM_PROTOCOL.md)
 
-## 功能
+## 能做什么
 
-| 功能 | 说明 |
-| --- | --- |
-| 自动学习 | 完成课程学习任务；MOOC / AI 优课还会自动参与主题讨论、提交五星课程评价 |
-| AI 答题 | AI 作答，全部题目通过校验后自动交卷；也可只生成本地答案 |
-| 导出题目 | 保存题目和已有答案为 Markdown / Word，不调用 AI |
+| 平台 | 自动学习 | AI 答题 | 其他 |
+| --- | --- | --- | --- |
+| MOOC / AI 优课（`ai.icve.com.cn`） | 学完全部资源，参与主题讨论、提交课程评价 | 作业、考试、测验 | 导出题目（终端版） |
+| 智慧树（`zhihuishu.com`） | 共享课播视频（弹题自动答）、智慧课程完成知识点资源 | 共享课作业和考试、智慧课程作业和考试 | 每日复习、问答区自动回答和提问 |
+| 资源库（`zyk.icve.com.cn`） | 学完全部资源（终端版） | — | — |
 
-- 支持 **MOOC / AI 优课**（`ai.icve.com.cn`）全部功能；**资源库**只支持自动学习。
-- **智慧树**（共享课、智慧课程）支持自动学习，也支持 AI 答题（共享课的作业和考试、智慧课程的知识点作业和考试）；用智慧树 App 扫码登录，课程列表按 `t` 切换平台。
-- 任务列表识别开放时间，未开始、已截止和附件作业不可勾选。
-- AI 答题和自动学习最多 8 项并行，单份试卷失败会记录原因并继续下一份。
-- 网页版和终端版共用登录、模型和答案记忆；网页版还能按章节看每个学习单元的进度。
+- AI 答不出、题型不支持时，整份卷子不交，记下是哪题、什么原因。
+- 平台公布过的标准答案会记下来，同一门课的其他卷子、其他人再遇到直接用。不同课程之间不共享。
+- 服务器模式有账号、邀请码和管理后台，可以给任务排队、调顺序、导出日志。平台登录和 API Key 加密存放。
 
-完整说明见 [使用指南](docs/USAGE.md)。
+## 部署
 
-## 快速开始
-
-先安装 [Git](https://git-scm.com/downloads) 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)，重新打开终端（Windows 用 PowerShell），然后执行：
-
-```bash
-git clone https://github.com/yijunjie07/studia.git
-cd studia
-uv sync --locked --python 3.12
-uv run StartWork.py
-```
-
-uv 会自动准备 Python 3.12 和依赖，不需要手动建虚拟环境。启动后在浏览器完成平台登录，再回到终端操作；之后会自动恢复登录。
-
-**网页版**：执行 `uv run StartWork.py --web`，会在浏览器打开图形界面，支持 MOOC 和智慧树：课程页按章节显示每个学习单元的进度，运行时底部有进度条，可展开看日志。详见[使用指南](docs/USAGE.md#网页版)。
-
-**服务器部署（Docker）**：给多人共用，有账号、邀请码和管理后台，每人的数据分开加密存放。
+### Docker（推荐）
 
 ```bash
 mkdir studia && cd studia
 curl -fsSLO https://raw.githubusercontent.com/yijunjie07/studia/main/docker-compose.yml
 STUDIA_PUBLIC_URL=http://服务器IP:8080 docker compose up -d
-docker compose logs studia   # 日志里有首次设置用的「设置码」
+docker compose logs studia   # 找到「设置码」
 ```
 
-打开地址，第一次进入会让你填设置码并创建管理员账号。详见[使用指南](docs/USAGE.md#docker-部署)。
+1. 浏览器打开 `STUDIA_PUBLIC_URL`，第一次进入要创建管理员：填日志里的设置码、用户名和密码。设置码每次启动都会换，管理员建好后作废。
+2. 用管理员登录后，从左下角头像进「管理后台 → 用户」，生成邀请码发给别人注册。
 
-**以后启动**：在项目目录执行 `uv run StartWork.py`。执行过 `uv sync` 后，macOS / Linux 也可以直接用 `.venv/bin/python StartWork.py`。
+`STUDIA_PUBLIC_URL` 必须和浏览器地址栏完全一致，包括协议、域名或 IP、端口，否则网页会拒绝访问，MOOC 登录也跳不回来。这些变量可以写在同目录的 `.env` 里：
 
-**更新**：先退出程序，再执行：
+| 变量 | 默认值 | 作用 |
+| --- | --- | --- |
+| `STUDIA_PUBLIC_URL` | `http://localhost:8080` | 浏览器访问的地址 |
+| `STUDIA_TRUST_PROXY` | `0` | 放在 Nginx、Caddy 等反向代理后面时设为 `1` |
+| `STUDIA_SECRET_KEY` | 空 | 主密钥，不填就在数据卷里生成 `secret.key` |
+| `TZ` | `Asia/Shanghai` | 日志时区 |
+
+**更新**：`docker compose pull && docker compose up -d`。数据和登录都会保留；正在跑的学习任务重启后会接着学，AI 答题不会自动重跑。镜像跟着 main 自动构建（`ghcr.io/yijunjie07/studia`，支持 amd64 和 arm64），想固定版本就把 `latest` 换成提交的 SHA。
+
+**数据**：都在 Docker 卷 `studia-data` 里。`studia.db` 存账号和共享的答案记忆，`users/` 下是每个人的登录、模型和答题报告，`secret.key` 是主密钥。备份时先 `docker compose stop`，再备份这个卷。
+
+- **主密钥丢了，加密的数据就解不开**，所有人都要重新登录平台、重填 API Key。把 `secret.key` 另外存一份，或者用 `python StartWork.py --serve --gen-key` 生成一个写进 `.env`。
+- 智慧树不接受境外网络访问，服务器要放在国内，或者让 `zhihuishu.com` 走国内线路。
+- 国内拉 `ghcr.io` 可能很慢，可以给 Docker 配镜像加速。
+- 开放到公网时，前面加一层 HTTPS 反向代理，`STUDIA_PUBLIC_URL` 改成 `https://你的域名`，再设 `STUDIA_TRUST_PROXY=1`。
+
+### 不用 Docker
 
 ```bash
-git pull --ff-only
-uv sync --locked
-uv run StartWork.py
+python StartWork.py --serve --data ~/.studia-hosted --port 8080 --public-url http://127.0.0.1:8080
 ```
 
-项目不再发布打包好的版本，都从源码运行；版本号见 `pyproject.toml`。
+设置码同样打印在终端里。全部选项见 `python StartWork.py --serve --help`。
 
-## 操作
+### 只在自己电脑上用
 
-流程：**选课程 → 选功能 → 选任务 → 确认摘要 → 运行 → 查看结果**。所有页面用同一套按键：
+装好 [Git](https://git-scm.com/downloads) 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)，然后：
 
-| 按键 | 作用 |
-| --- | --- |
-| `↑` `↓` / `PageUp` `PageDown` | 移动 / 翻页 |
-| `Enter` | 选择或确认当前项（多选列表没有勾选时，直接选当前任务） |
-| `空格` | 勾选任务（多选列表；顶部 `All` 全选） |
-| `/` | 搜索 |
-| 页面上标出的数字或字母 | 直接执行，例如课程列表的 `s` 设置、`t` 切换平台、`r` 刷新 |
-| `Tab` / `Shift+Tab` | 在列表和按钮之间切换 |
-| `Esc` | 返回上一步 |
-| `q` / `Ctrl+C` | 退出 |
+```bash
+git clone https://github.com/yijunjie07/studia.git
+cd studia
+uv sync --locked --python 3.12
+uv run playwright install --only-shell chromium   # 智慧树验证码和问答区要用
+uv run StartWork.py --web
+```
 
-AI 答不出的题会在终端列出题目和选项，等你手动补答。补答过的试卷交卷前会再确认一次：`y` 交卷、`n` 不交卷并继续下一份（默认）、`p` 暂停全部。纯 AI 完成的试卷不会询问。
+浏览器会自动打开网页版，只有本机能访问。去掉 `--web` 进入终端版。更新：`git pull --ff-only && uv sync --locked`。
 
-不登录也能预览界面：`uv run python -m tools.ui_demo --native`。
+本机模式的配置在 `~/.config/icve-ai-assistant/settings.json`（Windows 在 `%LOCALAPPDATA%\icve-ai-assistant\`），里面的登录令牌和 Key **没有加密**，不要分享。
 
 ## AI 模型
 
-内置**默认供应商**，新用户不用填 Key，直接使用项目共享额度（可用性以剩余额度为准）。
+内置一个默认供应商，不填 Key 就能用，用的是项目的共享额度。想用自己的服务，在设置里添加模型，填接口地址（如 `https://服务商地址/v1`）、模型名和 API Key。支持 OpenAI 兼容的 Chat Completions 和 Responses 接口，会自动识别。
 
-要用自己的服务：网页版在 **设置 → AI 模型 → ＋ 添加模型**；终端版在课程列表按 `s` → **模型配置** → **＋ 添加模型**，填写名称、接口地址（如 `https://服务商地址/v1`）、模型名和 API Key，选 **保存并测试**。程序会自动识别 Chat Completions 或 Responses 接口。可以保存多份配置，答题摘要里按 `m` 随时切换。
-
-## 文件在哪里
-
-| 内容 | 位置 |
-| --- | --- |
-| 导出的题目与平台答案 | `tiku/<课程名>/` |
-| AI 答案与执行报告 | `ai_results/<课程名>/` |
-| 课程结构导出 | `exports/structure/` |
-| 本机配置（登录令牌、API Key、并发等） | `~/.config/icve-ai-assistant/settings.json`（macOS / Linux） |
-| 答案记忆 | 与本机配置同目录：智慧树 `zhs-answers.json`，MOOC `mooc-answers.json` |
-| 服务器模式 | 数据目录（Docker 是 `studia-data` 卷）：`studia.db` 是账号和全站共享的答案记忆，`users/<用户 ID>/` 是各人数据（登录信息和 Key 加密存放） |
-
-以上文件和日志都已被 Git 忽略。本机模式的配置文件是**未加密**的 JSON（macOS / Linux 权限为 `600`），里面有登录令牌和 Key，不要分享。
+智慧树智慧课程作业里有图片题，要用能看图的模型。发给 AI 的是题目和选项（智慧树验证码会发截图），不带平台登录信息。
 
 ## 注意
 
-- 不保证答案正确，也不保证完成全部课程要求。智慧树智慧课程作业里的图片会发给模型识别（需要能看图的模型），其他含图片、音频、附件的题目仍需人工处理。
-- 终端版每次进入 AI 答题，默认都是“答题并自动交卷”，可以在执行摘要里按 `s` 改为只生成答案；网页版交卷要按两次确认。
-- 打开试卷可能会在平台上创建作答记录或开始计时。
+- 不保证答案正确，也不保证满足课程的全部要求。
+- 打开试卷可能会在平台上开始计时。
+- 交卷结果不确定时不会自动重交，请到平台核对。
 
 ## 来源
 

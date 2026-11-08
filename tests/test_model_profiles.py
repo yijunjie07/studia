@@ -4,8 +4,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from ai.client import AIConfig
-from app import Application
-from settings import SettingsStore, SettingsError
+from terminal.app import Application
+from core.settings import SettingsStore, SettingsError
 
 
 class ModelProfilesTests(unittest.TestCase):
@@ -91,7 +91,7 @@ class ModelProfilesTests(unittest.TestCase):
         def open_courses():
             self.assertIsNotNone(self.store.ai_config())
             return 'opened'
-        with patch('course_flow.CourseWorkspace.run', side_effect=open_courses):
+        with patch('terminal.course_flow.CourseWorkspace.run', side_effect=open_courses):
             self.assertEqual(Application(Mock(), self.store).run(), 'opened')
 
     def test_default_model_preserves_current_model_and_can_be_selected(self):
@@ -210,7 +210,7 @@ class ModelProfilesTests(unittest.TestCase):
     def test_failed_profile_write_preserves_all_saved_data(self):
         first = self.store.save_ai_profile(self.a)
         before = self.store.path.read_bytes()
-        with patch('settings.os.replace', side_effect=OSError('disk full')):
+        with patch('core.settings.os.replace', side_effect=OSError('disk full')):
             with self.assertRaises(SettingsError):
                 self.store.save_ai_profile(self.b, first)
         self.assertEqual(self.store.path.read_bytes(), before)
