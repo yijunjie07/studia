@@ -155,18 +155,5 @@ class BrowserLogoutTests(unittest.TestCase):
         self.assertIsNotNone(self.store.session("mooc"))
         self.assertFalse(self.next_login_forces_logout())
 
-    def test_resource_library_logout_also_clears_browser_sso(self):
-        from ai.client import AIConfig
-        config = AIConfig("https://example.org/v1", "model", "secret-key")
-        self.store.save_ai(config)
-        self.store.save_session("mooc", Mock(access_token="mooc"))
-        self.store.save_session("zyk", Mock(access_token="zyk"))
-        self.logout(4, current_platform="zyk")
-        self.assertIsNone(self.store.session("zyk"))
-        self.assertIsNotNone(self.store.session("mooc"))
-        self.assertEqual(self.store.ai_config(), config)
-        self.assertTrue(self.next_login_forces_logout())
-
-
 if __name__ == "__main__":
     unittest.main()

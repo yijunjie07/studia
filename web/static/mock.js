@@ -12,7 +12,6 @@ const platforms = [
 ];
 const courses = {
   mooc: [{ id: "m1", platform: "mooc", name: "大学英语（二）", type: "第 7 期开课", kind: "mooc", progress: 62 }, { id: "m2", platform: "mooc", name: "中外音乐与民族技艺实践", type: "第 3 期开课", kind: "mooc", progress: 100 }],
-  zyk: [{ id: "z1", platform: "zyk", name: "Python 程序设计", type: "资源库", kind: "zyk", progress: 35 }],
   zhs: [
     { id: "shared-1", platform: "zhs", name: "新一代信息技术导论", type: "共享课", kind: "shared", progress: 100,
       features: { answer: true, review: true, qa: true }, shares: { progress: 20, habit: 20, interactive: 10, knowledge: 0, test: 10, meet: 0, final: 40 } },

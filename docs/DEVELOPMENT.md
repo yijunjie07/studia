@@ -9,7 +9,6 @@
 | `StartWork.py` | 入口：默认终端版，`--web` 本机网页版，`--serve` 服务器模式 |
 | `web/` | 网页版：`server.py` 接口、任务队列和事件推送；`hosting.py` 服务器模式（多用户、加密存储、管理接口）；`accounts.py` 账号和邀请码（SQLite）；`static/` 前端，原生 JS/CSS，没有构建步骤 |
 | `mooc/` | 智慧职教 MOOC / AI 优课：接口、学习、交卷协议、题目导出、浏览器登录（`oauth_login.py`） |
-| `mooc/zyk/` | 智慧职教资源库（只有终端版在用） |
 | `zhs/` | 智慧树：扫码登录、接口加密、学习、答题、答案记忆、滑块验证、问答区（`qa.py`） |
 | `ai/` | AI 接口、题目整理、MOOC 答题流程（`runner.py`）、MOOC 答案记忆 |
 | `core/` | 公共代码：日志（`log.py`）、本机设置（`settings.py`）、请求客户端、进度事件、任务开放时间和成绩字段 |

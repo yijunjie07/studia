@@ -4,7 +4,6 @@ import unittest
 from unittest.mock import patch
 
 from mooc.main import AIMoocHandler
-from mooc.zyk.main import ZYKMoocHandler
 from core.auth import AuthenticationExpired
 from tests import test_study_concurrency as fixtures
 from tests.test_study_concurrency import StudyAPI, StudyTransport
@@ -14,7 +13,7 @@ class StudyProgressTests(unittest.TestCase):
     run_study = fixtures.StudyConcurrencyTests.run_study
 
     def test_keyboard_interrupt_before_write_does_not_complete_resource(self):
-        for cls in (AIMoocHandler, ZYKMoocHandler):
+        for cls in (AIMoocHandler,):
             for workers in (1, 2, 8):
                 with self.subTest(platform=cls.__name__, workers=workers):
                     transport = StudyTransport(count=1)
@@ -29,7 +28,7 @@ class StudyProgressTests(unittest.TestCase):
 
     def test_all_worker_counts_report_completed_resources_on_coordinator(self):
         # Missing per-resource emissions or worker callbacks must fail this contract.
-        for cls in (AIMoocHandler, ZYKMoocHandler):
+        for cls in (AIMoocHandler,):
             for workers in (1, 2, 8):
                 with self.subTest(platform=cls.__name__, workers=workers):
                     transport = StudyTransport(workers, count=8)
@@ -44,7 +43,7 @@ class StudyProgressTests(unittest.TestCase):
                     self.assertEqual(transport.maximum, workers)
 
     def test_deduped_skips_and_business_failures_are_terminal_but_not_success(self):
-        for cls in (AIMoocHandler, ZYKMoocHandler):
+        for cls in (AIMoocHandler,):
             for workers in (1, 2, 8):
                 transport = StudyTransport(count=4, failure={'code': 500, 'msg': 'failed'})
                 transport.duplicate = True
@@ -65,7 +64,7 @@ class StudyProgressTests(unittest.TestCase):
                 self.assertEqual([e.status for e in events if e.kind == 'result'], ['error'])
 
     def test_course_discovery_resets_progress_before_platform_reads(self):
-        for cls in (AIMoocHandler, ZYKMoocHandler):
+        for cls in (AIMoocHandler,):
             transport = StudyTransport(count=2)
             events = []
             at_discovery = []
@@ -86,7 +85,7 @@ class StudyProgressTests(unittest.TestCase):
             self.assertIn('two', progress[4].name)
 
     def test_preparation_cancel_does_not_count_unfinished_resource(self):
-        for cls in (AIMoocHandler, ZYKMoocHandler):
+        for cls in (AIMoocHandler,):
             for workers in (1, 2, 8):
                 cancel = threading.Event()
                 events = []
@@ -102,7 +101,7 @@ class StudyProgressTests(unittest.TestCase):
                 self.assertEqual(transport.writes, [])
 
     def test_completion_is_emitted_after_response_and_drains_inflight_on_cancel(self):
-        for cls in (AIMoocHandler, ZYKMoocHandler):
+        for cls in (AIMoocHandler,):
             cancel = threading.Event()
             events = []
             transport = StudyTransport(2, count=4)
@@ -131,7 +130,7 @@ class StudyProgressTests(unittest.TestCase):
             self.assertCountEqual(transport.closed, transport.clones)
 
     def test_fatal_failure_keeps_partial_progress_and_closes_clients(self):
-        for cls in (AIMoocHandler, ZYKMoocHandler):
+        for cls in (AIMoocHandler,):
             cancel = threading.Event()
             transport = StudyTransport(2, count=8, failure=AuthenticationExpired('expired'),
                                        cancel_event=cancel)

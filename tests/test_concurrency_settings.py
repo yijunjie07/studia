@@ -86,12 +86,10 @@ class ConcurrencySettingsTests(unittest.TestCase):
         # Offline: MOOC study now requires a verified AI client before it starts.
         with patch('terminal.app.Application.ai_configuration', return_value=Mock()), \
              patch('terminal.app.Application.verify_ai', return_value=Mock()), \
-             patch('terminal.app.AIMoocHandler') as mooc, patch('terminal.app.ZYKMoocHandler') as zyk:
+             patch('terminal.app.AIMoocHandler') as mooc:
             app.study(0, client, [course])
-            app.study(1, client, [course])
         self.assertEqual(mooc.call_args.kwargs['max_workers'], 2)
-        self.assertEqual(zyk.call_args.kwargs['max_workers'], 2)
-        self.assertIn('最多 2 项同时处理', output.getvalue())
+        self.assertIn('最多2项同时处理', ''.join(output.getvalue().split()))
         with patch.object(app, 'verify_ai', return_value=Mock()), patch('terminal.app.AnswerRunner') as runner:
             runner.return_value.run_paper.return_value = {'status': 'preview'}
             app.execute_ai(client, [(course, {'id': 'exam'}, 3)], Mock(), False, api=Mock())

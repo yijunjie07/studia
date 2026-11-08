@@ -197,12 +197,12 @@ class ZhsApplicationTests(unittest.TestCase):
                 self.app.zhs_login()
         client.close.assert_called_once()
 
-    def test_study_version_two_uses_the_zhs_handler_without_ai(self):
+    def test_study_version_one_uses_the_zhs_handler_without_ai(self):
         handler = Mock()
         client = Mock(access_token="cookies")
         with patch("terminal.app.ZHSHandler", handler) as cls, \
              patch.object(self.app, "verify_ai") as verify:
-            self.app.study(2, client, self.courses)
+            self.app.study(1, client, self.courses)
         cls.assert_called_once()
         kwargs = cls.call_args.kwargs
         self.assertIs(kwargs["client"], client)
@@ -211,35 +211,35 @@ class ZhsApplicationTests(unittest.TestCase):
         self.assertEqual(kwargs["max_workers"], self.store.concurrency()["study"])
         verify.assert_not_called()
 
-    def test_settings_option_five_clears_zhs_without_browser_logout(self):
+    def test_settings_option_four_clears_zhs_without_browser_logout(self):
         self.store.save_session("zhs", Mock(access_token="cookies"))
-        self.view.input_fn = Mock(side_effect=["s", "5", "0"])
+        self.view.input_fn = Mock(side_effect=["s", "4", "0"])
         self.assertFalse(self.app.manage_settings(current_platform="mooc"))
         self.assertIsNone(self.store.session("zhs"))
         self.assertFalse(self.app.browser_logout_pending)
 
     def test_logging_out_current_zhs_platform_restarts_login(self):
         self.store.save_session("zhs", Mock(access_token="cookies"))
-        self.view.input_fn = Mock(side_effect=["s", "5"])
+        self.view.input_fn = Mock(side_effect=["s", "4"])
         self.assertTrue(self.app.manage_settings(current_platform="zhs"))
         self.assertFalse(self.app.browser_logout_pending)
 
 
 class WiringTests(unittest.TestCase):
     def test_choose_platform_offers_zhihuishu(self):
-        view, _ = make_view(["2"])
-        self.assertEqual(view.choose_platform(0), 2)
+        view, _ = make_view(["1"])
+        self.assertEqual(view.choose_platform(0), 1)
 
     def test_settings_menu_offers_zhs_logout(self):
         view, output = make_view(["0"])
         view.settings_menu("path")
         self.assertIn("退出智慧树登录", output.getvalue())
 
-    def test_course_workspace_platform_two_uses_zhs_api(self):
+    def test_course_workspace_platform_one_uses_zhs_api(self):
         app = Mock()
         app.view = Mock()
         app.store.session.return_value = None
-        app.view.choose_platform.return_value = 2
+        app.view.choose_platform.return_value = 1
         workspace = CourseWorkspace(app)
         with patch.object(app, "client_and_courses", side_effect=Cancelled) as load:
             with self.assertRaises(Cancelled):

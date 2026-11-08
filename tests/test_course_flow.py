@@ -102,7 +102,7 @@ class EmptyLibraryTests(unittest.TestCase):
         self.store.save_session("mooc", Mock(access_token="cached"))
 
     def test_line_mode_empty_page_explains_every_platform(self):
-        for platform, platform_name in ((0, "MOOC / AI 优课"), (1, "资源库")):
+        for platform, platform_name in ((0, "MOOC / AI 优课"), (1, "智慧树")):
             with self.subTest(platform=platform):
                 view, output = make_view(["q"], width=52)
                 view.account_name = "张三"
@@ -285,7 +285,7 @@ class WorkspaceTests(unittest.TestCase):
 
         with patch.object(app, "login", side_effect=ui_module.Back()), \
              patch("terminal.app.AIMoocApi", return_value=self.client), \
-             patch("terminal.app.ZYKMoocApi") as zyk, patch("terminal.app.AIMoocHandler", side_effect=study), \
+             patch("terminal.app.AIMoocHandler", side_effect=study), \
              patch("terminal.app.ExamAPI", return_value=api), patch("terminal.app.AIClient"), \
              patch("terminal.app.AnswerRunner") as runner:
             runner.return_value.run_paper.return_value = result or {"status": "preview", "paper": "第一章"}
