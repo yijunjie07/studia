@@ -35,7 +35,7 @@ def _kind(raw):
     try:
         return int(kind)
     except (TypeError, ValueError):
-        raise ValueError("暂不支持该题型") from None
+        raise ValueError("暂不支持题型 %s" % kind) from None
 
 
 def _text(raw, allow_images=False, images=None):
@@ -61,7 +61,7 @@ def prepare(raw, allow_images=False):
         raise ValueError("题目数据格式异常")
     kind = _kind(raw)
     if kind not in OPTION_TYPES and kind != 3:
-        raise ValueError("暂不支持该题型")
+        raise ValueError("暂不支持题型 %s" % kind)
     images = {}
     title = _text(raw, allow_images, images)
     if not title:

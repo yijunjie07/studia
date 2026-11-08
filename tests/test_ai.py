@@ -260,7 +260,9 @@ class WorkflowTests(unittest.TestCase):
 
     def test_unsupported_question_blocks_whole_paper(self):
         self.api.paper.return_value["questions"].append(question(12, "file"))
-        self.assertEqual(self.run_paper()["status"], "needs_review")
+        report = self.run_paper()
+        self.assertEqual(report["status"], "needs_review")
+        self.assertIn("第 2 题：暂不支持题型 12", report["message"])
         self.api.submit.assert_not_called()
 
     def test_duplicate_id_blocks_whole_paper(self):

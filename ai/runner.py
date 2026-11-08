@@ -571,7 +571,13 @@ class AnswerRunner:
                 if len(entries) >= question_total:
                     report.pop("pending_manual", None)
             if len(entries) < question_total:
-                report.update(status="needs_review", message="存在未完成或不支持的题目，仅保存本地报告，未交卷")
+                # Name the questions and why, so the log says what to support next.
+                missing = [saved_answers.get(i) or {"question_number": i + 1}
+                           for i in range(question_total) if i not in entries]
+                reasons = "；".join("第 %s 题：%s" % (row["question_number"], row.get("error") or "AI 未提供答案")
+                                   for row in missing[:3])
+                report.update(status="needs_review", message="%s 题没答上（%s%s），仅保存本地报告，未交卷"
+                              % (len(missing), reasons, " 等" if len(missing) > 3 else ""))
             elif not self.auto_submit:
                 report.update(status="preview", message="答案已保存到本地，未向平台保存或提交答案")
             else:
