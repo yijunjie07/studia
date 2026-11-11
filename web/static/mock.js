@@ -184,7 +184,7 @@ export async function request(path, method, body) {
     return { questions: ["边缘计算和云计算在工厂产线上应该怎样分工？", "RPA 和传统的脚本自动化相比，真正省下的是哪部分人力？", "企业上云以后，数据安全的责任应该怎么在云厂商和企业之间划分？", "物联网设备越来越多，个人隐私保护最难落实在哪一环？", "大模型写的代码出了事故，开发者和工具方的责任该怎么分？"].filter((q) => !(body.have || []).includes(q)).slice(0, 1) };
   }
   if ((m = path.match(/^\/api\/platforms\/\w+\/score\?course=(.+)$/))) return { earned: {
-    "shared-1": { progress: 20, habit: 9, interactive: 2, test: 9, meet: 0, final: 0, usual: 31, total: 40, qa: { answers: 3, questions: 1, received: 2 } },
+    "shared-1": { progress: 20, habit: 9, interactive: 2, test: 9, meet: 0, final: 0, usual: 31, total: 40, qa: { answers: 3, questions: 1, received: 5, qualified: 1 } },
     "shared-2": { progress: 28, habit: 0, interactive: 0, test: 20, meet: 0, final: 0, usual: 28, total: 48 } }[decodeURIComponent(m[1])] };
   if (path === "/api/jobs" && method === "POST") return { ok: true, id: fakeJob(body) };
   if (path === "/api/jobs/stop") {

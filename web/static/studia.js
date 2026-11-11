@@ -979,7 +979,7 @@ const courseTab = (c, tab) => tab === "answer" ? "answer" : tab === "qa" && c.fe
 
 // Q&A tab. Where the interaction share stands, then two actions: answer a few questions now, or have
 // AI draft new ones that the person edits before they go out. Everything posted is listed below.
-// The board's own rules (智慧树问答规则): 10 valid questions and 20 valid answers score in full, its data updates
+// The board's own rules (智慧树问答规则): 10 valid questions and 20 valid answers fill their quantity scores; its data updates
 // the next morning, and a few a day per course keeps clear of its flood checks. The server says how many are left
 // today (room) and why when none are. Each lane is one part of the score, drawn as cells like the course grid:
 // counted, posted today (counted tomorrow), still open.
@@ -1039,7 +1039,10 @@ function qaBody(p, c) {
     : qaSoon(p) ? `<div class="model plain qa_row qa_rescan"><span class="m1"><b>问答区还能用 <span data-qa-left="${p.id}">${hoursLeft(qaLeft(p))}</span></b>
       <small class="sans">到点要重新扫码，现在扫能再用 8 小时</small></span>
     <span class="row_btns"><button class="btn small" data-go="${rescanLink(p)}">现在扫码</button></span></div>` : "";
-  return `<div class="section"><h3>问答互动</h3></div><div class="models qa_board">${head}${rescan}<div class="qa_lanes">${ask}${answer}</div>${drafts}${peers}</div>
+  return `<div class="section"><h3>问答互动</h3></div><div class="models qa_board">${head}${rescan}<div class="qa_lanes">${ask}${answer}</div>
+    <div class="qa_rule"><header><b>提问获得有效回答</b><span class="qa_num">${esc(q?.qualified ?? "—")}<span class="of"> 条达标</span></span></header>
+      <small>距本项满分还差 <b>${q?.qualified == null ? "—" : Math.max(0, 10 - q.qualified)}</b> 条达标提问（共需 10 条）。</small>
+      <small>每条有效提问获得至少 5 个有效回答，百分制加 1 分，最多 10 分；再按课程互动分占比折算。</small></div>${drafts}${peers}</div>
     <div class="section"><h3>已发布</h3></div>${list}`;
 }
 const loadingPosts = new Set();

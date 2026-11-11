@@ -201,6 +201,9 @@ code { font: 12px var(--mono); padding: 1px 5px; border-radius: 3px; background:
 .qa_lane header { display: flex; align-items: baseline; justify-content: space-between; }
 .qa_num { font: 600 16px var(--mono); }
 .qa_lane small { font-size: 12px; color: var(--text-3); }
+.qa_rule { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px; }
+.qa_rule header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.qa_rule small { font-size: 12px; line-height: 1.6; color: var(--text-3); }
 /* Ten to a row in both lanes: answers take two rows because they need twice as many. */
 .qa_cells { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; }
 .qa_cells .cell { width: auto; height: 12px; }

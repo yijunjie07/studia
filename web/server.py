@@ -1171,7 +1171,8 @@ class Studia:
         for kind, valid, cap, daily, word in (("ask", counts.get("questions"), QUESTION_CAP, DAILY_QUESTIONS, "问"),
                                               ("answer", counts.get("answers"), ANSWER_CAP, DAILY_ANSWERS, "答")):
             room[kind] = qa_room(number(valid), posted[kind], cap, daily)
-            why[kind] = ("已满 %d 条，再%s不加分" % (cap, word) if number(valid) + posted[kind] >= cap
+            why[kind] = (("提问数量分已达上限（含今日待统计）；有效提问获得 5 个有效回答仍可加分"
+                          if kind == "ask" else "回答数量分已达上限（含今日待统计）") if number(valid) + posted[kind] >= cap
                          else "今天%s满了，明天再来" % word)
         return dict(room, posted=posted, why=why)
 
