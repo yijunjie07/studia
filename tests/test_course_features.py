@@ -45,7 +45,20 @@ class CourseFeaturesTest(unittest.TestCase):
         api._request = Mock(side_effect=lambda method, url, **kw: replies[url.rsplit("/stuLearnReportNew/", 1)[1]])
         self.assertEqual(api.score_earned(1000091138, 444872), {"progress": 20, "habit": 9, "interactive": 0, "test": 9,
                                                                 "meet": 0, "final": 0, "usual": 29, "total": 38,
-                                                                "qa": {"answers": 0, "questions": 0, "received": 0}})
+                                                                "qa": {"answers": 0, "questions": 0, "received": 0, "qualified": None}})
+
+    def test_qualified_questions_use_platform_count_and_preserve_unknown(self):
+        api = ZHSApi()
+        replies = {"loadStuLearnReport/": {"ssd": {}}, "loadStuHabit/": {},
+                   "loadCourseForum/": {"qaStatisticsMap": {"myInteractionDto": {
+                       "getAnswer": 39, "vqHaveVaAllAmount": 1, "vqHotAmount": 0}}}}
+        api._request = Mock(side_effect=lambda method, url, **kw: replies[url.rsplit("/stuLearnReportNew/", 1)[1]])
+        mine = replies["loadCourseForum/"]["qaStatisticsMap"]["myInteractionDto"]
+        for raw, expected in ((1, 1), (0, 0), ("3", 3), (None, None), (-1, None), (1.5, None), (True, None)):
+            with self.subTest(raw=raw):
+                mine["vqHaveVaAllAmount"] = raw
+                qa = api.score_earned(1000091138, 444872)["qa"]
+                self.assertEqual((qa.get("qualified"), qa["received"]), (expected, 39))
 
     def test_course_list_carries_features_and_jobs_outside_them_are_refused(self):
         directory = tempfile.TemporaryDirectory()

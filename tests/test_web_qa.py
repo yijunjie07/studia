@@ -110,6 +110,17 @@ class WebQaTest(unittest.TestCase):
         self.assertIn("还能发 2 条", str(refused.exception))
         self.assertFalse(JOBS)
 
+    def test_caps_explain_that_only_the_quantity_scores_are_full(self):
+        self.app.platforms["zhs"].client.score_earned.return_value = {"qa": {"questions": 10, "answers": 20, "received": 31}}
+        room = self.app.qa_posts("zhs", "shared-1000091138")["room"]
+        self.assertEqual((room["ask"], room["answer"]), (0, 0))
+        self.assertIn("提问数量分", room["why"]["ask"])
+        self.assertIn("有效回答", room["why"]["ask"])
+        self.assertIn("回答数量分", room["why"]["answer"])
+        with self.assertRaises(HttpError) as refused:
+            self.app.start_job({"platform": "zhs", "course": "shared-1000091138", "type": "ask", "texts": [DRAFT]})
+        self.assertIn("提问数量分", str(refused.exception))
+
     def test_drafting_waits_for_slow_models_without_testing_first(self):
         config = Mock(timeout=120, api_format="chat_completions")
         self.app.store.ai_config = Mock(return_value=config)

@@ -12,8 +12,8 @@ ENV TZ=Asia/Shanghai \
     STUDIA_DATA=/data \
     PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 
-# Log timestamps and the admin's log export use local time.
-RUN apt-get update && apt-get install -y --no-install-recommends tzdata && rm -rf /var/lib/apt/lists/*
+# Local timestamps; Playwright's Node needs libatomic before it can install Chromium's dependencies.
+RUN apt-get update && apt-get install -y --no-install-recommends tzdata libatomic1 && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY requirements.txt .
