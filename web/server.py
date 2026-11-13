@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 
 import core.log
 from mooc.api import AIMoocApi
@@ -129,6 +129,8 @@ class Platform:
         self.entries = {}
         # (kind, course id) -> (time, value) for the slow unit and paper lists.
         self.cache = {}
+        self.score_reads = {}
+        self.cache_lock = threading.Lock()
         self.login = None
         # QR login id -> {"client", "qr", "refreshes"}. Each page showing a code polls its own: with one
         # shared code, a second tab starting over swapped the code out under the first, whose scans then
@@ -240,7 +242,9 @@ class Studia:
         with self.lock:
             if platform.client is not None and hasattr(platform.client, "close"):
                 platform.client.close()
-            platform.client, platform.rows, platform.entries, platform.cache = None, [], {}, {}
+            with platform.cache_lock:
+                platform.client, platform.rows, platform.entries, platform.cache = None, [], {}, {}
+                platform.score_reads = {}
 
     def passport(self, platform):
         """(rescan, rescan_at) for the page: whether the Q&A board waits for a fresh scan, and when the ticket
@@ -525,11 +529,32 @@ class Studia:
         raise HttpError(404, "没有找到这门课程，请刷新课程列表")
 
     def _cached(self, platform, key, fresh, load):
-        hit = platform.cache.get(key)
-        if hit and not fresh and time.time() - hit[0] < CACHE_TTL:
-            return hit[1]
-        value = load()
-        platform.cache[key] = (time.time(), value)
+        with platform.cache_lock:
+            hit = platform.cache.get(key)
+            if hit and not fresh and time.time() - hit[0] < CACHE_TTL:
+                return hit[1]
+            pending = platform.score_reads.get(key) if key[0] == "earned" and not fresh else None
+            leader = pending is None
+            if leader and key[0] == "earned":
+                platform.score_reads[key] = pending = Future()
+        if not leader:
+            return pending.result()
+        try:
+            value = load()
+        except BaseException as exc:
+            if pending:
+                with platform.cache_lock:
+                    if platform.score_reads.get(key) is pending:
+                        del platform.score_reads[key]
+                    pending.set_exception(exc)
+            raise
+        with platform.cache_lock:
+            if pending is None or platform.score_reads.get(key) is pending:
+                platform.cache[key] = (time.time(), value)
+            if pending:
+                if platform.score_reads.get(key) is pending:
+                    del platform.score_reads[key]
+                pending.set_result(value)
         return value
 
     def tasks(self, pid, course_id, fresh=False):
@@ -875,10 +900,12 @@ class Studia:
         finally:
             if platform is not None:
                 # The job changed this course's progress and papers; read them afresh next time.
-                platform.cache.pop(("units", job["course"]), None)
-                platform.cache.pop(("tasks", job["course"]), None)
-                for stale in [k for k in platform.cache if k[0] == "earned"]:  # points may have moved
-                    platform.cache.pop(stale, None)
+                with platform.cache_lock:
+                    platform.cache.pop(("units", job["course"]), None)
+                    platform.cache.pop(("tasks", job["course"]), None)
+                    for stale in [k for k in platform.cache if k[0] == "earned"]:  # points may have moved
+                        platform.cache.pop(stale, None)
+                    platform.score_reads.clear()
                 self.save_sessions(platform)
             with self.lock:
                 if self.closing and state == "stopped":
