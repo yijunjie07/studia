@@ -1,5 +1,14 @@
 # Studia
 
+<p>
+  <a href="https://skillicons.dev">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://skillicons.dev/icons?i=python,js,docker&amp;theme=dark">
+      <img src="https://skillicons.dev/icons?i=python,js,docker&amp;theme=light" alt="Python · JavaScript · Docker" width="134" height="40">
+    </picture>
+  </a>
+</p>
+
 智慧职教和智慧树的刷课工具：自动学习课程，用 AI 答题并交卷。主要用网页版，可以部署到一台服务器上给几个人一起用，每个人的账号和数据分开。
 
 维护者 [yijunjie07](https://github.com/yijunjie07) · [开发说明](docs/DEVELOPMENT.md) · [接口说明](docs/EXAM_PROTOCOL.md)
