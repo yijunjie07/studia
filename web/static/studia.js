@@ -1006,8 +1006,8 @@ function qaBody(p, c) {
   const askBlock = blocker(p.id, c.id, "ask") || (room && !room.ask ? room.why.ask : "");
   const answerBlock = blocker(p.id, c.id, "qa") || (room && !room.answer ? room.why.answer : "");
   const head = `<div class="qa_head"><span class="qa_score"><b>${earned ? pts(earned.interactive) : "—"}</b><span class="of">/${c.shares?.interactive || 10}</span> 分</span>
-    <small class="sans">次日上午更新 · 斜纹是今天发的${!p.rescan && !qaSoon(p) && qaLeft(p) > 0
-      ? `<br>问答区还能用 <span data-qa-left="${p.id}">${hoursLeft(qaLeft(p))}</span>` : ""}</small></div>`;
+    ${!p.rescan && !qaSoon(p) && qaLeft(p) > 0 ? `<span class="qa_time">问答区剩余 <span data-qa-left="${p.id}">${hoursLeft(qaLeft(p))}</span></span>` : ""}
+    <small class="sans">斜纹：今日发布 · 次日上午更新</small></div>`;
   const ask = qaLane("ask", room, { title: "提问", valid: q?.questions, today: today.ask,
     reason: draft?.loading ? `正在出第 ${draft.loading}/${draft.total} 条…` : askBlock,
     note: draft?.error || `今天还能问 ${room ? room.ask : "—"} 条 · 收获回答 ${q?.received ?? "—"}`,
@@ -1040,9 +1040,7 @@ function qaBody(p, c) {
       <small class="sans">到点要重新扫码，现在扫能再用 8 小时</small></span>
     <span class="row_btns"><button class="btn small" data-go="${rescanLink(p)}">现在扫码</button></span></div>` : "";
   return `<div class="section"><h3>问答互动</h3></div><div class="models qa_board">${head}${rescan}<div class="qa_lanes">${ask}${answer}</div>
-    <div class="qa_rule"><header><b>提问获得有效回答</b><span class="qa_num">${esc(q?.qualified ?? "—")}<span class="of"> 条达标</span></span></header>
-      <small>距本项满分还差 <b>${q?.qualified == null ? "—" : Math.max(0, 10 - q.qualified)}</b> 条达标提问（共需 10 条）。</small>
-      <small>每条有效提问获得至少 5 个有效回答，百分制加 1 分，最多 10 分；再按课程互动分占比折算。</small></div>${drafts}${peers}</div>
+    <div class="qa_rule"><header><b>获得至少 5 个有效回答的提问</b><span class="qa_num">${esc(q?.qualified ?? "—")}<span class="of"> 条</span></span></header></div>${drafts}${peers}</div>
     <div class="section"><h3>已发布</h3></div>${list}`;
 }
 const loadingPosts = new Set();
@@ -1099,14 +1097,14 @@ function scoreNote(c, papers, earned) {
   const scores = c.kind === "ai" ? (papers || []).map((x) => Number(x.score)).filter((n) => Number.isFinite(n) && n > 0) : [];
   return scores.length ? `作业均分 <b>${(scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1)}</b>${full(100)}` : "";
 }
-const loadingEarned = new Set();
+const loadingEarned = new Set(), earnedErrors = new Set(), earnedRetry = new Set();
 async function loadEarned(p, c) {
   const k = key(p.id, c.id);
-  if (loadingEarned.has(k) || state.earned[k]) return;
+  if (loadingEarned.has(k) || earnedErrors.has(k) || state.earned[k]) return;
   loadingEarned.add(k);
   try { state.earned[k] = (await api(`/api/platforms/${p.id}/score?course=${encodeURIComponent(c.id)}`)).earned; }
-  catch { /* the shares alone still read fine */ }
-  finally { loadingEarned.delete(k); }
+  catch { if (!earnedRetry.has(k)) earnedErrors.add(k); }  // retry on re-entry, not on every repaint
+  finally { loadingEarned.delete(k); earnedRetry.delete(k); }
   repaint();
 }
 const STAMP = { 考试: "k", 测验: "c" };
@@ -1586,6 +1584,8 @@ function forgetPlatform(pid) {
   for (const cache of [state.papers, state.paperErrors, state.units, state.selected]) {
     for (const k of Object.keys(cache)) if (k.startsWith(`${pid}:`)) delete cache[k];
   }
+  for (const k of earnedErrors) if (k.startsWith(`${pid}:`)) earnedErrors.delete(k);
+  for (const k of earnedRetry) if (k.startsWith(`${pid}:`)) earnedRetry.delete(k);
 }
 
 async function afterLogin(pid) {
@@ -1785,6 +1785,11 @@ function route(event) {
   if (name !== "login") state.loginToken.cancelled = true;
   if (name !== "login") state.returnTo = "";
   else if (b === "again" && event?.oldURL) state.returnTo = new URL(event.oldURL).hash;
+  if (name === "course") {
+    const k = key(a, decodeURIComponent(b || ""));
+    earnedErrors.delete(k);
+    if (loadingEarned.has(k)) earnedRetry.add(k);
+  }
   state.adminEdit = null;
   state.view = name === "course" ? `#/course/${a}/${b}` : name === "login" ? `#/login/${a}` : `#/${name}`;
   page.style.removeProperty("--c");
@@ -1920,6 +1925,13 @@ async function loadMe() {
   if (session.mode === "hosted" && !(await loadMe())) { showAuth(); return; }
   await refreshState();
   connectEvents();
-  await Promise.all(state.platforms.filter((p) => p.logged_in).map((p) => loadCourses(p.id)));
+  state.platforms.filter((p) => p.logged_in).forEach((p) => loadCourses(p.id));
+  if (!location.hash && currentPlatform()?.logged_in) {
+    state.view = "#/home";
+    renderSidebar();
+    VIEWS.home();
+    await loadCourses(currentPlatform().id);
+    if (location.hash) return;  // navigation already rendered the page the user chose
+  }
   route();
 })();

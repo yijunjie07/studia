@@ -3,6 +3,7 @@ import tempfile
 import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock, patch
 
 from core.settings import SettingsStore
@@ -55,6 +56,99 @@ class WebQaTest(unittest.TestCase):
             while self.app.jobs and time.time() < deadline:
                 time.sleep(0.05)
         return self.app.history[0]
+
+    def test_parallel_score_and_qa_reads_share_the_platform_request(self):
+        platform = self.app.platforms["zhs"]
+        entered, release, second_started = threading.Event(), threading.Event(), threading.Event()
+        def read_score(*args):
+            entered.set()
+            self.assertTrue(release.wait(3))
+            return {"interactive": 10, "qa": {"questions": 10, "answers": 20, "qualified": 5}}
+        platform.client.score_earned.side_effect = read_score
+        def read_posts():
+            second_started.set()
+            return self.app.qa_posts("zhs", "shared-1000091138")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            score = pool.submit(self.app.score, "zhs", "shared-1000091138")
+            self.assertTrue(entered.wait(2))
+            posts = pool.submit(read_posts)
+            self.assertTrue(second_started.wait(2))
+            time.sleep(0.1)
+            release.set()
+            self.assertEqual(score.result()["earned"]["interactive"], 10)
+            self.assertEqual(posts.result()["room"]["ask"], 0)
+        self.assertEqual(platform.client.score_earned.call_count, 1)
+
+    def test_failed_shared_score_read_can_be_retried(self):
+        platform = self.app.platforms["zhs"]
+        platform.client.score_earned.side_effect = [RuntimeError("读取失败"), {"qa": {"questions": 1, "answers": 0}}]
+        with self.assertRaisesRegex(RuntimeError, "读取失败"):
+            self.app.score("zhs", "shared-1000091138")
+        self.assertEqual(self.app.qa_posts("zhs", "shared-1000091138")["room"]["ask"], 5)
+        self.assertEqual(platform.client.score_earned.call_count, 2)
+
+    def test_score_finishing_after_logout_does_not_restore_the_old_cache(self):
+        platform = self.app.platforms["zhs"]
+        entered, release = threading.Event(), threading.Event()
+        def read():
+            entered.set()
+            self.assertTrue(release.wait(3))
+            return {"qa": {"questions": 10}}
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(self.app._cached, platform, ("earned", 1000091138), False, read)
+            self.assertTrue(entered.wait(2))
+            self.app.drop(platform)
+            release.set()
+            pending.result()
+        self.assertNotIn(("earned", 1000091138), platform.cache)
+
+    def test_fresh_score_is_not_overwritten_by_an_older_inflight_read(self):
+        platform = self.app.platforms["zhs"]
+        entered, release = threading.Event(), threading.Event()
+        key = ("earned", 1000091138)
+        def old_score():
+            entered.set()
+            self.assertTrue(release.wait(3))
+            return 9
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(self.app._cached, platform, key, False, old_score)
+            self.assertTrue(entered.wait(2))
+            self.assertEqual(self.app._cached(platform, key, True, lambda: 10), 10)
+            release.set()
+            self.assertEqual(pending.result(), 9)
+        self.assertEqual(platform.cache[key][1], 10)
+
+    def test_fresh_score_finishing_after_logout_does_not_restore_the_old_cache(self):
+        platform = self.app.platforms["zhs"]
+        entered, release = threading.Event(), threading.Event()
+        key = ("earned", 1000091138)
+        def old_score():
+            entered.set()
+            self.assertTrue(release.wait(3))
+            return 9
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(self.app._cached, platform, key, True, old_score)
+            self.assertTrue(entered.wait(2))
+            self.app.drop(platform)
+            release.set()
+            self.assertEqual(pending.result(), 9)
+        self.assertNotIn(key, platform.cache)
+
+    def test_newer_fresh_score_wins_when_refreshes_finish_out_of_order(self):
+        platform = self.app.platforms["zhs"]
+        entered, release = threading.Event(), threading.Event()
+        key = ("earned", 1000091138)
+        def old_score():
+            entered.set()
+            self.assertTrue(release.wait(3))
+            return 9
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(self.app._cached, platform, key, True, old_score)
+            self.assertTrue(entered.wait(2))
+            self.assertEqual(self.app._cached(platform, key, True, lambda: 10), 10)
+            release.set()
+            self.assertEqual(pending.result(), 9)
+        self.assertEqual(platform.cache[key][1], 10)
 
     def test_unanswered_questions_go_first_and_every_post_is_listed(self):
         bridge = FakeBridge()
