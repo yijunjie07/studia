@@ -1,17 +1,25 @@
-# Studia
+<h1 align="center">Studia</h1>
 
-<p>
-  <a href="https://skillicons.dev">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://skillicons.dev/icons?i=python,js,docker&amp;theme=dark">
-      <img src="https://skillicons.dev/icons?i=python,js,docker&amp;theme=light" alt="Python · JavaScript · Docker" width="134" height="40">
-    </picture>
-  </a>
+<p align="center"><strong>智慧职教与智慧树的课程自动化与 AI 答题工具</strong></p>
+<p align="center">Course automation and AI assistance for ICVE and Zhihuishu</p>
+
+<p align="center">
+  <a href="#部署"><img src="https://img.shields.io/static/v1?label=Python&amp;message=3.12&amp;color=3776AB&amp;style=for-the-badge&amp;logo=python&amp;logoColor=white" alt="Python: 3.12"></a>
+  <a href="#能做什么"><img src="https://img.shields.io/static/v1?label=JavaScript&amp;message=Web%20UI&amp;color=F7DF1E&amp;style=for-the-badge&amp;logo=javascript&amp;logoColor=white" alt="JavaScript: Web UI"></a>
+  <a href="#docker推荐"><img src="https://img.shields.io/static/v1?label=Docker&amp;message=AMD64%20/%20ARM64&amp;color=2496ED&amp;style=for-the-badge&amp;logo=docker&amp;logoColor=white" alt="Docker: AMD64 / ARM64"></a>
 </p>
 
-智慧职教和智慧树的刷课工具：自动学习课程，用 AI 答题并交卷。主要用网页版，可以部署到一台服务器上给几个人一起用，每个人的账号和数据分开。
+<p align="center">
+  <a href="docs/DEVELOPMENT.md">开发说明</a> · <a href="docs/EXAM_PROTOCOL.md">接口说明</a> · <a href="https://github.com/yijunjie07/studia/issues">问题反馈</a>
+</p>
 
-维护者 [yijunjie07](https://github.com/yijunjie07) · [开发说明](docs/DEVELOPMENT.md) · [接口说明](docs/EXAM_PROTOCOL.md)
+<p align="center">
+  <strong><a href="#能做什么">功能介绍</a> · <a href="#部署">部署安装</a> · <a href="#ai-模型">AI 模型</a> · <a href="#注意">使用须知</a></strong>
+</p>
+
+---
+
+提供终端版和网页版，也可部署成多人服务，各账号的数据分别保存。
 
 ## 能做什么
 
