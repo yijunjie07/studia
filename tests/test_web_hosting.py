@@ -84,8 +84,9 @@ class HostedServerTest(unittest.TestCase):
         token, csrf = self.login("admin", "admin-password")
         alice = self.hub.accounts.create_user("alice", "alice-password")
         post = lambda path, body: self.request("POST", path, body, cookie=token, csrf=csrf)
-        self.assertEqual(self.request("GET", "/api/admin/settings", cookie=token)[1], {"max_jobs": 4, "zhs_parallel_study": False})
-        self.assertEqual(post("/api/admin/settings", {"max_jobs": 2})[1], {"max_jobs": 2, "zhs_parallel_study": False})
+        settings = self.request("GET", "/api/admin/settings", cookie=token)[1]
+        self.assertEqual((settings["max_jobs"], settings["zhs_parallel_study"]), (4, False))
+        self.assertEqual(post("/api/admin/settings", {"max_jobs": 2})[1], dict(settings, max_jobs=2))
         self.assertFalse(self.hub.app(alice).zhs_parallel())
         self.assertTrue(post("/api/admin/settings", {"zhs_parallel_study": True})[1]["zhs_parallel_study"])
         self.assertTrue(self.hub.app(alice).zhs_parallel())
@@ -120,6 +121,88 @@ class HostedServerTest(unittest.TestCase):
         user_token, user_csrf = self.login("alice", "alice-password")
         self.assertEqual(self.request("POST", "/api/admin/settings", {"max_jobs": 20},
                                       cookie=user_token, csrf=user_csrf)[0], 403)
+
+    def test_admin_default_model_is_live_private_and_survives_restart(self):
+        from ai.client import AIConfig
+        from ai.defaults import DEFAULT_PROFILE_ID, default_config
+        token, csrf = self.login("admin", "admin-password")
+        alice = self.hub.accounts.create_user("alice", "alice-password")
+        bob = self.hub.accounts.create_user("bob", "bob-password")
+        app = self.hub.app(alice)
+        other = self.hub.app(bob)
+        custom = AIConfig("https://private.example/v1", "personal", "personal-secret")
+        profile_id = other.store.save_ai_profile(custom)
+        other.store.activate_ai_profile(profile_id)
+        old = app.store.ai_config()
+        app.store.save_ai_health(old, "ok")
+        initial = self.request("GET", "/api/admin/settings", cookie=token)[1]["default_model"]
+        self.assertEqual(initial["model"], default_config().model)
+        self.assertNotIn("api_key", initial)
+        form = {"provider_name": "站点服务", "base_url": "https://site.example/v1",
+                "model": "site-model", "api_key": "sk-site-private-12345678", "api_format": "responses"}
+        status, result, _, _ = self.request("POST", "/api/admin/settings", {"default_model": form}, cookie=token, csrf=csrf)
+        self.assertEqual(status, 200)
+        self.assertEqual(result["default_model"]["key_hint"], "sk-…5678")
+        self.assertNotIn(form["api_key"], json.dumps(result))
+        # No intervening HTTP request: queued jobs resolve the new default themselves.
+        self.assertEqual(app.store.ai_config(), AIConfig(**form))
+        self.assertEqual(app.store.ai_health(app.store.ai_config()), {})
+        self.assertEqual(other.store.ai_config(), custom)
+        self.assertEqual(other.store.ai_profiles()[0].id, DEFAULT_PROFILE_ID)
+        self.assertEqual(other.store.ai_profiles()[0].config, AIConfig(**form))
+        self.assertFalse(other.store.ai_profiles()[0].active)
+        late = self.hub.accounts.create_user("late", "late-password")
+        self.assertEqual(self.hub.app(late).store.ai_config(), AIConfig(**form))
+        restarted = Hub(self.hub.data, self.hub.public_url, key=self.hub.key)
+        self.assertEqual(restarted.app(alice).store.ai_config(), AIConfig(**form))
+        self.assertEqual(restarted.app(bob).store.ai_config(), custom)
+        public = self.request("GET", "/api/settings", cookie=token)[1]
+        self.assertNotIn(form["api_key"], json.dumps(public))
+        self.assertFalse(public["models"][0]["deletable"])
+        for path in self.hub.data.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(form["api_key"].encode(), path.read_bytes(), str(path))
+        self.assertEqual(self.hub.site_store.path.stat().st_mode & 0o777, 0o600)
+        self.assertIn("admin:settings", (self.hub.data / "audit.log").read_text())
+        # Blank keys retain the server-side value, not the masked hint from GET.
+        form.update(model="replacement", api_key="  ")
+        self.assertEqual(self.request("POST", "/api/admin/settings", {"default_model": form}, cookie=token, csrf=csrf)[0], 200)
+        self.assertEqual(app.store.ai_config().api_key, "sk-site-private-12345678")
+        self.assertEqual(app.store.ai_config().model, "replacement")
+        self.assertEqual(old.model, default_config().model)  # clients already running keep their snapshot
+        form.update(api_format="auto", api_key="")
+        self.assertEqual(self.request("POST", "/api/admin/settings", {"default_model": form}, cookie=token, csrf=csrf)[0], 200)
+        def detect(client):
+            client.config.api_format = "responses"
+        with patch("web.server.AIClient.check_connection", detect):
+            self.assertEqual(app.test_model(DEFAULT_PROFILE_ID)["health"], "ok")
+        self.assertEqual(app.store.ai_config().api_format, "responses")
+        self.assertEqual(app.store.ai_health(app.store.ai_config())["status"], "ok")
+
+    def test_default_model_permissions_and_validation(self):
+        from ai.defaults import DEFAULT_PROFILE_ID
+        token, csrf = self.login("admin", "admin-password")
+        self.hub.accounts.create_user("alice", "alice-password")
+        user, user_csrf = self.login("alice", "alice-password")
+        path = "/api/admin/settings"
+        form = {"base_url": "https://site.example/v1", "model": "test", "api_key": "private-key"}
+        self.assertEqual(self.request("GET", path)[0], 401)
+        self.assertEqual(self.request("GET", path, cookie=user)[0], 403)
+        self.assertEqual(self.request("POST", path, {"default_model": form}, cookie=user, csrf=user_csrf)[0], 403)
+        self.assertEqual(self.request("POST", path, {"default_model": form}, cookie=token)[0], 403)
+        before = self.hub.default_model()
+        for invalid in (None, [], "x", {}, dict(form, model=" "), dict(form, model=12),
+                        dict(form, api_key=None), dict(form, api_format="invalid"),
+                        dict(form, base_url="http://example.com/v1"), dict(form, base_url="https://example.com/v1?key=secret")):
+            with self.subTest(invalid=invalid):
+                self.assertEqual(self.request("POST", path, {"default_model": invalid, "max_jobs": 2}, cookie=token, csrf=csrf)[0], 400)
+                self.assertEqual(self.hub.default_model(), before)
+                self.assertEqual(self.hub.default_job_limit(), 4)
+        for suffix, body in (("", form), ("/delete", {})):
+            self.assertEqual(self.request("POST", "/api/settings/models/" + DEFAULT_PROFILE_ID + suffix,
+                                          body, cookie=user, csrf=user_csrf)[0], 400)
+        # Reading a failed save never creates a site secret or replaces the built-in fallback.
+        self.assertFalse(self.hub.site_store.path.exists())
 
     def test_login_cookie_csrf_and_logout(self):
         status, _, token, header = self.request("POST", "/api/auth/login", {"username": "ADMIN", "password": "admin-password"})

@@ -16,6 +16,7 @@ import secrets
 import signal
 import threading
 import time
+from dataclasses import asdict
 from http.cookies import SimpleCookie
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -27,10 +28,12 @@ from core.log import Logger
 from mooc.oauth_login import SSO_AUTH_URL, SSO_SOURCE
 from zhs.memory import DatabaseAnswerMemory
 from ai.memory import MoocDatabaseAnswerMemory
+from ai.client import AIConfig
+from ai.defaults import DEFAULT_PROVIDER_NAME, default_config
 from core.settings import SettingsError, SettingsStore
 from web.accounts import AccountError, Accounts, Sessions, Throttle
 from web.server import MAX_JOBS, MAX_PENDING, NOT_HANDLED, PEERS_MARKER, HttpError, Reply, Studia, _EventLogHandler, drain, \
-    keep_passports, make_handler
+    keep_passports, key_hint, make_handler
 
 COOKIE = "studia_session"
 OAUTH_TTL = 600
@@ -56,11 +59,18 @@ class EncryptedSettingsStore(SettingsStore):
     directory fails authentication instead of handing over that account.
     """
 
-    def __init__(self, directory, key, owner):
+    def __init__(self, directory, key, owner, *, default_model=None):
         super().__init__(directory)
         self.key, self.owner = key, owner.encode()
+        self.default_model = default_model
         self.plain_path = self.path
         self.path = self.directory / "settings.enc"
+
+    def ai_profiles(self):
+        # Resolve on every use, including jobs leaving the queue without a browser request.
+        if self.default_model is not None:
+            self.ensure_default_model(self.default_model())
+        return super().ai_profiles()
 
     def _read(self):
         if not self.path.exists():
@@ -118,6 +128,7 @@ class Hub:
         self.data.chmod(0o700)  # mkdir(parents=True) leaves the root at the umask default
         self.accounts = Accounts(self.data)
         self.sessions = Sessions(self.accounts)
+        self.site_store = EncryptedSettingsStore(self.data / "site", key, "site")
         # Answers the platform has judged, shared by every user: one user's graded paper
         # spares everyone else the AI call (and the wrong answer) next time.
         self.memory = DatabaseAnswerMemory(self.accounts.path)
@@ -150,8 +161,8 @@ class Hub:
             if app is None:
                 directory = self.data / "users" / uid
                 directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-                store = EncryptedSettingsStore(directory, self.key, uid)
-                store.ensure_default_model()
+                store = EncryptedSettingsStore(directory, self.key, uid, default_model=self.default_model)
+                store.ensure_default_model(self.default_model())
                 app = Studia(store, reports_dir=directory / "ai_results", memory=self.memory, mooc_memory=self.mooc_memory,
                              oauth_url=lambda pid, uid=uid: self.oauth_url(uid, pid),
                              job_limit=lambda uid=uid: self.job_limit(uid),
@@ -230,9 +241,34 @@ class Hub:
 
     # ------------------------------------------------------------ admin helpers
 
+    def default_model(self):
+        saved = self.site_store.get("default_model")
+        return AIConfig(**saved) if saved is not None else default_config()
+
+    def save_default_model(self, body):
+        fields = ("provider_name", "base_url", "model", "api_key", "api_format")
+        if not isinstance(body, dict) or any(k in body and not isinstance(body[k], str) for k in fields):
+            raise HttpError(400, "默认模型配置格式不正确")
+        with self.lock:
+            previous = self.default_model()
+            try:
+                config = AIConfig(
+                    base_url=body.get("base_url", ""), model=body.get("model", ""),
+                    api_key=body.get("api_key", "").strip() or previous.api_key,
+                    provider_name=body.get("provider_name", "").strip() or DEFAULT_PROVIDER_NAME,
+                    api_format=body.get("api_format", "auto"))
+            except ValueError as exc:
+                raise HttpError(400, str(exc)) from None
+            # One atomic encrypted write; users resolve it when listing models or starting AI work.
+            self.site_store.set("default_model", asdict(config))
+
     def site_settings(self):
+        config = self.default_model()
         return {"max_jobs": self.default_job_limit(),
-                "zhs_parallel_study": bool(self.accounts.setting("zhs_parallel_study", False))}
+                "zhs_parallel_study": bool(self.accounts.setting("zhs_parallel_study", False)),
+                "default_model": {"provider_name": config.provider_name, "base_url": config.base_url,
+                                  "model": config.model, "api_format": config.api_format,
+                                  "key_hint": key_hint(config.api_key)}}
 
     def default_job_limit(self):
         return self.accounts.setting("max_jobs", MAX_JOBS)
@@ -463,8 +499,11 @@ class HostedAccess:
         if method == "GET" and path == "/api/admin/settings":
             return hub.site_settings()
         if method == "POST" and path == "/api/admin/settings":
-            if "max_jobs" in body:
-                hub.accounts.set_setting("max_jobs", _job_limit(body.get("max_jobs")))
+            limit = _job_limit(body["max_jobs"]) if "max_jobs" in body else None
+            if "default_model" in body:
+                hub.save_default_model(body["default_model"])
+            if limit is not None:
+                hub.accounts.set_setting("max_jobs", limit)
             if "zhs_parallel_study" in body:
                 hub.accounts.set_setting("zhs_parallel_study", body.get("zhs_parallel_study") is True)
             return hub.site_settings()

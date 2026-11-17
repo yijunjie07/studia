@@ -3,7 +3,7 @@ import json
 import hashlib
 from copy import deepcopy
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import os
 import tempfile
 import threading
@@ -167,13 +167,13 @@ class SettingsStore:
         return next((profile.config for profile in self.ai_profiles() if profile.active), None)
 
     @_transaction
-    def ensure_default_model(self):
+    def ensure_default_model(self, config=None):
         """Keep one locked built-in provider, migrating the earlier editable entry."""
         from ai.defaults import default_config
         data = self._read()
         original = self._profiles(data)
         profiles = deepcopy(original)
-        config = default_config()
+        config = config or default_config()
         matching = next((item for item in profiles["items"] if item["id"] == DEFAULT_PROFILE_ID), None)
         if matching is None:
             matching = next((item for item in profiles["items"]
@@ -188,9 +188,20 @@ class SettingsStore:
             if profiles.get("active_id") == matching["id"]:
                 profiles["active_id"] = DEFAULT_PROFILE_ID
             profiles["items"].remove(matching)
+        health = matching.get("health", {})
+        if config.api_format == "auto" and isinstance(health, dict) and health.get("status") == "ok":
+            detected = matching.get("api_format")
+            if detected in ("chat_completions", "responses"):
+                candidate = replace(config, api_format=detected)
+                if health.get("config") == self.ai_fingerprint(candidate):
+                    config = candidate
         matching.update(id=DEFAULT_PROFILE_ID, base_url=config.base_url,
-                        model=config.model, api_key=config.api_key, provider_name=DEFAULT_PROVIDER_NAME,
-                        api_format="chat_completions")
+                        model=config.model, api_key=config.api_key,
+                        provider_name=config.provider_name or DEFAULT_PROVIDER_NAME,
+                        api_format=config.api_format)
+        health = matching.get("health", {})
+        if not isinstance(health, dict) or health.get("config") != self.ai_fingerprint(config):
+            matching.pop("health", None)
         profiles["items"].insert(0, matching)
         if profiles == original and data.get("default_model_added"):
             return

@@ -503,12 +503,19 @@ body.dragging, body.dragging * { cursor: grabbing !important; user-select: none;
 .form_card h3 { margin: 0 0 10px; font-size: 14px; }
 .field { display: grid; grid-template-columns: 96px 1fr; align-items: center; gap: 10px; margin: 8px 0; }
 .field label { color: var(--text-3); }
-.field input, .inline_num, .log_range input, .log_range select, .auth_field input {
+.field input, .field select, .inline_num, .log_range input, .log_range select, .auth_field input {
   border: 0; border-radius: 5px; background: var(--card); box-shadow: inset 0 0 0 1px var(--line-2); transition: box-shadow .15s; }
-.field input { height: 34px; padding: 0 10px; font-size: 13px; background: var(--paper); }
-:is(.field input, .inline_num, .log_range input, .log_range select, .auth_field input):focus { outline: none; box-shadow: inset 0 0 0 1.5px var(--indigo), 0 0 0 3px var(--indigo-soft); }
+.field input, .field select { min-width: 0; height: 34px; padding: 0 10px; font-size: 13px; background: var(--paper); }
+:is(.field input, .field select, .inline_num, .log_range input, .log_range select, .auth_field input):focus { outline: none; box-shadow: inset 0 0 0 1.5px var(--indigo), 0 0 0 3px var(--indigo-soft); }
 .field input[type="number"] { width: 90px; font-family: var(--mono); }
 .form_btns { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.site_model_form { max-width: 760px; padding: 18px 20px 16px; background: var(--paper-2); box-shadow: inset 0 0 0 1px var(--line); }
+.site_model_grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 24px; row-gap: 2px; }
+.site_model_grid .field { grid-template-columns: 76px minmax(0, 1fr); margin: 6px 0; }
+.site_model_grid .site_model_wide { grid-column: 1 / -1; }
+.site_model_foot { display: flex; align-items: center; gap: 16px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.site_model_foot small { flex: 1; color: var(--text-3); font-size: 11.5px; }
+.site_model_foot .btn { flex: none; }
 
 /* Platform login */
 .login_card { display: flex; gap: 26px; align-items: center; margin-top: 24px; padding: 22px; border-radius: 4px; background: var(--card); box-shadow: inset 0 0 0 1px var(--print); }
@@ -718,6 +725,12 @@ button.switch { border: 0; padding: 0; cursor: pointer; }
   .stepper .btn { width: 40px; height: 36px; }
   .row_btns { flex-wrap: wrap; }
   .field { grid-template-columns: 1fr; gap: 4px; }
+  .site_model_form { padding: 14px; }
+  .site_model_grid { grid-template-columns: 1fr; row-gap: 0; }
+  .site_model_grid .site_model_wide { grid-column: auto; }
+  .site_model_grid .field { grid-template-columns: 1fr; gap: 4px; margin: 7px 0; }
+  .site_model_foot { align-items: stretch; flex-direction: column; gap: 10px; }
+  .site_model_foot .btn { width: 100%; justify-content: center; }
   .form_btns { flex-wrap: wrap; }
   .row_form { grid-column: 1 / -1; } .row_form .grow { display: none; } .row_form .btn { flex: 1; } .row_input { flex: 1 1 100%; height: 40px; font-size: 16px; }
   .login_card { flex-direction: column; align-items: flex-start; padding: 18px; }

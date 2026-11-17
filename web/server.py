@@ -1047,7 +1047,7 @@ class Studia:
             ai.session.close()
             self.store.save_ai_health(config, "error", str(exc))
             raise
-        self.store.save_ai_health(config, "ok")
+        self.store.save_ai_health(ai.config, "ok", previous_config=config)
         return ai
 
     def _study(self, platform, row, minutes, job):
@@ -1336,7 +1336,7 @@ class Studia:
 
     def test_model(self, profile_id):
         config = self._profile(profile_id).config
-        client = AIClient(config)
+        client = AIClient(replace(config))
         try:
             client.check_connection()
         except AIError as exc:
@@ -1344,7 +1344,7 @@ class Studia:
             return {"health": "error", "message": str(exc)}
         finally:
             client.session.close()
-        self.store.save_ai_health(config, "ok")
+        self.store.save_ai_health(client.config, "ok", previous_config=config)
         return {"health": "ok", "message": "连接正常"}
 
     def activate_model(self, body):

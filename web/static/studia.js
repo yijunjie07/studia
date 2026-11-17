@@ -566,6 +566,8 @@ const VIEWS = {
     catch (error) { if (!refresh) setPage(`${head}<div class="empty">${esc(error.message)}</div>`); return; }
     if (state.view !== "#/admin" || state.adminTab !== tab) return;
     const users = data.users?.users || [];
+    const modelForm = $("[data-default-model]", page);
+    const modelDraft = modelForm ? Object.fromEntries(new FormData(modelForm)) : null;
     let body = "";
     if (tab === "people") {
       const invites = data.invites.invites;
@@ -594,9 +596,21 @@ const VIEWS = {
           || `<div class="model plain"><span class="m1"><small class="sans">还没有邀请码</small></span></div>`}</div>`;
     } else if (tab === "site") {
       const settings = data.settings;
+      const model = modelDraft || settings.default_model;
       const kept = (name, fallback) => $(`[name="${name}"]`, page)?.value || fallback;
       state.zhsParallel = settings.zhs_parallel_study;
-      body = `<div class="section"><h3>任务上限</h3></div>
+      body = `<div class="section"><h3>全站默认 AI 模型</h3><span class="aside">新任务生效 · 自选模型不受影响</span></div>
+        <form class="form_card site_model_form" data-default-model>
+          <div class="site_model_grid">
+            <div class="field"><label for="site-provider">供应商名称</label><input id="site-provider" name="provider_name" value="${esc(model.provider_name)}" placeholder="默认供应商"></div>
+            <div class="field"><label for="site-model">模型</label><input id="site-model" name="model" value="${esc(model.model)}" required></div>
+            <div class="field site_model_wide"><label for="site-url">服务地址</label><input id="site-url" name="base_url" value="${esc(model.base_url)}" placeholder="https://api.example.com/v1" required></div>
+            <div class="field"><label for="site-format">接口格式</label><select id="site-format" name="api_format">${[["auto", "自动识别"], ["chat_completions", "Chat Completions"], ["responses", "Responses"]].map(([value, label]) => `<option value="${value}" ${model.api_format === value ? "selected" : ""}>${label}</option>`).join("")}</select></div>
+            <div class="field site_model_wide"><label for="site-key">API Key</label><input id="site-key" name="api_key" type="password" autocomplete="off" placeholder="留空不修改（${esc(settings.default_model.key_hint)}）"></div>
+          </div>
+          <div class="site_model_foot"><small>密钥只保存在服务端，不会显示完整内容</small><button type="submit" class="btn primary">保存默认模型</button></div>
+        </form>
+        <div class="section"><h3>任务上限</h3></div>
         <div class="models"><div class="model plain"><span class="m1"><b>默认每人同时 <input class="inline_num" type="number" min="1" max="20" name="max_jobs" value="${esc(kept("max_jobs", settings.max_jobs))}"> 个任务</b></span>
           <span class="row_btns"><button class="btn small primary" data-save-limit>保存</button></span></div></div>
         <div class="section"><h3>智慧树</h3></div>
@@ -623,6 +637,24 @@ const VIEWS = {
       try { await api(path, { method: "POST", body: payload || {} }); toast(message); VIEWS.admin(true, tab); } catch (e) { toast(e.message); }
     };
     const on = (selector, handler) => page.querySelectorAll(selector).forEach((el) => (el.onclick = () => handler(el)));
+    const defaultForm = $("[data-default-model]", page);
+    if (defaultForm) {
+      defaultForm.elements.api_key.value = modelDraft?.api_key || "";
+      defaultForm.onsubmit = async (event) => {
+        event.preventDefault();
+        const button = $("button[type=submit]", defaultForm);
+        button.disabled = true;
+        try {
+          await api("/api/admin/settings", { method: "POST", body: { default_model: Object.fromEntries(new FormData(defaultForm)) } });
+          defaultForm.elements.api_key.value = "";
+          defaultForm.removeAttribute("data-default-model");
+          state.settings = null;
+          toast("默认模型已保存，新任务生效");
+          if (state.view === "#/admin" && state.adminTab === tab) await VIEWS.admin(true, tab);
+        } catch (e) { toast(e.message); }
+        finally { button.disabled = false; }
+      };
+    }
     on("[data-invite]", async () => {
       try { const { code } = await api("/api/admin/invites", { method: "POST", body: { days: 7 } }); navigator.clipboard?.writeText(code).catch(() => {}); toast(`邀请码 ${code} 已复制`); VIEWS.admin(true, tab); }
       catch (e) { toast(e.message); }
@@ -907,7 +939,7 @@ function renderModels(head, models, editing = null, again = true) {
         <small>${esc(m.model)} · ${esc(host(m.base_url))} · ${esc(m.key_hint)}</small></span>
       <span class="health ${cls}" title="${esc(m.health_message)}">${label}</span>
       <span class="row_btns">${m.active ? '<span class="in_use">使用中</span>' : '<button class="btn small primary" data-activate>改用</button>'}
-        <button class="btn small" data-test>测试</button><button class="btn small" data-edit>编辑</button></span></div>`;
+        <button class="btn small" data-test>测试</button>${m.deletable ? '<button class="btn small" data-edit>编辑</button>' : ""}</span></div>`;
   };
   quiet = again;
   setPage(`${head}<div class="section"><h3>${PHONE.matches ? "" : "AI 模型"}</h3><button class="link" data-add>＋ 添加模型</button></div>
@@ -924,7 +956,8 @@ function renderModels(head, models, editing = null, again = true) {
     if (use) use.onclick = async () => {
       try { await api("/api/settings/models/activate", { method: "POST", body: { id } }); toast("已切换模型"); reload(); } catch (e) { toast(e.message); }
     };
-    $("[data-edit]", rowEl).onclick = () => renderModels(head, models, id);
+    const edit = $("[data-edit]", rowEl);
+    if (edit) edit.onclick = () => renderModels(head, models, id);
     $("[data-test]", rowEl).onclick = async () => {
       const chip = $(".health", rowEl);
       chip.className = "health busy"; chip.textContent = "测试中";
