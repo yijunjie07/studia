@@ -1305,7 +1305,7 @@ class Studia:
         try:
             return AIConfig(str(body.get("base_url", "")), str(body.get("model", "")), key,
                             provider_name=str(body.get("provider_name", "")),
-                            api_format=previous.api_format if previous else "chat_completions")
+                            api_format=previous.api_format if previous else "auto")
         except ValueError as exc:
             raise HttpError(400, str(exc))
 

@@ -75,6 +75,20 @@ class ModelProfilesTests(unittest.TestCase):
         self.store.ensure_default_model()
         self.assertEqual(self.store.ai_profiles()[0].config.provider_name, '默认供应商')
 
+    def test_withdrawn_builtin_key_removes_the_locked_entry(self):
+        from ai.defaults import DEFAULT_PROFILE_ID
+        self.store.ensure_default_model()
+        own = self.store.save_ai_profile(self.a)
+        with patch('ai.defaults.default_config', return_value=None):
+            self.store.ensure_default_model()
+        self.assertEqual([p.id for p in self.store.ai_profiles()], [own])
+        self.assertIsNone(self.store.ai_config())  # the built-in one was active; nothing is picked silently
+        with patch('ai.defaults.default_config', return_value=None):
+            self.store.activate_ai_profile(own)
+            self.store.ensure_default_model()
+        self.assertEqual(self.store.ai_config(), self.a)
+        self.assertNotEqual(self.store.ai_profiles()[0].id, DEFAULT_PROFILE_ID)
+
     def test_default_model_is_ready_on_first_start_and_not_duplicated(self):
         self.store.ensure_default_model()
         config = self.store.ai_config()

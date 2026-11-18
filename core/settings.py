@@ -171,11 +171,17 @@ class SettingsStore:
         """Keep one locked built-in provider, migrating the earlier editable entry."""
         from ai.defaults import default_config
         config = config or default_config()
-        if config is None:
-            return  # no built-in key configured: leave the user's models alone
         data = self._read()
         original = self._profiles(data)
         profiles = deepcopy(original)
+        if config is None:
+            # No key configured (or it was withdrawn): a locked entry the user cannot edit or delete must go.
+            profiles["items"] = [item for item in profiles["items"] if item["id"] != DEFAULT_PROFILE_ID]
+            if profiles.get("active_id") == DEFAULT_PROFILE_ID:
+                profiles["active_id"] = None
+            if profiles != original:
+                self._save_profiles(data, profiles)
+            return
         matching = next((item for item in profiles["items"] if item["id"] == DEFAULT_PROFILE_ID), None)
         if matching is None:
             matching = next((item for item in profiles["items"]

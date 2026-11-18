@@ -596,20 +596,32 @@ const VIEWS = {
           || `<div class="model plain"><span class="m1"><small class="sans">还没有邀请码</small></span></div>`}</div>`;
     } else if (tab === "site") {
       const settings = data.settings;
-      const model = modelDraft || settings.default_model || { api_format: "auto" };
+      const current = settings.default_model;
+      const model = modelDraft || current || {};
       const kept = (name, fallback) => $(`[name="${name}"]`, page)?.value || fallback;
       state.zhsParallel = settings.zhs_parallel_study;
-      body = `<div class="section"><h3>全站默认 AI 模型</h3><span class="aside">新任务生效 · 自选模型不受影响</span></div>
-        <form class="form_card site_model_form" data-default-model>
-          <div class="site_model_grid">
-            <div class="field"><label for="site-provider">供应商名称</label><input id="site-provider" name="provider_name" value="${esc(model.provider_name)}" placeholder="默认供应商"></div>
-            <div class="field"><label for="site-model">模型</label><input id="site-model" name="model" value="${esc(model.model)}" required></div>
-            <div class="field site_model_wide"><label for="site-url">服务地址</label><input id="site-url" name="base_url" value="${esc(model.base_url)}" placeholder="https://api.example.com/v1" required></div>
-            <div class="field"><label for="site-format">接口格式</label><select id="site-format" name="api_format">${[["auto", "自动识别"], ["chat_completions", "Chat Completions"], ["responses", "Responses"]].map(([value, label]) => `<option value="${value}" ${model.api_format === value ? "selected" : ""}>${label}</option>`).join("")}</select></div>
-            <div class="field site_model_wide"><label for="site-key">API Key</label><input id="site-key" name="api_key" type="password" autocomplete="off" placeholder="${settings.default_model ? `留空不修改（${esc(settings.default_model.key_hint)}）` : "必填"}"></div>
-          </div>
-          <div class="site_model_foot"><small>密钥只保存在服务端，不会显示完整内容</small><button type="submit" class="btn primary">保存默认模型</button></div>
-        </form>
+      const editing = state.adminEdit?.kind === "default-model";
+      const [cls, label] = HEALTH[current?.health] || ["", "未测试"];
+      const hostOf = (url) => { try { return new URL(url).host; } catch { return url || ""; } };
+      const modelRow = current
+        ? `<div class="model ai on"><span class="m1"><b>${esc(current.provider_name || "默认供应商")}</b><span class="pill">${current.source === "site" ? "站点配置" : "内置"}</span>
+            <small>${esc(current.model)} · ${esc(hostOf(current.base_url))} · ${esc(current.key_hint)}</small></span>
+          <span class="health ${cls}" data-default-health title="${esc(current.health_message || (current.checked_at ? `测试于 ${current.checked_at.replace("T", " ")}` : ""))}">${label}</span>
+          <span class="row_btns"><button class="btn small" data-default-test>测试</button>
+            <button class="btn small" data-default-edit aria-pressed="${editing}">编辑</button>
+            ${current.source === "site" && settings.builtin_available ? '<button class="btn small danger" data-default-reset data-confirm="确认恢复">恢复内置</button>' : ""}</span></div>`
+        : `<div class="model plain"><span class="m1"><small class="sans">还没有默认模型，用户需要自己添加</small></span>
+          <span class="row_btns"><button class="btn small primary" data-default-edit aria-pressed="${editing}">配置</button></span></div>`;
+      const modelEdit = editing ? `<form class="form_card" data-default-model>
+          <div class="field"><label>名称</label><input name="provider_name" value="${esc(model.provider_name)}" placeholder="默认供应商"></div>
+          <div class="field"><label>服务地址</label><input name="base_url" value="${esc(model.base_url)}" placeholder="https://api.example.com/v1" required></div>
+          <div class="field"><label>模型</label><input name="model" value="${esc(model.model)}" placeholder="例如 deepseek-chat" required></div>
+          <div class="field"><label>API Key</label><input name="api_key" type="password" autocomplete="off"></div>
+          <div class="form_btns"><small class="grow sans">保存前会先测试连接，接口格式自动识别；密钥只存在服务端</small>
+            <button type="button" class="btn" data-default-cancel>取消</button><button class="btn primary">测试并保存</button></div>
+        </form>` : "";
+      body = `<div class="section"><h3>全站默认 AI 模型</h3><span class="aside">用户未自选模型时使用</span></div>
+        <div class="models">${modelRow}${modelEdit}</div>
         <div class="section"><h3>任务上限</h3></div>
         <div class="models"><div class="model plain"><span class="m1"><b>默认每人同时 <input class="inline_num" type="number" min="1" max="20" name="max_jobs" value="${esc(kept("max_jobs", settings.max_jobs))}"> 个任务</b></span>
           <span class="row_btns"><button class="btn small primary" data-save-limit>保存</button></span></div></div>
@@ -639,22 +651,48 @@ const VIEWS = {
     const on = (selector, handler) => page.querySelectorAll(selector).forEach((el) => (el.onclick = () => handler(el)));
     const defaultForm = $("[data-default-model]", page);
     if (defaultForm) {
-      defaultForm.elements.api_key.value = modelDraft?.api_key || "";
+      const saved = data.settings.default_model, { base_url, api_key } = defaultForm.elements;
+      const sameHost = () => { try { return saved && new URL(base_url.value.trim()).hostname === new URL(saved.base_url).hostname; } catch { return false; } };
+      // A blank key keeps the saved one only on the same host; the server refuses otherwise, say so up front.
+      const keyRule = () => {
+        api_key.required = !sameHost();
+        api_key.placeholder = !saved ? "必填" : sameHost() ? `留空不修改（${saved.key_hint}）` : "换了服务地址，请重新填写";
+      };
+      api_key.value = modelDraft?.api_key || "";
+      base_url.oninput = keyRule;
+      keyRule();
+      if (!modelDraft) defaultForm.querySelector("input").focus();
       defaultForm.onsubmit = async (event) => {
         event.preventDefault();
-        const button = $("button[type=submit]", defaultForm);
-        button.disabled = true;
+        const button = $("button.primary", defaultForm);
+        button.disabled = true; button.textContent = "测试中…";
         try {
           await api("/api/admin/settings", { method: "POST", body: { default_model: Object.fromEntries(new FormData(defaultForm)) } });
-          defaultForm.elements.api_key.value = "";
-          defaultForm.removeAttribute("data-default-model");
+          state.adminEdit = null;
+          defaultForm.removeAttribute("data-default-model");  // the refresh must not keep it as a draft
           state.settings = null;
-          toast("默认模型已保存，新任务生效");
+          toast("已测试并保存，新任务生效");
           if (state.view === "#/admin" && state.adminTab === tab) await VIEWS.admin(true, tab);
-        } catch (e) { toast(e.message); }
-        finally { button.disabled = false; }
+        } catch (e) { toast(e.message); button.disabled = false; button.textContent = "测试并保存"; }
       };
     }
+    on("[data-default-edit]", () => {
+      state.adminEdit = state.adminEdit?.kind === "default-model" ? null : { kind: "default-model" };
+      VIEWS.admin(true, tab);
+    });
+    on("[data-default-cancel]", () => {
+      state.adminEdit = null;
+      defaultForm?.removeAttribute("data-default-model");
+      VIEWS.admin(true, tab);
+    });
+    on("[data-default-test]", async (el) => {
+      const chip = $("[data-default-health]", page);
+      el.disabled = true; chip.className = "health busy"; chip.textContent = "测试中";
+      try { const r = await api("/api/admin/default-model/test", { method: "POST" }); toast(r.health === "ok" ? "连接正常" : r.message); }
+      catch (e) { toast(e.message); }
+      VIEWS.admin(true, tab);
+    });
+    on("[data-default-reset]", () => { state.adminEdit = null; state.settings = null; act("/api/admin/settings", { default_model: null }, "已恢复内置默认模型"); });
     on("[data-invite]", async () => {
       try { const { code } = await api("/api/admin/invites", { method: "POST", body: { days: 7 } }); navigator.clipboard?.writeText(code).catch(() => {}); toast(`邀请码 ${code} 已复制`); VIEWS.admin(true, tab); }
       catch (e) { toast(e.message); }
@@ -935,7 +973,7 @@ function renderModels(head, models, editing = null, again = true) {
     if (editing === m.id) return form(m);
     const [cls, label] = HEALTH[m.health] || ["", "未测试"];
     return `<div class="model ai ${m.active ? "on" : ""}" data-id="${esc(m.id)}">
-      <span class="m1"><b>${esc(m.provider || "未命名服务")}</b>${m.deletable ? "" : '<span class="pill">内置</span>'}
+      <span class="m1"><b>${esc(m.provider || "未命名服务")}</b>${m.deletable ? "" : `<span class="pill">${session.mode === "hosted" ? "管理员提供" : "内置"}</span>`}
         <small>${esc(m.model)} · ${esc(host(m.base_url))} · ${esc(m.key_hint)}</small></span>
       <span class="health ${cls}" title="${esc(m.health_message)}">${label}</span>
       <span class="row_btns">${m.active ? '<span class="in_use">使用中</span>' : '<button class="btn small primary" data-activate>改用</button>'}
@@ -943,7 +981,7 @@ function renderModels(head, models, editing = null, again = true) {
   };
   quiet = again;
   setPage(`${head}<div class="section"><h3>${PHONE.matches ? "" : "AI 模型"}</h3><button class="link" data-add>＋ 添加模型</button></div>
-    ${editing === "new" ? form(null) : ""}<div class="models">${models.map(row).join("")}</div>`);
+    ${editing === "new" ? form(null) : ""}<div class="models">${models.map(row).join("") || (editing === "new" ? "" : '<div class="model plain"><span class="m1"><small class="sans">还没有可用的模型，点「＋ 添加模型」填写自己的服务</small></span></div>')}</div>`);
   quiet = false;
   const reload = async (edit = null) => {
     try { state.settings = await api("/api/settings"); renderModels(head, state.settings.models, edit); } catch (e) { toast(e.message); }

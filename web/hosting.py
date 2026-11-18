@@ -16,7 +16,7 @@ import secrets
 import signal
 import threading
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from http.cookies import SimpleCookie
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -28,7 +28,7 @@ from core.log import Logger
 from mooc.oauth_login import SSO_AUTH_URL, SSO_SOURCE
 from zhs.memory import DatabaseAnswerMemory
 from ai.memory import MoocDatabaseAnswerMemory
-from ai.client import AIConfig
+from ai.client import AIClient, AIConfig, AIError
 from ai.defaults import DEFAULT_PROVIDER_NAME, default_config
 from core.settings import SettingsError, SettingsStore
 from web.accounts import AccountError, Accounts, Sessions, Throttle
@@ -59,10 +59,11 @@ class EncryptedSettingsStore(SettingsStore):
     directory fails authentication instead of handing over that account.
     """
 
-    def __init__(self, directory, key, owner, *, default_model=None):
+    def __init__(self, directory, key, owner, *, default_model=None, site_health=None):
         super().__init__(directory)
         self.key, self.owner = key, owner.encode()
         self.default_model = default_model
+        self.site_health = site_health
         self.plain_path = self.path
         self.path = self.directory / "settings.enc"
 
@@ -71,6 +72,10 @@ class EncryptedSettingsStore(SettingsStore):
         if self.default_model is not None:
             self.ensure_default_model(self.default_model())
         return super().ai_profiles()
+
+    def ai_health(self, config):
+        # The admin's test of the site default counts for everyone until the user tests it themselves.
+        return super().ai_health(config) or (self.site_health(config) if self.site_health else {})
 
     def _read(self):
         if not self.path.exists():
@@ -161,7 +166,8 @@ class Hub:
             if app is None:
                 directory = self.data / "users" / uid
                 directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-                store = EncryptedSettingsStore(directory, self.key, uid, default_model=self.default_model)
+                store = EncryptedSettingsStore(directory, self.key, uid, default_model=self.default_model,
+                                               site_health=self.default_model_health)
                 store.ensure_default_model(self.default_model())
                 app = Studia(store, reports_dir=directory / "ai_results", memory=self.memory, mooc_memory=self.mooc_memory,
                              oauth_url=lambda pid, uid=uid: self.oauth_url(uid, pid),
@@ -245,35 +251,84 @@ class Hub:
         saved = self.site_store.get("default_model")
         return AIConfig(**saved) if saved is not None else default_config()
 
+    def default_model_health(self, config=None):
+        config = config or self.default_model()
+        health = self.site_store.get("default_model_health")
+        if config is None or not isinstance(health, dict) or health.get("config") != SettingsStore.ai_fingerprint(config):
+            return {}
+        return health
+
+    def _record_default_health(self, config, status, message=""):
+        self.site_store.set("default_model_health", {
+            "config": SettingsStore.ai_fingerprint(config), "status": status, "message": message,
+            "checked_at": datetime.datetime.now().isoformat(timespec="seconds")})
+
+    def _check_default(self, config):
+        """Test a candidate default; returns it with the detected request format. Raises AIError."""
+        client = AIClient(replace(config))
+        try:
+            client.check_connection()
+        finally:
+            client.session.close()
+        return client.config
+
     def save_default_model(self, body):
-        fields = ("provider_name", "base_url", "model", "api_key", "api_format")
+        if body is None:  # back to the built-in default (or none, without STUDIA_DEFAULT_API_KEY)
+            with self.lock:
+                self.site_store.set("default_model", None)
+                self.site_store.set("default_model_health", None)
+            return
+        fields = ("provider_name", "base_url", "model", "api_key")
         if not isinstance(body, dict) or any(k in body and not isinstance(body[k], str) for k in fields):
             raise HttpError(400, "默认模型配置格式不正确")
+        previous = self.default_model()
+        api_key = body.get("api_key", "").strip()
+        if not api_key and previous is not None:
+            # A blank key keeps the saved one, but never sends it to a different host.
+            if urlsplit(body.get("base_url", "").strip()).hostname != urlsplit(previous.base_url).hostname:
+                raise HttpError(400, "更换服务地址时请重新填写 API Key")
+            api_key = previous.api_key
+        try:
+            config = AIConfig(base_url=body.get("base_url", ""), model=body.get("model", ""), api_key=api_key,
+                              provider_name=body.get("provider_name", "").strip() or DEFAULT_PROVIDER_NAME)
+        except ValueError as exc:
+            raise HttpError(400, str(exc)) from None
+        # Test before anyone depends on it, outside the hub lock: a slow provider must not stall other users.
+        try:
+            config = self._check_default(config)
+        except AIError as exc:
+            raise HttpError(400, "连接测试失败，没有保存：%s" % exc) from None
         with self.lock:
-            previous = self.default_model()
-            api_key = body.get("api_key", "").strip()
-            if not api_key and previous is not None:
-                # A blank key keeps the saved one, but never sends it to a different host.
-                if urlsplit(body.get("base_url", "").strip()).hostname != urlsplit(previous.base_url).hostname:
-                    raise HttpError(400, "更换服务地址时请重新填写 API Key")
-                api_key = previous.api_key
-            try:
-                config = AIConfig(
-                    base_url=body.get("base_url", ""), model=body.get("model", ""), api_key=api_key,
-                    provider_name=body.get("provider_name", "").strip() or DEFAULT_PROVIDER_NAME,
-                    api_format=body.get("api_format", "auto"))
-            except ValueError as exc:
-                raise HttpError(400, str(exc)) from None
-            # One atomic encrypted write; users resolve it when listing models or starting AI work.
+            # Users pick it up when they next list models or start AI work.
             self.site_store.set("default_model", asdict(config))
+            self._record_default_health(config, "ok")
+
+    def test_default_model(self):
+        config = self.default_model()
+        if config is None:
+            raise HttpError(400, "还没有默认模型")
+        try:
+            detected = self._check_default(config)
+        except AIError as exc:
+            self._record_default_health(config, "error", str(exc))
+            return {"health": "error", "message": str(exc)}
+        with self.lock:
+            if detected != config and self.site_store.get("default_model") is not None:
+                self.site_store.set("default_model", asdict(detected))
+            self._record_default_health(detected, "ok")
+        return {"health": "ok", "message": "连接正常"}
 
     def site_settings(self):
         config = self.default_model()
+        health = self.default_model_health(config)
         return {"max_jobs": self.default_job_limit(),
                 "zhs_parallel_study": bool(self.accounts.setting("zhs_parallel_study", False)),
-                "default_model": config and {"provider_name": config.provider_name, "base_url": config.base_url,
-                                             "model": config.model, "api_format": config.api_format,
-                                             "key_hint": key_hint(config.api_key)}}
+                "builtin_available": default_config() is not None,
+                "default_model": config and dict(
+                    provider_name=config.provider_name, base_url=config.base_url, model=config.model,
+                    key_hint=key_hint(config.api_key), health=health.get("status", ""),
+                    health_message=health.get("message", ""), checked_at=health.get("checked_at", ""),
+                    source="site" if self.site_store.get("default_model") is not None else "builtin")}
 
     def default_job_limit(self):
         return self.accounts.setting("max_jobs", MAX_JOBS)
@@ -503,6 +558,8 @@ class HostedAccess:
             return {"people": hub.all_jobs()}
         if method == "GET" and path == "/api/admin/settings":
             return hub.site_settings()
+        if method == "POST" and path == "/api/admin/default-model/test":
+            return hub.test_default_model()
         if method == "POST" and path == "/api/admin/settings":
             limit = _job_limit(body["max_jobs"]) if "max_jobs" in body else None
             if "default_model" in body:

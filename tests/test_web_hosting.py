@@ -11,6 +11,7 @@ from http.server import ThreadingHTTPServer
 from unittest.mock import Mock, patch
 
 import web.accounts
+import web.hosting
 from web.accounts import AccountError, Accounts, Sessions, Throttle
 from core.settings import SettingsError
 from web.hosting import COOKIE, EncryptedSettingsStore, HostedAccess, Hub, _key_file, export_logs, load_key, main
@@ -25,6 +26,15 @@ class HostedServerTest(unittest.TestCase):
         shared = patch.dict(os.environ, {"STUDIA_DEFAULT_API_KEY": "test-shared-key"})
         shared.start()
         self.addCleanup(shared.stop)
+        # The admin's default model is tested before it is saved: answer as a provider would.
+        self.detected, self.connect_error = "chat_completions", None
+        def check(client):
+            if self.connect_error:
+                raise web.hosting.AIError(self.connect_error)
+            client.config.api_format = self.detected
+        connection = patch("web.hosting.AIClient.check_connection", check)
+        connection.start()
+        self.addCleanup(connection.stop)
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), None)
@@ -143,13 +153,17 @@ class HostedServerTest(unittest.TestCase):
         self.assertNotIn("api_key", initial)
         form = {"provider_name": "站点服务", "base_url": "https://site.example/v1",
                 "model": "site-model", "api_key": "sk-site-private-12345678", "api_format": "responses"}
+        self.detected = "responses"
         status, result, _, _ = self.request("POST", "/api/admin/settings", {"default_model": form}, cookie=token, csrf=csrf)
         self.assertEqual(status, 200)
         self.assertEqual(result["default_model"]["key_hint"], "sk-…5678")
         self.assertNotIn(form["api_key"], json.dumps(result))
         # No intervening HTTP request: queued jobs resolve the new default themselves.
         self.assertEqual(app.store.ai_config(), AIConfig(**form))
-        self.assertEqual(app.store.ai_health(app.store.ai_config()), {})
+        # The admin's test counts for every user: nobody sees an untested default.
+        self.assertEqual(app.store.ai_health(app.store.ai_config())["status"], "ok")
+        self.assertEqual(result["default_model"]["health"], "ok")
+        self.assertEqual(result["default_model"]["source"], "site")
         self.assertEqual(other.store.ai_config(), custom)
         self.assertEqual(other.store.ai_profiles()[0].id, DEFAULT_PROFILE_ID)
         self.assertEqual(other.store.ai_profiles()[0].config, AIConfig(**form))
@@ -181,6 +195,35 @@ class HostedServerTest(unittest.TestCase):
             self.assertEqual(app.test_model(DEFAULT_PROFILE_ID)["health"], "ok")
         self.assertEqual(app.store.ai_config().api_format, "responses")
         self.assertEqual(app.store.ai_health(app.store.ai_config())["status"], "ok")
+
+    def test_default_model_is_tested_before_it_is_saved(self):
+        token, csrf = self.login("admin", "admin-password")
+        alice = self.hub.accounts.create_user("alice", "alice-password")
+        app = self.hub.app(alice)
+        before = self.hub.default_model()
+        form = {"base_url": "https://broken.example/v1", "model": "m", "api_key": "sk-broken-key"}
+        self.connect_error = "401 Unauthorized"
+        status, result, _, _ = self.request("POST", "/api/admin/settings", {"default_model": form}, cookie=token, csrf=csrf)
+        self.assertEqual(status, 400)
+        self.assertIn("401 Unauthorized", json.dumps(result, ensure_ascii=False))
+        self.assertEqual(self.hub.default_model(), before)
+        self.assertEqual(app.store.ai_config(), before)
+        # Testing the live default records the outcome for the site, and users see it.
+        status, result, _, _ = self.request("POST", "/api/admin/default-model/test", {}, cookie=token, csrf=csrf)
+        self.assertEqual((status, result["health"]), (200, "error"))
+        self.assertEqual(app.store.ai_health(app.store.ai_config())["status"], "error")
+        self.connect_error = None
+        self.assertEqual(self.request("POST", "/api/admin/default-model/test", {}, cookie=token, csrf=csrf)[1]["health"], "ok")
+        self.assertEqual(app.store.ai_health(app.store.ai_config())["status"], "ok")
+        # A saved site default can be withdrawn back to the built-in one.
+        self.assertEqual(self.request("POST", "/api/admin/settings", {"default_model": dict(form, base_url="https://ok.example/v1")},
+                                      cookie=token, csrf=csrf)[0], 200)
+        settings = self.request("GET", "/api/admin/settings", cookie=token)[1]
+        self.assertEqual((settings["default_model"]["source"], settings["builtin_available"]), ("site", True))
+        self.assertEqual(app.store.ai_config().base_url, "https://ok.example/v1")
+        status, settings, _, _ = self.request("POST", "/api/admin/settings", {"default_model": None}, cookie=token, csrf=csrf)
+        self.assertEqual((status, settings["default_model"]["source"]), (200, "builtin"))
+        self.assertEqual(app.store.ai_config(), before)
 
     def test_blank_key_is_not_sent_to_a_new_host(self):
         token, csrf = self.login("admin", "admin-password")
@@ -223,8 +266,7 @@ class HostedServerTest(unittest.TestCase):
         self.assertEqual(self.request("POST", path, {"default_model": form}, cookie=user, csrf=user_csrf)[0], 403)
         self.assertEqual(self.request("POST", path, {"default_model": form}, cookie=token)[0], 403)
         before = self.hub.default_model()
-        for invalid in (None, [], "x", {}, dict(form, model=" "), dict(form, model=12),
-                        dict(form, api_key=None), dict(form, api_format="invalid"),
+        for invalid in ([], "x", {}, dict(form, model=" "), dict(form, model=12), dict(form, api_key=None),
                         dict(form, base_url="http://example.com/v1"), dict(form, base_url="https://example.com/v1?key=secret")):
             with self.subTest(invalid=invalid):
                 self.assertEqual(self.request("POST", path, {"default_model": invalid, "max_jobs": 2}, cookie=token, csrf=csrf)[0], 400)
