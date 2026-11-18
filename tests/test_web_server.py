@@ -177,7 +177,7 @@ class WebServerTest(unittest.TestCase):
     def test_model_test_records_health_and_default_model_cannot_be_deleted(self):
         from ai.client import AIConfig
         store = self.app.store
-        store.ensure_default_model()
+        store.ensure_default_model(AIConfig("https://mochif.com/v1", "gemini-3.8-flash", "test-shared-key"))
         profile_id = store.save_ai_profile(AIConfig("https://api.example.com/v1", "m", "sk-secret-value-1234"))
         with unittest.mock.patch("web.server.AIClient") as client:
             client.return_value.check_connection.side_effect = __import__("ai.client", fromlist=["AIError"]).AIError("401")

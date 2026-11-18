@@ -170,10 +170,12 @@ class SettingsStore:
     def ensure_default_model(self, config=None):
         """Keep one locked built-in provider, migrating the earlier editable entry."""
         from ai.defaults import default_config
+        config = config or default_config()
+        if config is None:
+            return  # no built-in key configured: leave the user's models alone
         data = self._read()
         original = self._profiles(data)
         profiles = deepcopy(original)
-        config = config or default_config()
         matching = next((item for item in profiles["items"] if item["id"] == DEFAULT_PROFILE_ID), None)
         if matching is None:
             matching = next((item for item in profiles["items"]

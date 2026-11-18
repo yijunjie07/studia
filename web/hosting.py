@@ -251,10 +251,15 @@ class Hub:
             raise HttpError(400, "默认模型配置格式不正确")
         with self.lock:
             previous = self.default_model()
+            api_key = body.get("api_key", "").strip()
+            if not api_key and previous is not None:
+                # A blank key keeps the saved one, but never sends it to a different host.
+                if urlsplit(body.get("base_url", "").strip()).hostname != urlsplit(previous.base_url).hostname:
+                    raise HttpError(400, "更换服务地址时请重新填写 API Key")
+                api_key = previous.api_key
             try:
                 config = AIConfig(
-                    base_url=body.get("base_url", ""), model=body.get("model", ""),
-                    api_key=body.get("api_key", "").strip() or previous.api_key,
+                    base_url=body.get("base_url", ""), model=body.get("model", ""), api_key=api_key,
                     provider_name=body.get("provider_name", "").strip() or DEFAULT_PROVIDER_NAME,
                     api_format=body.get("api_format", "auto"))
             except ValueError as exc:
@@ -266,9 +271,9 @@ class Hub:
         config = self.default_model()
         return {"max_jobs": self.default_job_limit(),
                 "zhs_parallel_study": bool(self.accounts.setting("zhs_parallel_study", False)),
-                "default_model": {"provider_name": config.provider_name, "base_url": config.base_url,
-                                  "model": config.model, "api_format": config.api_format,
-                                  "key_hint": key_hint(config.api_key)}}
+                "default_model": config and {"provider_name": config.provider_name, "base_url": config.base_url,
+                                             "model": config.model, "api_format": config.api_format,
+                                             "key_hint": key_hint(config.api_key)}}
 
     def default_job_limit(self):
         return self.accounts.setting("max_jobs", MAX_JOBS)

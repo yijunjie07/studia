@@ -22,6 +22,9 @@ class HostedServerTest(unittest.TestCase):
         fast = patch.object(web.accounts, "ITERATIONS", 1000)
         fast.start()
         self.addCleanup(fast.stop)
+        shared = patch.dict(os.environ, {"STUDIA_DEFAULT_API_KEY": "test-shared-key"})
+        shared.start()
+        self.addCleanup(shared.stop)
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), None)
@@ -178,6 +181,35 @@ class HostedServerTest(unittest.TestCase):
             self.assertEqual(app.test_model(DEFAULT_PROFILE_ID)["health"], "ok")
         self.assertEqual(app.store.ai_config().api_format, "responses")
         self.assertEqual(app.store.ai_health(app.store.ai_config())["status"], "ok")
+
+    def test_blank_key_is_not_sent_to_a_new_host(self):
+        token, csrf = self.login("admin", "admin-password")
+        path = "/api/admin/settings"
+        before = self.hub.default_model()
+        form = {"base_url": "https://other.example/v1", "model": "m", "api_key": ""}
+        status, result, _, _ = self.request("POST", path, {"default_model": form}, cookie=token, csrf=csrf)
+        self.assertEqual(status, 400)
+        self.assertIn("API Key", result["error"] if isinstance(result, dict) else result)
+        self.assertEqual(self.hub.default_model(), before)
+        # Same host, different path and model: the saved key is kept.
+        form.update(base_url="https://mochif.com/v2", model="other")
+        self.assertEqual(self.request("POST", path, {"default_model": form}, cookie=token, csrf=csrf)[0], 200)
+        self.assertEqual(self.hub.default_model().api_key, "test-shared-key")
+
+    def test_without_shared_key_there_is_no_builtin_until_admin_sets_one(self):
+        from ai.defaults import DEFAULT_PROFILE_ID
+        token, csrf = self.login("admin", "admin-password")
+        alice = self.hub.accounts.create_user("alice", "alice-password")
+        with patch.dict(os.environ, {"STUDIA_DEFAULT_API_KEY": ""}):
+            self.assertIsNone(self.hub.app(alice).store.ai_config())
+            self.assertEqual(self.hub.app(alice).store.ai_profiles(), [])
+            self.assertIsNone(self.request("GET", "/api/admin/settings", cookie=token)[1]["default_model"])
+            form = {"base_url": "https://site.example/v1", "model": "m", "api_key": ""}
+            self.assertEqual(self.request("POST", "/api/admin/settings", {"default_model": form}, cookie=token, csrf=csrf)[0], 400)
+            form["api_key"] = "sk-site-key"
+            self.assertEqual(self.request("POST", "/api/admin/settings", {"default_model": form}, cookie=token, csrf=csrf)[0], 200)
+            profile = self.hub.app(alice).store.ai_profiles()[0]
+            self.assertEqual((profile.id, profile.config.api_key, profile.active), (DEFAULT_PROFILE_ID, "sk-site-key", True))
 
     def test_default_model_permissions_and_validation(self):
         from ai.defaults import DEFAULT_PROFILE_ID

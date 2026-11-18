@@ -19,6 +19,8 @@ services:
       STUDIA_TRUST_PROXY: ${STUDIA_TRUST_PROXY:-0}
       # 可选：主密钥。不设置时首次启动会在数据卷里生成 secret.key。
       STUDIA_SECRET_KEY: ${STUDIA_SECRET_KEY:-}
+      # 可选：内置默认供应商的 API Key。不设置时由管理员在后台配置全站默认模型。
+      STUDIA_DEFAULT_API_KEY: ${STUDIA_DEFAULT_API_KEY:-}
     volumes:
       - studia-data:/data
 

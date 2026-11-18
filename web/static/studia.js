@@ -596,7 +596,7 @@ const VIEWS = {
           || `<div class="model plain"><span class="m1"><small class="sans">还没有邀请码</small></span></div>`}</div>`;
     } else if (tab === "site") {
       const settings = data.settings;
-      const model = modelDraft || settings.default_model;
+      const model = modelDraft || settings.default_model || { api_format: "auto" };
       const kept = (name, fallback) => $(`[name="${name}"]`, page)?.value || fallback;
       state.zhsParallel = settings.zhs_parallel_study;
       body = `<div class="section"><h3>全站默认 AI 模型</h3><span class="aside">新任务生效 · 自选模型不受影响</span></div>
@@ -606,7 +606,7 @@ const VIEWS = {
             <div class="field"><label for="site-model">模型</label><input id="site-model" name="model" value="${esc(model.model)}" required></div>
             <div class="field site_model_wide"><label for="site-url">服务地址</label><input id="site-url" name="base_url" value="${esc(model.base_url)}" placeholder="https://api.example.com/v1" required></div>
             <div class="field"><label for="site-format">接口格式</label><select id="site-format" name="api_format">${[["auto", "自动识别"], ["chat_completions", "Chat Completions"], ["responses", "Responses"]].map(([value, label]) => `<option value="${value}" ${model.api_format === value ? "selected" : ""}>${label}</option>`).join("")}</select></div>
-            <div class="field site_model_wide"><label for="site-key">API Key</label><input id="site-key" name="api_key" type="password" autocomplete="off" placeholder="留空不修改（${esc(settings.default_model.key_hint)}）"></div>
+            <div class="field site_model_wide"><label for="site-key">API Key</label><input id="site-key" name="api_key" type="password" autocomplete="off" placeholder="${settings.default_model ? `留空不修改（${esc(settings.default_model.key_hint)}）` : "必填"}"></div>
           </div>
           <div class="site_model_foot"><small>密钥只保存在服务端，不会显示完整内容</small><button type="submit" class="btn primary">保存默认模型</button></div>
         </form>

@@ -90,7 +90,7 @@ uv run StartWork.py --web
 
 ## AI 模型
 
-内置一个默认供应商，不填 Key 就能用，用的是项目的共享额度。想用自己的服务，在设置里添加模型，填接口地址（如 `https://服务商地址/v1`）、模型名和 API Key。支持 OpenAI 兼容的 Chat Completions 和 Responses 接口，会自动识别。
+代码里不再附带共享 API Key。设置环境变量 `STUDIA_DEFAULT_API_KEY` 后会出现一个内置的默认供应商；服务器模式下管理员也可以在后台配置全站默认模型。想用自己的服务，在设置里添加模型，填接口地址（如 `https://服务商地址/v1`）、模型名和 API Key。支持 OpenAI 兼容的 Chat Completions 和 Responses 接口，会自动识别。
 
 智慧树智慧课程作业里有图片题，要用能看图的模型。发给 AI 的是题目和选项（智慧树验证码会发截图），不带平台登录信息。
 
