@@ -785,8 +785,10 @@ const VIEWS = {
       // What is running and what is left to answer are separate facts: show both, never one hiding the other.
       const status = job ? `<span class="live">${WAIT_WORD[job.state] || LIVE_WORD[job.title] || "进行中"}</span>`
         : last?.state === "waiting" ? '<span class="live waiting">等你操作</span>' : "";
+      // The history keeps only the latest jobs; lastRun remembers every course.
+      const ran = last ? last.ended || last.started : state.lastRun?.[key(p.id, c.id)];
       const papers = open ? `<span class="todo">${open} 份未作答</span>` : state.paperErrors[key(p.id, c.id)] ? "试卷没读到" : "";
-      const line = [status, papers].filter(Boolean).join('<span class="sep">·</span>') || (last ? `上次 ${ago(last.ended || last.started)}` : learnt(c));
+      const line = [status, papers].filter(Boolean).join('<span class="sep">·</span>') || (ran ? `上次 ${ago(ran)}` : learnt(c));
       return `<button class="course_card" style="--c:${inkOf(c)}" data-go="#/course/${p.id}/${c.id}">${coverHtml(p, c)}
         <span class="cc_body"><b>${esc(c.name)}</b><small>${esc(c.type || p.short)}</small>
           <span class="cc_bar"><span class="bar"><i style="width:${Number(c.progress) || 0}%"></i></span><span class="mono">${c.progress == null ? "—" : `${esc(c.progress)}%`}</span></span>
@@ -1720,6 +1722,7 @@ async function refreshState(catchUp = false) {
     const before = state.platforms.length ? new Set(state.platforms.filter((p) => p.logged_in).map((p) => p.id)) : null;
     state.platforms = data.platforms;
     state.history = data.history || [];
+    state.lastRun = data.last || {};
     state.jobLimit = data.job_limit || state.jobLimit;
     state.zhsParallel = Boolean(data.zhs_parallel);
     const live = data.jobs || [];

@@ -183,6 +183,16 @@ class ResumeJobsTest(unittest.TestCase):
         drain(5)
         self.assertEqual(self.app().history[0]["state"], "done")
 
+    def test_a_course_keeps_its_last_run_after_leaving_the_history(self):
+        app = self.app()
+        for course in ["ai-old"] + ["ai-c%d" % i for i in range(20)]:
+            app._record({"type": "study", "platform": "zhs", "course": course}, "stopped", "")
+        with app.lock:
+            app._save()
+        restarted = self.app().state()
+        self.assertNotIn("ai-old", [j["course"] for j in restarted["history"]])
+        self.assertIn("zhs:ai-old", restarted["last"])
+
 
 if __name__ == "__main__":
     unittest.main()

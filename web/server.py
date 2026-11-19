@@ -174,7 +174,13 @@ class Studia:
         # The account name in hosted mode, shown in runtime-log lines; None locally.
         self.owner = None
         self.jobs = {}
-        self.history = self._saved().get("history", [])[:HISTORY]
+        saved = self._saved()
+        self.history = saved.get("history", [])[:HISTORY]
+        # When each course last ran ("platform:course" -> time). The history keeps only the last HISTORY jobs
+        # across every course, so a course left alone a while lost its "上次" line on the course cards.
+        self.last = saved.get("last") or {}
+        for job in self.history:  # newest first; fills it in from files written before it existed
+            self.last.setdefault("%s:%s" % (job["platform"], job["course"]), job.get("ended") or job.get("started"))
         # Set while the service shuts down: what was running stays on disk for resume().
         self.closing = False
         self.subscribers = set()
@@ -229,7 +235,7 @@ class Studia:
 
     def state(self):
         return {"platforms": [p.public(self.logged_in(p), *self.passport(p)) for p in self.platforms.values()],
-                "jobs": self._running(), "history": [_job_public(j) for j in self.history],
+                "jobs": self._running(), "history": [_job_public(j) for j in self.history], "last": dict(self.last),
                 "job_limit": self.job_limit(), "zhs_parallel": self.zhs_parallel()}
 
     def client(self, platform):
@@ -952,8 +958,7 @@ class Studia:
                 if self.closing and state == "stopped":
                     summary = INTERRUPTED
                 job.update(state=state, summary=summary, ended=time.time())
-                self.history.insert(0, job)
-                del self.history[HISTORY:]
+                self._remember(job)
                 self.jobs.pop(job["id"], None)
                 self._save()
             self.publish(dict(_job_public(job), type="job"))
@@ -987,7 +992,7 @@ class Studia:
                   # In queue order, so a restart starts them again in the order an administrator left them.
                   for j in sorted(self.jobs.values(), key=lambda j: (j["state"] != "running", _order(j)))]
         data = {"stopped_at": stopped_at, "saved_at": now, "active": active,
-                "history": [_job_public(j) for j in self.history]}
+                "history": [_job_public(j) for j in self.history], "last": self.last}
         path = self._jobs_path()
         if path is None:
             return
@@ -1068,9 +1073,14 @@ class Studia:
                "platform": entry.get("platform"), "course_name": entry.get("course_name") or "课程",
                "state": state, "summary": summary, "started": now, "ended": now, "lines": [], "progress": {}}
         with self.lock:
-            self.history.insert(0, job)
-            del self.history[HISTORY:]
+            self._remember(job)
         self.publish(dict(_job_public(job), type="job"))
+
+    def _remember(self, job):
+        """Put an ended job at the top of the history and note when its course last ran. Call with self.lock held."""
+        self.history.insert(0, job)
+        del self.history[HISTORY:]
+        self.last["%s:%s" % (job["platform"], job["course"])] = job["ended"]
 
     def _ai(self, cancel_message, timeout=0):
         """An AI client for the configured model. With a timeout, each call may take at least that long
