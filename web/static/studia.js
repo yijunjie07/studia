@@ -201,6 +201,8 @@ function platformStatus(p) {
   return state.courses[p.id] ? `已登录 · ${state.courses[p.id].length} 门课程` : "已登录";
 }
 const PHONE = matchMedia("(max-width: 860px)");
+// Studia's history keeps only the last few jobs, and courses learnt on the platform never enter it: go by the platform's progress.
+const learnt = (c) => Number(c.progress) >= 100 ? "已学完" : Number(c.progress) > 0 ? "还没学完" : "还没学过";
 function homeOf(p) {
   if (!p.logged_in) return `#/login/${p.id}`;
   // Phones open the course list (the 课程 tab); the desktop sidebar already lists them, so open the first course.
@@ -784,7 +786,7 @@ const VIEWS = {
       const status = job ? `<span class="live">${WAIT_WORD[job.state] || LIVE_WORD[job.title] || "进行中"}</span>`
         : last?.state === "waiting" ? '<span class="live waiting">等你操作</span>' : "";
       const papers = open ? `<span class="todo">${open} 份未作答</span>` : state.paperErrors[key(p.id, c.id)] ? "试卷没读到" : "";
-      const line = [status, papers].filter(Boolean).join('<span class="sep">·</span>') || (last ? `上次 ${ago(last.ended || last.started)}` : "还没学过");
+      const line = [status, papers].filter(Boolean).join('<span class="sep">·</span>') || (last ? `上次 ${ago(last.ended || last.started)}` : learnt(c));
       return `<button class="course_card" style="--c:${inkOf(c)}" data-go="#/course/${p.id}/${c.id}">${coverHtml(p, c)}
         <span class="cc_body"><b>${esc(c.name)}</b><small>${esc(c.type || p.short)}</small>
           <span class="cc_bar"><span class="bar"><i style="width:${Number(c.progress) || 0}%"></i></span><span class="mono">${c.progress == null ? "—" : `${esc(c.progress)}%`}</span></span>
