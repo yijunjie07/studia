@@ -218,9 +218,9 @@ class Studia:
         """The on_progress callback for one job's business code."""
         return lambda event: self.publish(dict(asdict(event), type="progress", job=job["id"]))
 
-    def progress_event(self, job, kind, name, *, total=None, status="", unit="项"):
+    def progress_event(self, job, kind, name, *, total=None, status="", unit="项", **extra):
         self.publish({"type": "progress", "kind": kind, "name": name, "total": total,
-                      "status": status, "unit": unit, "completed": None, "job": job["id"]})
+                      "status": status, "unit": unit, "completed": None, "job": job["id"], **extra})
 
     # ------------------------------------------------------------ state
 
@@ -1134,19 +1134,22 @@ class Studia:
             if platform.id == "zhs":
                 runner = ZHSAnswerRunner(
                     self.client(platform), ai, auto_submit=auto_submit, on_progress=on_progress,
-                    cancel_event=cancel, max_workers=workers,
+                    cancel_event=cancel, max_workers=workers, fast=self.store.answer_pace() == "fast",
                     memory=self.memory or AnswerMemory(Path(self.store.path).parent / "zhs-answers.json"))
             else:
                 # No manual-answer or confirm callbacks: unanswerable papers stay unsubmitted.
                 runner = AnswerRunner(ExamAPI(self.client(platform)), ai, output_dir=self.reports_dir,
                                       auto_submit=auto_submit, on_progress=on_progress, max_workers=workers,
                                       memory=self.mooc_memory or MoocAnswerMemory(Path(self.store.path).parent / "mooc-answers.json"))
-            self.progress_event(job, "begin", "AI 答题", total=len(selected), unit="份试卷")
+            names = [(item.get("name") if platform.id == "zhs" else paper_display_name(item)) or "试卷" for _, item, _ in selected]
+            # The papers up front, so the page can draw the whole answer sheet before the first one is done.
+            self.progress_event(job, "begin", "AI 答题", total=len(selected), unit="份试卷",
+                                papers=[{"id": _task_id(platform.id, item, category), "name": name}
+                                        for (_, item, category), name in zip(selected, names)])
             done = 0
-            for course, item, category in selected:
+            for (course, item, category), name in zip(selected, names):
                 if cancel.is_set():
                     break
-                name = (item.get("name") if platform.id == "zhs" else paper_display_name(item)) or "试卷"
                 try:
                     result = runner.run_paper(course, item, category)
                 except (CaptchaRequired, StudyTimeLimit):
@@ -1343,7 +1346,7 @@ class Studia:
                            "base_url": config.base_url, "key_hint": key_hint(config.api_key), "active": profile.active,
                            "health": health.get("status") or "", "health_message": health.get("message") or "",
                            "deletable": profile.id != DEFAULT_PROFILE_ID})
-        return {"models": models, "concurrency": self.store.concurrency()}
+        return {"models": models, "concurrency": self.store.concurrency(), "pace": self.store.answer_pace()}
 
     def _profile(self, profile_id):
         for profile in self.store.ai_profiles():
@@ -1408,6 +1411,13 @@ class Studia:
     def save_concurrency(self, body):
         try:
             self.store.save_concurrency(body.get("ai"), body.get("study"))
+        except SettingsError as exc:
+            raise HttpError(400, str(exc))
+        return {}
+
+    def save_pace(self, body):
+        try:
+            self.store.save_answer_pace(body.get("pace"))
         except SettingsError as exc:
             raise HttpError(400, str(exc))
         return {}
@@ -1581,11 +1591,16 @@ def _track(progress, event):
     overall = progress.get("overall")
     if kind == "begin":
         progress["overall"] = {"name": name, "total": event.get("total") or 0, "done": 0, "unit": event.get("unit")}
+        if event.get("papers"):  # AI 答题: the answer sheet's rows
+            progress["overall"].update(papers=event["papers"], results=[])
     elif kind == "add_total" and overall:
         overall["total"] += event.get("total") or 0
     elif kind == "result" and overall:
         overall["done"] += 1
-        progress.pop("sub", None)
+        sub = progress.pop("sub", None) or {}
+        if "results" in overall:  # how each paper ended, with the questions it got through
+            overall["results"].append({"name": name, "status": event.get("status"),
+                                       "done": sub.get("done") or 0, "total": sub.get("total") or 0})
     elif kind in ("resources", "questions"):
         unit = event.get("unit")
         progress["sub"] = {"name": name, "done": event.get("completed") or 0, "total": event.get("total") or 0,
@@ -1671,6 +1686,7 @@ ROUTES = [
     ("POST", r"/api/settings/models/([\w-]+)/delete", lambda app, m, q, b: app.delete_model(m[1])),
     ("POST", r"/api/settings/models/([\w-]+)/test", lambda app, m, q, b: app.test_model(m[1])),
     ("POST", r"/api/settings/concurrency", lambda app, m, q, b: app.save_concurrency(b)),
+    ("POST", r"/api/settings/pace", lambda app, m, q, b: app.save_pace(b)),
 ]
 
 

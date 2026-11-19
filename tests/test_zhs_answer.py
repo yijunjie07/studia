@@ -1,5 +1,6 @@
 import random
 import threading
+import time
 import unittest
 
 from mooc.export_questions import paper_exam_id
@@ -305,6 +306,36 @@ class PacingTest(unittest.TestCase):
         self.assertTrue(all(0.5 <= value <= 1 for value in sleeps[:3]))
         self.assertTrue(all(1 <= value <= 2 for value in sleeps[3:]))
 
+    def test_fast_pace_quarters_the_pauses(self):
+        questions, sheet = numbered_questions(4)
+        sleeps = []
+        result = runner(FakeClient(questions, sheet=sheet), ConcurrentFakeAI(), max_workers=2, fast=True,
+                        sleep=sleeps.append, rng=random.Random(0)).run_paper(COURSE, homework_item(), 1)
+        self.assertEqual(result["status"], "submitted", result)
+        self.assertEqual(len(sleeps), 6)
+        self.assertTrue(all(0.125 <= value <= 0.25 for value in sleeps[:3]))
+        self.assertTrue(all(0.25 <= value <= 0.5 for value in sleeps[3:]))
+
+    def test_ai_starts_while_the_rest_are_still_being_read(self):
+        questions, sheet = numbered_questions(3)
+        answering = threading.Event()
+
+        class SlowLastRead(FakeClient):
+            def exam_question(self, test_id, paper_id, question_id, version):
+                if question_id == 3:  # the last read waits until the AI has picked up an earlier question
+                    self.overlapped = answering.wait(2)
+                return super().exam_question(test_id, paper_id, question_id, version)
+
+        class AI:
+            def answer(self, question):
+                answering.set()
+                return {"answer": "B", "explanation": ""}
+
+        client = SlowLastRead(questions, sheet=sheet)
+        result = runner(client, AI(), max_workers=2).run_paper(COURSE, homework_item(), 1)
+        self.assertEqual(result["status"], "submitted", result)
+        self.assertTrue(client.overlapped)
+
 
 class LogTest(unittest.TestCase):
     def test_answer_logs_progress(self):
@@ -466,6 +497,24 @@ class CatalogTest(unittest.TestCase):
                 return self.tasks
 
         return CatalogClient()
+
+    def test_knowledge_points_are_read_side_by_side_and_listed_in_order(self):
+        client = self.make_client()
+        second_read = threading.Event()
+        read = client.ai_homework_info
+
+        def info(course_id, class_id, knowledge_id):
+            if knowledge_id == 1:
+                second_read.wait(2)  # finishes only once the second point is being read too
+            else:
+                second_read.set()
+            return read(course_id, class_id, knowledge_id)
+
+        client.ai_homework_info = info
+        start = time.monotonic()
+        names = [item["name"] for _, item, category in catalog(client, COURSE) if category == 1]
+        self.assertLess(time.monotonic() - start, 1.5)
+        self.assertEqual(names, ["知识点一 · 作业"])  # 知识点二 has no paper id and is skipped
 
     def test_entries(self):
         entries = catalog(self.make_client(), COURSE)

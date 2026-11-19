@@ -100,7 +100,7 @@ const WAIT_WORD = { queued: "排队中", paused: "已暂停" };
 function blocker(pid, cid, type) {
   for (const o of state.jobs) {
     if (GROUP[jobType(o)] !== GROUP[type] || o.platform !== pid) continue;
-    if (o.course === cid) return o.state === "running" ? `正在${o.title}…` : `${WAIT_WORD[o.state]}（${o.title}）`;
+    if (o.course === cid) return o.state === "running" ? `${LIVE_WORD[o.title] || "进行中"}…` : `${WAIT_WORD[o.state]}（${o.title}）`;
     if (pid === "zhs" && GROUP[type] === "learn" && !state.zhsParallel) return `智慧树一次只能播一个视频，等「${o.course_name}」的${o.title}结束`;
   }
   return "";
@@ -430,7 +430,7 @@ function slotCard(j, owner) {
   const run = owner ? j.progress || {} : runOf(j.id), starting = j.state !== "running", { pct, label } = progressOf(run);
   return `<div class="slot" data-slot="${esc(j.id)}" ${starting || !learns(j) ? "data-locked" : ""} style="--c:${inkOf({ id: j.course })}">
     <span class="slot_head"><b>${esc(j.course_name)}</b>${DOTS(j)}</span>
-    <small>${esc(j.title)} · ${esc(starting ? "准备中…" : run.unit?.name || run.detail || "准备中…")}</small>
+    <small>${esc(j.title)} · ${esc(starting ? "准备中…" : nowText(j, run))}</small>
     <span class="slot_foot"><span class="bar"><i style="width:${pct ?? 0}%"></i></span><span class="mono">${esc(label || duration(Date.now() / 1000 - (j.running_since || j.started)))}</span></span>
   </div>`;
 }
@@ -911,13 +911,30 @@ let stepTimer = 0;
 function paintSettings(tab, head, data, again) {
   if (tab === "study") {
     // Small numbers: tap − / +, saved as soon as the taps stop. No keyboard, no save button.
+    // The pace takes effect on its own tap; 快速 asks twice, since it risks the platform's slider check.
+    const fast = data.pace === "fast";
     const row = (k, label, note) => `<div class="model plain stepper_row"><span class="m1"><b>${label}</b><small class="sans">${note}</small></span>
       <span class="stepper"><button class="btn small" data-step="${k}" data-d="-1" aria-label="减少" ${data.concurrency[k] <= 1 ? "disabled" : ""}>−</button>
         <output>${data.concurrency[k]}</output><button class="btn small" data-step="${k}" data-d="1" aria-label="增加" ${data.concurrency[k] >= 8 ? "disabled" : ""}>＋</button></span></div>`;
     quiet = again;
     setPage(`${head}<div class="section"><h3>并发数量</h3><span class="aside">1–8</span></div>
-      <div class="models">${row("ai", "AI 答题", "同时作答的题数")}${row("study", "自动学习", "同时学的资源数，智慧树固定 1 个")}</div>`);
+      <div class="models">${row("ai", "AI 答题", "同时作答的题数")}${row("study", "自动学习", "同时学的资源数，智慧树固定 1 个")}</div>
+      <div class="section"><h3>答题节奏</h3><span class="aside">只影响智慧树</span></div>
+      <div class="models"><div class="model plain stepper_row"><span class="m1"><b>${fast ? "快速" : "稳妥"}</b><small class="sans">${fast
+        ? "拿题、保存答案之间只停 0.1–0.5 秒，快很多，但更可能触发滑块验证"
+        : "拿题、保存答案之间像人一样停 0.5–2 秒，最不容易触发滑块验证"}</small></span>
+        <span class="row_btns"><button class="btn small" data-pace="steady" aria-pressed="${!fast}">稳妥</button><button class="btn small" data-pace="fast" aria-pressed="${fast}" ${fast ? "" : 'data-confirm="确认用快速"'}>快速</button></span></div></div>`);
     quiet = false;
+    page.querySelectorAll("[data-pace]").forEach((el) => (el.onclick = async () => {
+      const pace = el.dataset.pace;
+      if ((state.settings.pace || "steady") === pace) return;
+      try {
+        await api("/api/settings/pace", { method: "POST", body: { pace } });
+        state.settings.pace = pace;
+        toast(`已改为${pace === "fast" ? "快速" : "稳妥"}，下次答题生效`);
+      } catch (e) { toast(e.message); }
+      paintSettings(tab, head, state.settings, true);
+    }));
     page.querySelectorAll("[data-step]").forEach((el) => (el.onclick = () => {
       const c = state.settings.concurrency, k = el.dataset.step;
       c[k] = Math.max(1, Math.min(8, c[k] + Number(el.dataset.d)));
@@ -1115,7 +1132,7 @@ function qaBody(p, c) {
     : qaSoon(p) ? `<div class="model plain qa_row qa_rescan"><span class="m1"><b>问答区还能用 <span data-qa-left="${p.id}">${hoursLeft(qaLeft(p))}</span></b>
       <small class="sans">到点要重新扫码，现在扫能再用 8 小时</small></span>
     <span class="row_btns"><button class="btn small" data-go="${rescanLink(p)}">现在扫码</button></span></div>` : "";
-  return `<div class="section"><h3>问答互动</h3></div><div class="models qa_board">${head}${rescan}<div class="qa_lanes">${ask}${answer}</div>
+  return `<div class="models qa_board">${head}${rescan}<div class="qa_lanes">${ask}${answer}</div>
     <div class="qa_rule"><header><b>获得至少 5 个有效回答的提问</b><span class="qa_num">${esc(q?.qualified ?? "—")}<span class="of"> 条</span></span></header></div>${drafts}${peers}</div>
     <div class="section"><h3>已发布</h3></div>${list}`;
 }
@@ -1231,14 +1248,20 @@ function renderCourse(p, c, tab, full = false) {
   } else {
     const selected = selectedOf(k);
     for (const id of selected) if (!papers.some((x) => x.id === id && x.available)) selected.delete(id);
+    // While this course is being answered, each paper shows how far the job got with it instead of a box to tick.
+    const job = state.jobs.find((j) => j.platform === p.id && j.course === c.id && isAnswer(j) && j.state === "running");
+    const sheet = job ? answerRows(runOf(job.id)) : null;
+    const rowOf = (x) => sheet?.find((r) => (r.id != null ? String(r.id) === String(x.id) : r.name === x.name));
     const row = (x) => {
-      const on = selected.has(x.id);
-      const pill = !x.available ? ""
+      const r = rowOf(x), on = sheet ? Boolean(r) : selected.has(x.id);
+      const pill = r ? (r.state === "running" ? `<span class="pq"><span class="cells">${cellsHtml(questionStates(r))}</span><small>${esc(r.stage)}</small></span>`
+          : `<span class="state ${PAPER_TONE[r.state] || "stopped"}">${esc(paperWord(r.state))}</span>`)
+        : sheet || !x.available ? ""
         : x.redo_left != null ? `<span class="pill blue">可重做 · 剩 ${esc(x.redo_left)} 次</span>`
         : x.redo ? '<span class="pill blue">可重做</span>'
         : x.done ? `<span class="pill">已提交</span>` : "";
       const note = x.reason || (x.redo_left != null ? "重做会覆盖当前成绩" : x.hint) || (x.available ? x.status : "");
-      return `<button class="paper ${on ? "on" : ""} ${x.available ? "" : "off"}" data-paper="${esc(x.id)}">
+      return `<button class="paper ${on ? "on" : ""} ${r?.state === "running" ? "now" : ""} ${x.available && !(sheet && !r) ? "" : "off"}" data-paper="${esc(x.id)}">
         <span class="box">${on ? ICON.tick : ""}</span><span class="stamp ${STAMP[x.category] || ""}">${esc((x.category || "作")[0])}</span>
         <span class="pname"><b>${esc(x.name)}</b><small title="${esc(x.hint || note)}">${esc(note)}</small></span>
         <span>${pill}</span>
@@ -1252,10 +1275,11 @@ function renderCourse(p, c, tab, full = false) {
       const list = papers.filter((x) => x.category === label), open = list.filter((x) => x.available);
       const all = open.length && open.every((x) => selected.has(x.id));
       return `<div class="section"><h3>${esc(label)}</h3><span class="aside">${open.length} / ${list.length} 份可选</span>
-          ${open.length > 1 ? `<button class="link" data-pick-all="${esc(label)}">${all ? "取消全选" : "全选"}</button>` : ""}</div>
+          ${open.length > 1 && !sheet ? `<button class="link" data-pick-all="${esc(label)}">${all ? "取消全选" : "全选"}</button>` : ""}</div>
         <div class="papers">${list.map(row).join("")}</div>`;
     }).join("") || `<div class="empty">这门课没有作业、测验或考试</div>`;
-    if (categories.length) body += `<div class="dock"><span class="info">${answerBlock ? esc(answerBlock) : n ? `已选 <b>${n}</b> 份 · 交卷前会再确认一次` : "勾选要作答的试卷"}</span>
+    // While it runs, the player bar below carries the progress and the stop button.
+    if (categories.length && !sheet) body += `<div class="dock"><span class="info">${answerBlock ? esc(answerBlock) : n ? `已选 <b>${n}</b> 份 · 交卷前会再确认一次` : "勾选要作答的试卷"}</span>
       <button class="btn" data-save ${n && !answerBlock ? "" : "disabled"}>仅生成答案</button>
       <button class="btn primary" data-submit data-confirm="再按一次，交 ${n} 份卷" ${n && !answerBlock ? "" : "disabled"}>AI 作答并交卷</button></div>`;
   }
@@ -1296,7 +1320,7 @@ function renderCourse(p, c, tab, full = false) {
   if (tab === "qa") loadQaPosts(p, c);
   page.querySelectorAll("[data-paper]").forEach((el) => (el.onclick = () => {
     const x = papers.find((y) => String(y.id) === el.dataset.paper);
-    if (!x.available) { toast(x.reason || "这份试卷暂不可选"); return; }
+    if (!x.available || answerBlock) { toast(answerBlock || x.reason || "这份试卷暂不可选"); return; }
     const selected = selectedOf(k);
     selected.has(x.id) ? selected.delete(x.id) : selected.add(x.id);
     renderCourse(p, c, tab);
@@ -1342,13 +1366,13 @@ async function loadPapers(p, c) {
 const LOG_LEVEL = { error: ["err", "错误"], warn: ["warn", "提醒"] };
 // Lines inside one course's view need not repeat the course name ("课程 · 开始播放：…").
 const bare = (text, course) => course && text.startsWith(course) ? text.slice(course.length).replace(/^\s*[·：:]\s*/, "") || text : text;
-function logHtml(lines, filter = "all", course = "") {
+function logHtml(lines, filter = "all", course = "", live = false) {
   const shown = lines.filter((l) => filter === "all" || (filter === "warn" ? l.level : l.level === "error")).slice(0, 120);
   return shown.map((l, i) => {
     const [cls, lv] = LOG_LEVEL[l.level] || (l.done ? ["ok", "完成"] : ["", ""]);
     const fresh = i === 0 && l.at && Date.now() - l.at < 700 ? " fresh" : "";
     return `<div class="line ${cls}${fresh}"><time>${esc(l.time)}</time><i class="lv" ${lv ? `title="${lv}"` : ""}></i><span class="msg">${esc(bare(l.text, course))}</span></div>`;
-  }).join("") || `<div class="line none">${lines.length ? "没有符合条件的日志" : "等待第一条进度…"}</div>`;
+  }).join("") || `<div class="line none">${lines.length ? "没有符合条件的日志" : live ? "等待第一条进度…" : "没有日志"}</div>`;
 }
 
 function progressOf(run) {
@@ -1356,21 +1380,72 @@ function progressOf(run) {
   if (all) {
     const pct = Math.min(100, Math.round(((all.done + (sub ? sub.done / sub.total : 0)) / all.total) * 100));
     const unit = (all.unit || "").replace(/试卷|课程/, "");
-    return { pct, label: `${Math.min(all.done + 1, all.total)}/${all.total} ${unit}${sub ? ` · ${sub.done}/${sub.total} ${sub.unit || ""}` : ""}`.trim() };
+    return { pct, label: `第 ${Math.min(all.done + 1, all.total)}/${all.total} ${unit}${sub ? ` · ${sub.done}/${sub.total} ${sub.unit || ""}` : ""}`.trim() };
   }
   const part = sub || (run.overall?.total ? run.overall : null);
   if (!part) return { pct: null, label: "" };
   return { pct: Math.min(100, Math.round((part.done / part.total) * 100)), label: `${part.done}/${part.total} ${part.unit || ""}`.trim() };
 }
 
+const cellsHtml = (states) => states.map((s) => `<i class="cell ${s}"></i>`).join("");
+// The player's strip: fourteen cells around the one being worked on.
+function miniCells(states, at) {
+  if (!states.length) return "";
+  const start = Math.max(0, Math.min(at - 8, states.length - 14));
+  return `<span class="mini">${cellsHtml(states.slice(start, start + 14))}</span>`;
+}
 function recentCells(k) {
   const all = (unitsOf(k) || []).flatMap((ch) => ch.units);
-  if (!all.length) return "";
   let at = all.findIndex((u) => u.state === "running");
   if (at < 0) at = all.findIndex((u) => u.state === "queued");
   if (at < 0) at = all.length - 1;
-  const start = Math.max(0, Math.min(at - 8, all.length - 14));
-  return `<span class="mini">${all.slice(start, start + 14).map((u) => `<i class="cell ${u.state}"></i>`).join("")}</span>`;
+  return miniCells(all.map((u) => u.state), at);
+}
+
+/* AI 答题 drawn as an answer sheet: a row per paper, a cell per question. The papers and how each one ended
+   come from the job's progress (web/server.py _track: overall.papers, overall.results), the paper being
+   answered from its live question count. A job without the paper list names its papers as they come. */
+const isAnswer = (j) => jobType(j) === "answer";
+const PAPER_TONE = { submitted: "done", saved: "done", preview: "done", success: "done", running: "running",
+  error: "error", ai_error: "error", submission_unknown: "error", waiting: "waiting" };
+const paperWord = (s) => ({ running: "作答中", queued: "排队" })[s] || STATUS[s] || s || "";
+// The step inside the paper: MOOC names it in the question count ("第 4 题 · AI 生成"), 智慧树 in the detail ("<paper> · 保存答案 3/10").
+function answerStage(paper, run) {
+  const sub = run.sub, detail = run.detail || "";
+  if (sub?.name && sub.name !== paper) return sub.name === "已处理题目" ? "AI 作答中" : sub.name;
+  if (detail.startsWith(`${paper} · `)) return detail.slice(paper.length + 3);
+  return sub?.total ? (sub.done < sub.total ? "AI 作答中" : "整理答案") : "读取试卷";
+}
+function answerRows(run) {
+  const all = run.overall || {}, papers = all.papers || [], results = all.results || [], at = all.done || 0;
+  return Array.from({ length: Math.max(all.total || 0, papers.length, results.length) }, (_, i) => {
+    const r = results[i], id = papers[i]?.id, name = papers[i]?.name || r?.name;
+    if (r) return { id, name, state: r.status, done: r.done || 0, total: r.total || 0 };
+    if (i > at) return { id, name: name || `第 ${i + 1} 份`, state: "queued", done: 0, total: 0 };
+    // Without the list, the detail names the paper; until the next one's arrives it still names the last.
+    const guess = (run.detail || "").replace(/^(准备试卷|正在交卷|复用上一轮答案)：/, "").split(" · ")[0];
+    const paper = name || (guess !== results[i - 1]?.name && guess) || `第 ${i + 1} 份`;
+    const sub = run.sub?.total ? run.sub : { done: 0, total: 0 };
+    return { id, name: paper, state: "running", done: sub.done, total: sub.total, stage: answerStage(paper, run) };
+  });
+}
+const questionStates = (r) => Array.from({ length: r.total }, (_, q) => (q < r.done ? "done" : r.state === "running" && q === r.done ? "running" : ""));
+function answerSheetHtml(rows) {
+  if (!rows.length) return "";
+  const handed = rows.filter((r) => PAPER_TONE[r.state] === "done").length;
+  return `<div class="section"><h3>答题卡</h3><span class="aside">${handed}/${rows.length} 份</span></div>
+    <div class="grid answers"><div class="chapters">${rows.map((r) => `<div class="chapter ${r.state === "running" ? "current" : ""}">
+      <span class="name" title="${esc(r.name)}">${esc(r.name)}</span><span class="cells">${cellsHtml(questionStates(r))}</span>
+      <span class="tally">${r.total ? `${r.done}/${r.total}` : ""}</span><span class="state ${PAPER_TONE[r.state] || "stopped"}">${esc(paperWord(r.state))}</span></div>`).join("")}</div></div>`;
+}
+// What a job is on right now: the paper being answered, else the unit being learnt.
+function nowText(job, run) {
+  if (isAnswer(job)) return answerRows(run).find((r) => r.state === "running")?.name || "准备中…";
+  return run.unit?.name || run.detail || "准备中…";
+}
+function answerMini(run) {
+  const r = answerRows(run).find((x) => x.state === "running");
+  return r ? miniCells(questionStates(r), r.done) : "";
 }
 
 const player = $(".player"), sheet = $(".sheet");
@@ -1390,9 +1465,9 @@ function renderPlayer() {
     patch(player, `
       <div class="np"><span class="art">${{ "AI 答题": ICON.pen, 每日复习: ICON.repeat, 问答区答题: ICON.chat, 问答区提问: ICON.chat }[job.title] || ICON.play}</span>
         <span class="what"><small><span class="live">${waiting || LIVE_WORD[job.title] || "进行中"}</span>${esc(job.course_name)}</small>
-        <b>${esc(waiting || run.unit?.name || run.detail || "准备中…")}</b></span></div>
+        <b>${esc(waiting || nowText(job, run))}</b></span></div>
       <div class="scrub"><span class="track ${pct == null ? "unknown" : ""}"><i style="width:${pct ?? 0}%"></i></span><span class="t">${esc(label || clock(elapsed(job)))}</span></div>
-      <div class="np_meta">${recentCells(key(job.platform, job.course))}
+      <div class="np_meta">${isAnswer(job) ? answerMini(run) : recentCells(key(job.platform, job.course))}
         ${others ? `<button class="btn" data-go="#/jobs" title="查看全部任务">另有 ${others} 个</button>` : ""}
         ${sheet.classList.contains("open") ? '<button class="btn" data-close>收起 <span class="kbd">F</span></button>' : `<button class="btn" data-open="${job.id}">展开 <span class="kbd">F</span></button>`}<button class="btn danger" data-stop="${job.id}" data-confirm="确认停止" title="⇧S">停止</button></div>`);
   } else {
@@ -1414,19 +1489,22 @@ function renderFocus() {
   patch($(".sheet_tag", sheet), state.jobs.length > 1
     ? state.jobs.map((j) => `<button class="chip" data-focus="${j.id}" aria-pressed="${j.id === live.id}">${esc(j.title)} · ${esc(j.course_name)}</button>`).join("") : "");
   if (!job) { patch(body, `<div class="focus"><div><div class="clock">—</div><p class="of">现在没有任务。</p></div></div>`); return; }
-  const run = live ? runOf(live.id) : freshRun();
+  // A finished job keeps its last progress, so its answer sheet stays filled in.
+  const run = live ? runOf(live.id) : job.run || Object.assign(freshRun(), job.progress);
   const { pct, label } = progressOf(run);
   const k = key(job.platform, job.course);
   body.style.setProperty("--c", inkOf({ id: job.course }));
   const units = learns(job) && unitsOf(k), t = units && tally(units);
+  const rows = isAnswer(job) ? answerRows(run) : [], paper = live && rows.find((r) => r.state === "running");
   const grid = units
-    ? `<div class="section"><h3>整门课</h3><span class="aside mono">${t.done}/${t.all} · ${Math.round((t.done / (t.all || 1)) * 100)}%</span></div>${gridHtml(k)}` : "";
-  const spot = live && spotOf(job, run);
+    ? `<div class="section"><h3>整门课</h3><span class="aside mono">${t.done}/${t.all} · ${Math.round((t.done / (t.all || 1)) * 100)}%</span></div>${gridHtml(k)}`
+    : answerSheetHtml(rows);
+  const spot = live && learns(job) && spotOf(job, run);
   const chapter = run.unit && (units || []).find((ch) => ch.units.some((u) => u.id === run.unit.key));
   const headline = live
     ? `<div class="clock" data-clock="${live.id}">${clock(elapsed(job))}<small>已用时</small></div>
-       <div class="now">${esc(run.unit?.name || bare(run.detail, job.course_name).replace(/ · [\d:]+\/[\d:]+$/, "") || "准备中…")}</div>
-       <div class="of">${chapter ? `${esc(chapter.name)} · ` : ""}${esc(job.course_name)}</div>
+       <div class="now">${esc(paper?.name || run.unit?.name || bare(run.detail, job.course_name).replace(/ · [\d:]+\/[\d:]+$/, "") || "准备中…")}</div>
+       <div class="of">${paper ? `<span class="stage">${esc(paper.stage)}</span> · ` : chapter ? `${esc(chapter.name)} · ` : ""}${esc(job.course_name)}</div>
        ${spot ? `<div class="spot"><div class="track"><i style="width:${spot.pct}%"></i></div><span class="mono">${spot.label}</span></div>`
          : !units ? `<div class="spot"><div class="track ${pct == null ? "unknown" : ""}"><i style="width:${pct ?? 0}%"></i></div><span class="mono">${esc(label)}</span></div>` : ""}`
     : `<div class="clock">${STATE_WORD[job.state] || "结束"}<small>${duration(elapsed(job))}</small></div>
@@ -1434,7 +1512,7 @@ function renderFocus() {
   patch(body, `<div class="focus"><div>${headline}${grid}</div>
     <div class="log"><div class="log_head"><span class="grow">日志</span>
       ${[["all", "全部"], ["warn", "提醒"], ["err", "错误"]].map(([f, l]) => `<button class="chip" data-filter="${f}" aria-pressed="${state.logFilter === f}">${l}</button>`).join("")}</div>
-      <div class="log_body">${logHtml(live ? run.lines : job.lines || [], state.logFilter, job.course_name)}</div></div></div>`);
+      <div class="log_body">${logHtml(live ? run.lines : job.lines || [], state.logFilter, job.course_name, Boolean(live))}</div></div></div>`);
   // Long courses: keep the chapter being studied in view inside the grid, once per chapter change.
   const box = $(".focus .chapters", body), current = box && $(".chapter.current", box);
   const mark = current && `${job.id}:${current.querySelector(".name").textContent}`;
@@ -1476,7 +1554,8 @@ async function startJob(body) {
     // Show it now; the stream's copy may come later (or already came, or the job already ended).
     const job = started.job;
     if (job && !state.jobs.some((j) => j.id === job.id) && !state.history.some((j) => j.id === job.id)) handleEvent({ ...job, type: "job" });
-    if (body.type === "answer") { delete state.papers[key(body.platform, body.course)]; state.selected[key(body.platform, body.course)] = new Set(); }
+    // The papers stay listed, showing the job's progress on each; they are read again when it ends.
+    if (body.type === "answer") state.selected[key(body.platform, body.course)] = new Set();
     return true;
   } catch (error) { toast(error.message); return false; }
 }
@@ -1524,10 +1603,11 @@ function handleEvent(event) {
       }
     } else {
       if (at >= 0) state.jobs.splice(at, 1);
+      const run = state.runs[event.id];
       delete state.runs[event.id];
       if (state.focus === event.id) state.focus = null;
       state.history = [event, ...state.history.filter((j) => j.id !== event.id)].slice(0, 20);
-      state.lastDone = Object.assign({}, event, { shownAt: Date.now() });
+      state.lastDone = Object.assign({}, event, { shownAt: Date.now(), run });
       toast(`${event.title} · ${event.summary || STATE_WORD[event.state] || "结束"}`);
       finishUnits(event);
       delete state.papers[key(event.platform, event.course)];
@@ -1545,7 +1625,7 @@ function handleEvent(event) {
     if (!job) { if (!state.history.some((j) => j.id === event.job)) resync(); return; }
     const run = runOf(job.id);
     if (event.type === "log") pushLine(run, event.text, event.level);
-    else if (event.kind === "begin") run.overall = { name: event.name, total: event.total || 0, done: 0, unit: event.unit };
+    else if (event.kind === "begin") run.overall = { name: event.name, total: event.total || 0, done: 0, unit: event.unit, papers: event.papers || [], results: [] };
     else if (event.kind === "add_total" && run.overall) run.overall.total += event.total || 0;
     else if (event.kind === "detail") run.detail = event.name;
     else if (event.kind === "unit") {
@@ -1555,7 +1635,11 @@ function handleEvent(event) {
       if (event.status === "running") run.unit = { name: event.name, key: event.key };
       else if (run.unit?.key === event.key) run.unit = null;  // mirrors _track: the bar then shows run.detail
     } else if (event.kind === "result") {
-      if (run.overall) { run.overall.done += 1; run.sub = null; }
+      if (run.overall) {
+        (run.overall.results ||= []).push({ name: event.name, status: event.status, done: run.sub?.done || 0, total: run.sub?.total || 0 });
+        run.overall.done += 1;
+        run.sub = null;
+      }
       pushLine(run, `${event.name} · ${STATUS[event.status] || event.status || ""}`, event.status === "error" || event.status === "ai_error" ? "error" : event.status === "waiting" ? "warn" : "", true);
     } else if (event.kind === "resources" || event.kind === "questions") {
       run.sub = { name: event.name, done: event.completed || 0, total: event.total || 0, unit: event.unit === "项资源" ? "项" : event.unit };

@@ -44,6 +44,17 @@ class GridTest(unittest.TestCase):
         _track(progress, {"kind": "unit", "key": "u0", "name": "旧", "status": "done"})
         self.assertEqual(progress["unit"]["key"], "u1")
 
+    def test_answer_sheet_keeps_the_papers_and_how_each_ended(self):
+        progress = {}
+        _track(progress, {"kind": "begin", "name": "AI 答题", "total": 2, "unit": "份试卷",
+                          "papers": [{"id": "1", "name": "第一章"}, {"id": "2", "name": "第二章"}]})
+        _track(progress, {"kind": "questions", "name": "第 3 题 · AI 生成", "completed": 9, "total": 10, "unit": "题"})
+        _track(progress, {"kind": "result", "name": "第一章", "status": "submitted"})
+        overall = progress["overall"]
+        self.assertEqual([p["id"] for p in overall["papers"]], ["1", "2"])
+        self.assertEqual(overall["results"], [{"name": "第一章", "status": "submitted", "done": 9, "total": 10}])
+        self.assertNotIn("sub", progress)
+
 
 if __name__ == "__main__":
     unittest.main()

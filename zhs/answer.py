@@ -12,6 +12,7 @@ import requests
 from mooc.export_questions import clean_html_text
 from ai.client import GUESS_RULE, AIError, AITransientServiceError
 from core.auth import AuthenticationExpired, PlatformUnavailable
+from core.concurrency import INTERACTIVE_WORKERS
 from core.log import Logger
 from core.reporting import Reporter, child_thread_name
 from core.task_metrics import nonnegative_number
@@ -313,10 +314,18 @@ class _Skipped(Exception):
     """A queued question skipped after another one already failed."""
 
 
+class _FetchFailed(Exception):
+    """Reading one of the paper's questions failed; the message names which."""
+
+
+# 快速节奏：拿题、保存之间的停顿缩到四分之一（0.1–0.5 秒）。更快，也更可能触发滑块验证。
+FAST_GAP = 0.25
+
+
 class ZHSAnswerRunner:
     def __init__(self, client, ai_client, *, auto_submit, on_progress=None, sleep=time.sleep,
                  rng=None, heartbeat_interval=10, batch_size=5, max_workers=8,
-                 cancel_event=None, memory=None):
+                 cancel_event=None, memory=None, fast=False):
         self.client = client
         self.ai_client = ai_client
         self.auto_submit = auto_submit
@@ -327,6 +336,7 @@ class ZHSAnswerRunner:
         self.reporter = Reporter(on_progress)
         self.sleep = sleep
         self.rng = rng or random.Random()
+        self.gap = FAST_GAP if fast else 1  # scales the pauses between platform requests
         self.heartbeat_interval = heartbeat_interval
         self.batch_size = max(1, int(batch_size))
         self.max_workers = max(1, int(max_workers))
@@ -572,31 +582,37 @@ class ZHSAnswerRunner:
         if heartbeat:
             self._start_heartbeat(test_id, paper_id)
         try:
-            # 1. 拿题：顺序请求平台，题目全部就绪后才开始作答与保存。
+            # 1. 拿题：顺序请求平台，节奏不变。2. AI 作答：不碰平台，可并发，每拿到一题就开始答，
+            # 不等整张卷读完。任何一题失败都不保存、不提交。
             questions = []
-            fetched = False
-            for index, entry in enumerate(sheet, 1):
-                if self.cancel_event.is_set():
-                    raise KeyboardInterrupt
-                self._raise_heartbeat_error()
-                try:
-                    if fetch is not None:
-                        raw = fetch(entry)
-                    else:
-                        if fetched:
-                            self.sleep(self.rng.uniform(0.5, 1))
-                        raw = self.client.exam_question(
-                            test_id, paper_id, entry["questionId"], entry["version"])
-                        fetched = True
-                    prepared = prepare_shared(raw) if fetch is not None else prepare(raw, allow_images)
-                except (CaptchaRequired, StudyTimeLimit, AuthenticationExpired, KeyboardInterrupt):
-                    raise
-                except Exception as exc:
-                    return self._result(name, "error", "第 %d 题：%s" % (index, exc))
-                questions.append((entry, prepared))
 
-            # 2. AI 作答：不碰平台，可并发；任何一题失败都不保存、不提交。
-            answers, failure = self._ask_all(name, questions, fill_sep)
+            def fetch_all():
+                fetched = False
+                for index, entry in enumerate(sheet, 1):
+                    if self.cancel_event.is_set():
+                        raise KeyboardInterrupt
+                    self._raise_heartbeat_error()
+                    try:
+                        if fetch is not None:
+                            raw = fetch(entry)
+                        else:
+                            if fetched:
+                                self.sleep(self.rng.uniform(0.5, 1) * self.gap)
+                            raw = self.client.exam_question(
+                                test_id, paper_id, entry["questionId"], entry["version"])
+                            fetched = True
+                        prepared = prepare_shared(raw) if fetch is not None else prepare(raw, allow_images)
+                    except (CaptchaRequired, StudyTimeLimit, AuthenticationExpired, KeyboardInterrupt):
+                        raise
+                    except Exception as exc:
+                        raise _FetchFailed("第 %d 题：%s" % (index, exc)) from exc
+                    questions.append((entry, prepared))
+                    yield entry, prepared
+
+            try:
+                answers, failure = self._ask_all(name, fetch_all(), fill_sep, total)
+            except _FetchFailed as exc:
+                return self._result(name, "error", str(exc))
             if failure is not None:
                 return failure
 
@@ -611,14 +627,14 @@ class ZHSAnswerRunner:
                 try:
                     if save_one is not None:
                         if saved_any:
-                            self.sleep(self.rng.uniform(1, 2))
+                            self.sleep(self.rng.uniform(1, 2) * self.gap)
                         save_one(entry, prepared, answers[index - 1])
                         saved_any = True
                     else:
                         batch.append(item_of(entry, prepared, answers[index - 1]))
                         if len(batch) >= self.batch_size:
                             if saved_any:
-                                self.sleep(self.rng.uniform(1, 2))
+                                self.sleep(self.rng.uniform(1, 2) * self.gap)
                             flush(batch)
                             batch = []
                             saved_any = True
@@ -629,7 +645,7 @@ class ZHSAnswerRunner:
             if batch:
                 try:
                     if saved_any:
-                        self.sleep(self.rng.uniform(1, 2))
+                        self.sleep(self.rng.uniform(1, 2) * self.gap)
                     flush(batch)
                 except (CaptchaRequired, StudyTimeLimit, AuthenticationExpired, KeyboardInterrupt):
                     raise
@@ -661,10 +677,13 @@ class ZHSAnswerRunner:
         finally:
             self._stop_heartbeat()
 
-    def _ask_all(self, name, questions, fill_sep):
-        """Answer prepared questions concurrently; keep results in question order."""
-        total = len(questions)
+    def _ask_all(self, name, questions, fill_sep, total=None):
+        """Answer questions concurrently, each as soon as it arrives; keep results in question order.
+        `questions` may be a generator reading them one by one: the AI works on the first ones while the
+        rest are still being read. Once one fails, the rest are neither read nor answered."""
+        total = len(questions) if total is None else total
         answers = [None] * total
+        titles = {}
         failures = {}
         reused = 0
 
@@ -683,36 +702,53 @@ class ZHSAnswerRunner:
         # as_completed never wakes for futures cancelled by executor.shutdown.
         stop = threading.Event()
         control_error = None
-        with ThreadPoolExecutor(max_workers=min(self.max_workers, total), thread_name_prefix=child_thread_name('zhs-answer')) as executor:
-            futures = {
-                executor.submit(solve, index, prepared, stop): index
-                for index, (_, prepared) in enumerate(questions)
-            }
-            completed = 0
-            for future in as_completed(futures):
-                index = futures[future]
-                try:
-                    encoded, from_memory = future.result()
-                except _Skipped:
-                    continue
-                except (CaptchaRequired, StudyTimeLimit, AuthenticationExpired, KeyboardInterrupt) as exc:
-                    control_error = control_error or exc
-                    stop.set()
-                    continue
-                except Exception as exc:
-                    failures[index] = exc
-                    stop.set()
-                    continue
-                if self.cancel_event.is_set() or self._heartbeat_error is not None:
-                    stop.set()
-                answers[index] = encoded
-                completed += 1
-                if from_memory:
-                    reused += 1
-                self.reporter.questions(name, completed, total)
-                if not from_memory:
-                    logger.info("%s · AI 作答 %d/%d：%s", name, index + 1, total,
-                                questions[index][1]["public"]["title"][:40])
+        completed = 0
+        futures = {}
+
+        def collect(future):
+            nonlocal control_error, completed, reused
+            index = futures.pop(future)
+            try:
+                encoded, from_memory = future.result()
+            except _Skipped:
+                return
+            except (CaptchaRequired, StudyTimeLimit, AuthenticationExpired, KeyboardInterrupt) as exc:
+                control_error = control_error or exc
+                stop.set()
+                return
+            except Exception as exc:
+                failures[index] = exc
+                stop.set()
+                return
+            if self.cancel_event.is_set() or self._heartbeat_error is not None:
+                stop.set()
+            answers[index] = encoded
+            completed += 1
+            if from_memory:
+                reused += 1
+            self.reporter.questions(name, completed, total)
+            if not from_memory:
+                logger.info("%s · AI 作答 %d/%d：%s", name, index + 1, total, titles[index][:40])
+
+        executor = ThreadPoolExecutor(max_workers=max(1, min(self.max_workers, total)),
+                                      thread_name_prefix=child_thread_name('zhs-answer'))
+        finished = False
+        try:
+            for index, (_, prepared) in enumerate(questions):
+                titles[index] = prepared["public"]["title"]
+                futures[executor.submit(solve, index, prepared, stop)] = index
+                for future in [f for f in futures if f.done()]:
+                    collect(future)
+                if stop.is_set():
+                    break
+            for future in as_completed(list(futures)):
+                collect(future)
+            finished = True
+        finally:
+            if not finished:
+                # Reading the paper failed: queued answers are skipped, running ones dropped without waiting.
+                stop.set()
+            executor.shutdown(wait=finished)
         self.reused = reused
         if self._heartbeat_error is not None:
             control_error, self._heartbeat_error = self._heartbeat_error, None
@@ -989,15 +1025,28 @@ def catalog_ai(client, course):
 
     try:
         basic = client.ai_course_basic(course_id, class_id)
-        for point in _knowledge_points(basic):
-            knowledge_id = point.get("knowledgeId")
-            knowledge_name = point.get("knowledgeName") or point.get("name") or "知识点"
+        points = _knowledge_points(basic)
+        blocked = threading.Event()  # after a captcha or a lapsed login the rest are not asked
+
+        def read(point):
+            if blocked.is_set():
+                return None, None
             try:
-                info = client.ai_homework_info(course_id, class_id, knowledge_id)
+                return client.ai_homework_info(course_id, class_id, point.get("knowledgeId")), None
             except (CaptchaRequired, AuthenticationExpired):
+                blocked.set()
                 raise
             except Exception as exc:
-                logger.warning("跳过知识点 %s 的作业：%s", knowledge_name, exc)
+                return None, exc
+
+        # One request per knowledge point and a course has dozens: read them side by side, list them in order.
+        with ThreadPoolExecutor(max(1, min(len(points), INTERACTIVE_WORKERS))) as pool:
+            infos = list(pool.map(read, points))
+        for point, (info, error) in zip(points, infos):
+            knowledge_id = point.get("knowledgeId")
+            knowledge_name = point.get("knowledgeName") or point.get("name") or "知识点"
+            if error is not None:
+                logger.warning("跳过知识点 %s 的作业：%s", knowledge_name, error)
                 continue
             test_id = _positive_int(info.get("examTestId"))
             paper_id = _positive_int(info.get("paperId"))
