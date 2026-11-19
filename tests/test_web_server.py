@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 from core.auth import PlatformUnavailable
 from core.reporting import ProgressEvent
 from core.settings import SettingsStore
-from web.server import LocalAccess, Studia, _course, make_handler
+from web.server import PLATFORMS, HttpError, LocalAccess, Studia, _course, make_handler
 
 
 class WebServerTest(unittest.TestCase):
@@ -274,6 +274,20 @@ class WebServerTest(unittest.TestCase):
         result = self.app.login_status("mooc")
         self.assertEqual(result["status"], "failed")
         self.assertIsNone(self.app.platforms["mooc"].login)
+
+    def test_a_login_result_nobody_read_is_not_reported_after_signing_out(self):
+        # A phone back from the SSO page lands signed in and goes home without reading the result. Opening the
+        # login page after a logout (or an expired login) must not announce that old login as a new one.
+        client = Mock(access_token="cookies")
+        client.my_course_list.return_value = {"rows": []}
+        app = Studia(self.app.store, oauth_url=lambda pid, here=False: "https://sso.example/")
+        with patch.dict(PLATFORMS["mooc"], {"api": lambda **kw: client}):
+            app.login_start("mooc")
+            app.finish_browser_login("mooc", "token")
+        app.logout("mooc")
+        with self.assertRaises(HttpError) as caught:
+            app.login_status("mooc")
+        self.assertEqual(caught.exception.status, 409)
 
 
 if __name__ == "__main__":

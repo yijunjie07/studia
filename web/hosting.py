@@ -170,7 +170,7 @@ class Hub:
                                                site_health=self.default_model_health)
                 store.ensure_default_model(self.default_model())
                 app = Studia(store, reports_dir=directory / "ai_results", memory=self.memory, mooc_memory=self.mooc_memory,
-                             oauth_url=lambda pid, uid=uid: self.oauth_url(uid, pid),
+                             oauth_url=lambda pid, here=False, uid=uid: self.oauth_url(uid, pid, here),
                              job_limit=lambda uid=uid: self.job_limit(uid),
                              zhs_parallel=lambda: bool(self.accounts.setting("zhs_parallel_study", False)),
                              peers=lambda course_id, recruit_id, uid=uid: self.peer_questions(uid, course_id, recruit_id))
@@ -221,12 +221,13 @@ class Hub:
 
     # ------------------------------------------------------------ MOOC browser login
 
-    def oauth_url(self, uid, pid):
+    def oauth_url(self, uid, pid, here=False):
+        # here: the Studia page itself goes to the SSO (no tab of its own), so the callback has to bring it back.
         nonce = secrets.token_urlsafe(24)
         now = time.time()
         with self.lock:
             self.pending_oauth = {k: v for k, v in self.pending_oauth.items() if v[2] > now}
-            self.pending_oauth[nonce] = (uid, pid, now + OAUTH_TTL)
+            self.pending_oauth[nonce] = (uid, pid, now + OAUTH_TTL, here)
         redirect = "%s/oauth/callback/%s" % (self.public_url, nonce)
         return SSO_AUTH_URL + "?" + urlencode({"mode": "simple", "source": SSO_SOURCE, "redirect": redirect})
 
@@ -235,15 +236,19 @@ class Hub:
         # (and, when a Studia session is present, the same user) may bind a token.
         with self.lock:
             entry = self.pending_oauth.pop(nonce, None)
+        home = self.public_url + "/"
         if entry is None or entry[2] < time.time():
-            return False, "这个登录链接已失效，请回到 Studia 重新点击登录。"
-        uid, pid, _ = entry
+            return False, "这个登录链接已失效，请回到 Studia 重新点击登录。", home
+        uid, pid, _, here = entry
+        back = "%s#/login/%s" % (home, pid)  # the login page picks the result up from there
         if session_uid is not None and session_uid != uid:
-            return False, "当前浏览器登录的 Studia 账号和发起登录的账号不一致，请换回原账号重试。"
+            return False, "当前浏览器登录的 Studia 账号和发起登录的账号不一致，请换回原账号重试。", home
         if not token:
-            return False, "没有收到职教云的登录结果，请重试。"
+            return False, "没有收到职教云的登录结果，请重试。", back
         threading.Thread(target=self.app(uid).finish_browser_login, args=(pid, token), daemon=True).start()
-        return True, "职教云登录成功，正在读取课程。可以关闭这个页面，回到 Studia。"
+        if not here:  # a tab of its own: the Studia tab that opened it carries on, this one is not a second Studia
+            return True, "职教云登录成功，正在读取课程。可以关闭这个页面，回到 Studia。", None
+        return True, "职教云登录成功，正在返回 Studia…", back
 
     # ------------------------------------------------------------ admin helpers
 
@@ -367,14 +372,21 @@ class Hub:
             app.stop_job()
 
 
-def _page(title, message, ok):
+def _page(title, message, ok, back):
+    # WeChat and other in-app browsers have no tabs to close: send them back to Studia on their own.
+    # back is None for a login opened in a tab of its own, which is simply closed.
     color = "#237a3e" if ok else "#c8285a"
-    return ("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+    back = html.escape(back, quote=True) if back else ""
+    refresh = "<meta http-equiv=refresh content='1;url=%s'>" % back if ok and back else ""
+    link = ("<a href=\"%s\" style=\"display:block;margin-top:18px;padding:12px;border-radius:8px;background:#141413;"
+            "color:#fff;text-align:center;text-decoration:none\">返回 Studia</a>" % back) if back else ""
+    return ("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>%s"
             "<title>%s</title><body style=\"margin:0;display:grid;place-items:center;min-height:100vh;"
             "font-family:-apple-system,'PingFang SC',sans-serif;background:#f4f5f7\"><div style=\"max-width:420px;"
             "padding:28px;border-radius:12px;background:#fff;box-shadow:0 8px 30px rgba(0,0,0,.08)\">"
             "<h1 style=\"margin:0 0 10px;font-size:20px;color:%s\">%s</h1><p style=\"margin:0;line-height:1.6;"
-            "color:#3c3e41\">%s</p></div>") % (html.escape(title), color, html.escape(title), html.escape(message))
+            "color:#3c3e41\">%s</p>%s</div>") % (
+        refresh, html.escape(title), color, html.escape(title), html.escape(message), link)
 
 
 class HostedAccess:
@@ -480,9 +492,9 @@ class HostedAccess:
         match = re.fullmatch(r"/oauth/callback/([\w-]+)", path)
         if method == "GET" and match:
             session = hub.sessions.get(self._token(request))
-            ok, message = hub.oauth_callback(match[1], (query.get("token") or [""])[0].strip(),
+            ok, message, back = hub.oauth_callback(match[1], (query.get("token") or [""])[0].strip(),
                                              session["uid"] if session else None)
-            return Reply(_page("登录成功" if ok else "登录没有完成", message, ok), status=200 if ok else 400,
+            return Reply(_page("登录成功" if ok else "登录没有完成", message, ok, back), status=200 if ok else 400,
                          content_type="text/html; charset=utf-8",
                          headers={"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"})
         return NOT_HANDLED

@@ -366,13 +366,15 @@ class HostedServerTest(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/admin/users/%s/disable" % self.admin_id, {}, cookie=token, csrf=csrf)[0], 400)
 
     def test_oauth_callback_nonce_is_single_use_and_bound_to_its_user(self):
-        url = self.hub.oauth_url(self.admin_id, "mooc")
+        url = self.hub.oauth_url(self.admin_id, "mooc", here=True)
         self.assertIn("redirect=http%3A%2F%2F127.0.0.1", url)
         nonce = url.rsplit("%2F", 1)[1]
         with patch.object(Studia, "finish_browser_login") as finish:
             status, page, _, _ = self.request("GET", "/oauth/callback/%s?token=abc" % nonce)
             self.assertEqual(status, 200)
             self.assertNotIn("abc", page)
+            self.assertIn("url=http://127.0.0.1", page)  # back to Studia by itself: WeChat has no tab to close
+            self.assertIn("#/login/mooc", page)
             for _ in range(50):
                 if finish.called:
                     break
@@ -384,6 +386,23 @@ class HostedServerTest(unittest.TestCase):
         nonce = self.hub.oauth_url(other, "mooc").rsplit("%2F", 1)[1]
         admin, _ = self.login("admin", "admin-password")
         self.assertEqual(self.request("GET", "/oauth/callback/%s?token=abc" % nonce, cookie=admin)[0], 400)
+
+    def test_oauth_callback_in_a_tab_of_its_own_leaves_studia_to_the_tab_that_opened_it(self):
+        nonce = self.hub.oauth_url(self.admin_id, "mooc").rsplit("%2F", 1)[1]
+        with patch.object(Studia, "finish_browser_login"):
+            status, page, _, _ = self.request("GET", "/oauth/callback/%s?token=abc" % nonce)
+        self.assertEqual(status, 200)
+        self.assertNotIn("http-equiv=refresh", page)  # it would turn the SSO tab into a second Studia
+        self.assertNotIn("返回 Studia", page)
+        self.assertIn("可以关闭这个页面", page)
+
+    def test_login_start_records_whether_the_page_goes_to_the_sso_itself(self):
+        token, csrf = self.login("admin", "admin-password")
+        for body, here in (({"here": True}, True), ({}, False)):
+            status, started, _, _ = self.request("POST", "/api/platforms/mooc/login", body, cookie=token, csrf=csrf)
+            self.assertEqual(status, 200)
+            nonce = started["open"].rsplit("%2F", 1)[1]
+            self.assertIs(self.hub.pending_oauth[nonce][3], here)
 
 
 class IsolationUnitTest(unittest.TestCase):

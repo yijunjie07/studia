@@ -819,15 +819,16 @@ const VIEWS = {
     if (p.login === "qr") {
       setPage(`${head}<p class="sub">${again ? `${p.rescan ? "问答区要重新认人" : "扫完问答区再用 8 小时"}，学习不受影响` : "用智慧树 App 扫码"}</p>
         <div class="login_card"><div class="qr"><div class="qr_empty">正在获取二维码…</div></div>
-          <div class="login_status"><div data-status><b>等待扫码</b><p>二维码过期会自动刷新</p></div>
+          <div class="login_status"><div data-status><b>等待扫码</b><p>${TOUCH ? "只有这台手机：长按二维码保存图片，在知到 App 扫一扫里从相册选它，确认后回到这里，会自动登录" : "二维码过期会自动刷新"}</p></div>
             <button class="btn" data-start-login>刷新二维码</button></div></div>`);
       $("[data-start-login]", page).onclick = () => qrLogin(pid);
       qrLogin(pid);
     } else {
       setPage(`${head}<p class="sub">用职教云账号登录</p>
-        <div class="login_card"><div class="login_status"><div data-status><b>在浏览器中登录</b><p>登录完成后自动继续</p></div>
+        <div class="login_card"><div class="login_status"><div data-status><b>在浏览器中登录</b><p>登录完成后自动回到这里</p></div>
           <button class="btn primary" data-start-login>打开登录页</button></div></div>`);
       $("[data-start-login]", page).onclick = () => browserLogin(pid);
+      browserLogin(pid, true);  // came back from the SSO page (callback or a swipe back): pick up its result
     }
   },
 
@@ -1627,24 +1628,31 @@ async function qrLogin(pid) {
   }
 }
 
-async function browserLogin(pid) {
+async function browserLogin(pid, resume = false) {
   state.loginToken.cancelled = true;
   const token = (state.loginToken = { cancelled: false });
   const status = $("[data-status]", page), button = $("[data-start-login]", page);
   const say = (title, text) => { status.innerHTML = `<b>${esc(title)}</b><p>${esc(text)}</p>`; };
-  button.disabled = true;
-  // Opened synchronously inside the click so popup blockers allow it; pointed at the SSO page below.
-  const tab = session.mode === "hosted" ? window.open("", "_blank") : null;
-  try {
-    const started = await api(`/api/platforms/${pid}/login`, { method: "POST" });
-    if (started.open && tab) tab.location = started.open; else if (started.open) location.href = started.open; else tab?.close();
-    say("等待职教云登录", started.message);
-  } catch (error) { tab?.close(); say("无法开始登录", error.message); button.disabled = false; return; }
+  if (!resume) {
+    button.disabled = true;
+    // Opened synchronously inside the click so popup blockers allow it. Phones (WeChat has no tabs at all) go in
+    // this page instead; the callback page sends them back to #/login/<pid>, which resumes below.
+    const tab = session.mode === "hosted" && !TOUCH ? window.open("", "_blank") : null;
+    try {
+      // No tab of its own (a phone, or a blocked popup): this page goes to the SSO and the callback must bring it back.
+      const started = await api(`/api/platforms/${pid}/login`, { method: "POST", body: { here: !tab } });
+      if (started.open && tab) tab.location = started.open; else if (started.open) { location.href = started.open; return; } else tab?.close();
+      say("等待职教云登录", started.message);
+    } catch (error) { tab?.close(); say("无法开始登录", error.message); button.disabled = false; return; }
+  }
   while (!token.cancelled) {
-    await sleep(1500);
+    if (!resume) await sleep(1500);
     if (token.cancelled || !status.isConnected) return;
     let result;
-    try { result = await api(`/api/platforms/${pid}/login`); } catch (error) { say("网络异常", error.message); continue; }
+    try { result = await api(`/api/platforms/${pid}/login`); }
+    catch (error) { if (resume) return; say("网络异常", error.message); continue; }  // resuming: no login was started
+    if (resume && result.status === "waiting") { say("等待职教云登录", "登录完成后自动回到这里；没登成可以重新打开登录页"); button.textContent = "重新打开登录页"; }
+    resume = false;
     if (result.status === "failed") { say("登录未完成", result.message); button.disabled = false; button.textContent = "重新打开登录页"; return; }
     if (result.status === "done") { token.cancelled = true; await afterLogin(pid); return; }
   }

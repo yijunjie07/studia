@@ -46,6 +46,7 @@ from ai.memory import MoocAnswerMemory
 STATIC = Path(__file__).resolve().parent / "static"
 REVIEW_MINUTES = 30
 QR_REFRESHES = 5
+QR_WATCH = 15 * 60  # how long the server keeps checking a code nobody is polling
 QR_TABS = 3  # QR codes kept open per platform: one per tab or device showing the login page
 HISTORY = 20
 # Jobs one person runs at once (an administrator can change it in hosted mode); more wait in line.
@@ -136,6 +137,7 @@ class Platform:
         # shared code, a second tab starting over swapped the code out under the first, whose scans then
         # never registered and people scanned again and again.
         self.qr = {}
+        self.qr_done = None  # the code that signed in, for its page coming back after the server finished it
 
     def public(self, logged_in, rescan=False, rescan_at=None):
         spec = self.spec
@@ -347,7 +349,7 @@ class Studia:
 
     # ------------------------------------------------------------ login
 
-    def login_start(self, pid):
+    def login_start(self, pid, here=False):
         platform = self.platform(pid)
         with self.lock:
             if platform.spec["login"] == "qr":
@@ -355,13 +357,14 @@ class Studia:
                 qr_token, image = client.login_qr()
                 qid = secrets.token_hex(6)
                 platform.qr[qid] = {"client": client, "qr": qr_token, "refreshes": 0}
+                threading.Thread(target=self._qr_watch, args=(platform, qid), daemon=True).start()
                 for old in list(platform.qr)[:-QR_TABS]:
                     platform.qr.pop(old)["client"].close()
                 logger.info("%s%s 出了登录二维码（%d 个页面在等扫码）", self.who(), platform.spec["name"], len(platform.qr))
                 return {"qr": _data_url(image), "id": qid}
             if self.oauth_url is not None:
-                platform.login = {"status": "waiting", "message": "请在新打开的页面登录职教云，完成后会自动回到这里"}
-                return {"status": "waiting", "message": platform.login["message"], "open": self.oauth_url(pid)}
+                platform.login = {"status": "waiting", "message": "请在职教云页面完成登录，完成后会自动回到这里"}
+                return {"status": "waiting", "message": platform.login["message"], "open": self.oauth_url(pid, here)}
             if platform.login and platform.login.get("status") == "waiting":
                 return {"status": "waiting", "message": "已在浏览器打开登录页"}
             platform.login = {"status": "waiting", "message": "已在浏览器打开职教云登录页，登录完成后会自动回到这里"}
@@ -397,63 +400,86 @@ class Studia:
 
     def login_status(self, pid, qid=""):
         platform = self.platform(pid)
-        name = platform.spec["name"]
         with self.lock:
             if platform.spec["login"] == "browser":
                 login = platform.login
+                if login is not None and login["status"] == "done" and not self.logged_in(platform):
+                    login = platform.login = None  # an earlier login's result, signed out since (logout, expiry)
                 if login is None:
                     raise HttpError(409, "请先开始登录")
                 if login["status"] != "waiting":
                     platform.login = None
                 return {"status": login["status"], "message": login["message"]}
-            login = platform.qr.get(qid)
-            if login is None:  # a newer page took its place, or it already finished
-                return {"status": "failed", "message": "这个二维码已失效，请点击刷新"}
-            try:
-                result = login["client"].login_qr_status(login["qr"])
-            except PlatformUnavailable as exc:
-                return {"status": "waiting", "message": str(exc)}
-            status = result.get("status")
-            if status == -1:
-                return {"status": "waiting", "message": "等待扫码"}
-            if status == 0:
-                return {"status": "scanned", "message": "已扫码，请在手机上确认登录"}
-            if status == 1:
-                client = platform.qr.pop(qid)["client"]
-                try:
-                    client.finish_qr_login(result.get("oncePassword", ""))
-                except Exception as exc:  # 手机上已确认，但换登录状态失败：说出来，别让页面一直转
-                    logger.exception("%s%s 扫码已确认，但登录没完成", self.who(), name)
-                    client.close()
-                    return {"status": "failed", "message": "扫码已确认，但登录没完成（%s），请刷新二维码重试" % (str(exc) or "平台没响应")}
-                try:
-                    client.shared_exam_sso()
-                except (AuthenticationExpired, PlatformUnavailable, ZHSError):
-                    logger.warning("考试会话初始化失败，进入共享课试卷时将重新尝试")
-                for other in platform.qr.values():  # the other pages' codes are moot now
-                    other["client"].close()
-                platform.qr.clear()
-                self.drop(platform)
-                platform.client = client
-                self.store.save_session(platform.id, client)
-                logger.info("%s%s 扫码登录成功", self.who(), name)
-                if pid == "zhs":  # a scan hands out a new ticket; its eight hours count from here
-                    self.store.set("zhs_signed_in_at", time.time())
-                    self.store.set(PASSPORT_LAPSED, None)
-                self.publish({"type": "account"})  # other tabs and devices pick up the login
+            return self._qr_check(platform, qid)
+
+    def _qr_watch(self, platform, qid):
+        # One phone: save the code, go scan it in the 知到 App, come back. The page is frozen (or reloaded) the
+        # whole time, so the server takes the confirmation itself before its one-time password lapses.
+        deadline = time.time() + QR_WATCH
+        while time.time() < deadline:
+            time.sleep(2)
+            with self.lock:
+                if qid not in platform.qr:  # finished, or a newer page took its place
+                    return
+                if self._qr_check(platform, qid, watching=True)["status"] in ("done", "failed"):
+                    return
+
+    def _qr_check(self, platform, qid, watching=False):
+        """Called under self.lock, by the page's poll and by _qr_watch."""
+        pid, name = platform.id, platform.spec["name"]
+        login = platform.qr.get(qid)
+        if login is None:  # a newer page took its place, or it already finished
+            if qid and qid == platform.qr_done and platform.client is not None:
                 return {"status": "done", "message": "登录成功"}
-            if status == 2:
-                login["refreshes"] += 1
-                if login["refreshes"] > QR_REFRESHES:
-                    platform.qr.pop(qid)["client"].close()
-                    return {"status": "failed", "message": "二维码多次过期，请点击刷新"}
-                login["qr"], image = login["client"].login_qr()
-                return {"status": "refreshed", "message": "二维码已过期，已自动刷新", "qr": _data_url(image)}
-            if status == 3:
-                platform.qr.pop(qid)["client"].close()
-                logger.info("%s%s 在手机上取消了扫码登录", self.who(), name)
-                return {"status": "failed", "message": "已在手机上取消登录"}
+            return {"status": "failed", "message": "这个二维码已失效，请点击刷新"}
+        try:
+            result = login["client"].login_qr_status(login["qr"])
+        except PlatformUnavailable as exc:
+            return {"status": "waiting", "message": str(exc)}
+        status = result.get("status")
+        if watching and status != 1:  # expiry, refresh and cancel are the page's to show
             return {"status": "waiting", "message": ""}
+        if status == -1:
+            return {"status": "waiting", "message": "等待扫码"}
+        if status == 0:
+            return {"status": "scanned", "message": "已扫码，请在手机上确认登录"}
+        if status == 1:
+            client = platform.qr.pop(qid)["client"]
+            try:
+                client.finish_qr_login(result.get("oncePassword", ""))
+            except Exception as exc:  # 手机上已确认，但换登录状态失败：说出来，别让页面一直转
+                logger.exception("%s%s 扫码已确认，但登录没完成", self.who(), name)
+                client.close()
+                return {"status": "failed", "message": "扫码已确认，但登录没完成（%s），请刷新二维码重试" % (str(exc) or "平台没响应")}
+            try:
+                client.shared_exam_sso()
+            except (AuthenticationExpired, PlatformUnavailable, ZHSError):
+                logger.warning("考试会话初始化失败，进入共享课试卷时将重新尝试")
+            for other in platform.qr.values():  # the other pages' codes are moot now
+                other["client"].close()
+            platform.qr.clear()
+            platform.qr_done = qid
+            self.drop(platform)
+            platform.client = client
+            self.store.save_session(platform.id, client)
+            logger.info("%s%s 扫码登录成功", self.who(), name)
+            if pid == "zhs":  # a scan hands out a new ticket; its eight hours count from here
+                self.store.set("zhs_signed_in_at", time.time())
+                self.store.set(PASSPORT_LAPSED, None)
+            self.publish({"type": "account"})  # other tabs and devices pick up the login
+            return {"status": "done", "message": "登录成功"}
+        if status == 2:
+            login["refreshes"] += 1
+            if login["refreshes"] > QR_REFRESHES:
+                platform.qr.pop(qid)["client"].close()
+                return {"status": "failed", "message": "二维码多次过期，请点击刷新"}
+            login["qr"], image = login["client"].login_qr()
+            return {"status": "refreshed", "message": "二维码已过期，已自动刷新", "qr": _data_url(image)}
+        if status == 3:
+            platform.qr.pop(qid)["client"].close()
+            logger.info("%s%s 在手机上取消了扫码登录", self.who(), name)
+            return {"status": "failed", "message": "已在手机上取消登录"}
+        return {"status": "waiting", "message": ""}
 
     def logout(self, pid):
         platform = self.platform(pid)
@@ -1599,7 +1625,7 @@ def _course(pid, row, shares=None):
 
 ROUTES = [
     ("GET", r"/api/state", lambda app, m, q, b: app.state()),
-    ("POST", r"/api/platforms/(\w+)/login", lambda app, m, q, b: app.login_start(m[1])),
+    ("POST", r"/api/platforms/(\w+)/login", lambda app, m, q, b: app.login_start(m[1], b.get("here") is True)),
     ("GET", r"/api/platforms/(\w+)/login", lambda app, m, q, b: app.login_status(m[1], (q.get("id") or [""])[0])),
     ("POST", r"/api/platforms/(\w+)/logout", lambda app, m, q, b: app.logout(m[1])),
     ("GET", r"/api/platforms/(\w+)/courses", lambda app, m, q, b: app.courses(m[1])),
