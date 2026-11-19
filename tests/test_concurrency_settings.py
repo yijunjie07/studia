@@ -33,6 +33,15 @@ class ConcurrencySettingsTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 validate_workers(value)
 
+    def test_answer_pace_defaults_to_steady_and_only_takes_known_values(self):
+        self.assertEqual(self.store.answer_pace(), 'steady')
+        self.store.save_answer_pace('fast')
+        self.assertEqual(SettingsStore(Path(self.temp.name)).answer_pace(), 'fast')
+        with self.assertRaises(SettingsError):
+            self.store.save_answer_pace('turbo')
+        self.store.set('answer_pace', 'turbo')  # a hand-edited file falls back to the safe pace
+        self.assertEqual(self.store.answer_pace(), 'steady')
+
     def test_absent_settings_default_to_eight_without_creating_file(self):
         self.assertEqual(self.store.concurrency(), {'ai': 8, 'study': 8})
         self.assertFalse(self.store.path.exists())

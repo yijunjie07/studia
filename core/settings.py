@@ -52,6 +52,9 @@ def config_directory():
     return Path.home() / ".config" / "icve-ai-assistant"
 
 
+ANSWER_PACES = ("steady", "fast")
+
+
 class SettingsStore:
     def __init__(self, directory=None):
         self.directory = Path(directory) if directory is not None else config_directory()
@@ -97,6 +100,16 @@ class SettingsStore:
         except ValueError as exc:
             raise SettingsError(str(exc)) from None
         self.set("concurrency", options)
+
+    def answer_pace(self):
+        """智慧树答题节奏："steady" 拿题、保存之间像人一样停顿；"fast" 停顿缩短，更快也更可能触发滑块验证。"""
+        pace = self.get("answer_pace", "steady")
+        return pace if pace in ANSWER_PACES else "steady"
+
+    def save_answer_pace(self, pace):
+        if pace not in ANSWER_PACES:
+            raise SettingsError("答题节奏只能是稳妥或快速")
+        self.set("answer_pace", pace)
 
     def _write(self, data):
         data["version"] = 1

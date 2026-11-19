@@ -738,7 +738,7 @@ button.switch { border: 0; padding: 0; cursor: pointer; }
   .model.ai { grid-template-columns: minmax(0, 1fr) auto; } .model.ai .health { grid-column: 2; grid-row: 1; } .model.ai .row_btns { grid-column: 1 / -1; }
   .model.plain { grid-template-columns: 1fr; } .model.plain .row_btns { grid-column: 1; }
   .model.plain.stepper_row, .model.plain.qa_switch { grid-template-columns: minmax(0, 1fr) auto; }
-  .model.plain.qa_switch .row_btns { grid-column: 2; }
+  .model.plain.qa_switch .row_btns, .model.plain.stepper_row .row_btns { grid-column: 2; }
   .stepper .btn { width: 40px; height: 36px; }
   .row_btns { flex-wrap: wrap; }
   .field { grid-template-columns: 1fr; gap: 4px; }

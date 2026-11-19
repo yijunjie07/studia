@@ -1134,7 +1134,7 @@ class Studia:
             if platform.id == "zhs":
                 runner = ZHSAnswerRunner(
                     self.client(platform), ai, auto_submit=auto_submit, on_progress=on_progress,
-                    cancel_event=cancel, max_workers=workers,
+                    cancel_event=cancel, max_workers=workers, fast=self.store.answer_pace() == "fast",
                     memory=self.memory or AnswerMemory(Path(self.store.path).parent / "zhs-answers.json"))
             else:
                 # No manual-answer or confirm callbacks: unanswerable papers stay unsubmitted.
@@ -1346,7 +1346,7 @@ class Studia:
                            "base_url": config.base_url, "key_hint": key_hint(config.api_key), "active": profile.active,
                            "health": health.get("status") or "", "health_message": health.get("message") or "",
                            "deletable": profile.id != DEFAULT_PROFILE_ID})
-        return {"models": models, "concurrency": self.store.concurrency()}
+        return {"models": models, "concurrency": self.store.concurrency(), "pace": self.store.answer_pace()}
 
     def _profile(self, profile_id):
         for profile in self.store.ai_profiles():
@@ -1411,6 +1411,13 @@ class Studia:
     def save_concurrency(self, body):
         try:
             self.store.save_concurrency(body.get("ai"), body.get("study"))
+        except SettingsError as exc:
+            raise HttpError(400, str(exc))
+        return {}
+
+    def save_pace(self, body):
+        try:
+            self.store.save_answer_pace(body.get("pace"))
         except SettingsError as exc:
             raise HttpError(400, str(exc))
         return {}
@@ -1679,6 +1686,7 @@ ROUTES = [
     ("POST", r"/api/settings/models/([\w-]+)/delete", lambda app, m, q, b: app.delete_model(m[1])),
     ("POST", r"/api/settings/models/([\w-]+)/test", lambda app, m, q, b: app.test_model(m[1])),
     ("POST", r"/api/settings/concurrency", lambda app, m, q, b: app.save_concurrency(b)),
+    ("POST", r"/api/settings/pace", lambda app, m, q, b: app.save_pace(b)),
 ]
 
 
