@@ -82,6 +82,8 @@ input, select { font: inherit; color: inherit; }
 svg { display: block; flex: none; }
 code { font: 12px var(--mono); padding: 1px 5px; border-radius: 3px; background: var(--well); }
 .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+/* Figures mixed with Chinese ("1 分 11 秒", "第 2/3 份"): monospace spaces leave gaps; tabular digits in the text face still line up. */
+:is(.state .mono, .run .when, .scrub .t, .slot_foot .mono, .focus .spot .mono) { font-family: var(--sans); font-variant-numeric: tabular-nums; }
 .grow { flex: 1; }
 
 .app { display: grid; grid-template-columns: 232px 1fr; height: 100%; height: 100dvh; }
@@ -181,6 +183,7 @@ code { font: 12px var(--mono); padding: 1px 5px; border-radius: 3px; background:
 .share { background: linear-gradient(90deg, color-mix(in srgb, var(--c) 16%, transparent) var(--fill, 0%), transparent var(--fill, 0%)); }
 .share.auto { background: linear-gradient(90deg, color-mix(in srgb, var(--c) 30%, transparent) var(--fill, 100%), color-mix(in srgb, var(--c) 8%, transparent) var(--fill, 100%));
               box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 60%, transparent); color: var(--c); }
+:root[data-theme="night"] .share.auto { color: color-mix(in srgb, var(--c) 45%, #fff); }
 .ruler { position: relative; height: 18px; margin-top: 4px; border-top: 1px solid color-mix(in srgb, var(--c) 40%, transparent); }
 .ruler i { position: absolute; top: 0; width: 1px; height: 3px; background: color-mix(in srgb, var(--c) 40%, transparent); }
 .ruler i.ten { height: 5px; }
@@ -190,6 +193,7 @@ code { font: 12px var(--mono); padding: 1px 5px; border-radius: 3px; background:
 .ruler i:last-child { margin-left: -1px; }
 .ruler i:last-child span { transform: translateX(-100%); }
 .score_note b { font: 700 14px var(--mono); color: var(--text); }
+.qa_board { margin-top: 14px; }
 .qa_head { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 12px; padding: 14px 16px; }
 .qa_score { font-size: 13px; color: var(--text-3); white-space: nowrap; }
 .qa_score b { font: 600 24px var(--mono); color: var(--text); }
@@ -336,6 +340,12 @@ code { font: 12px var(--mono); padding: 1px 5px; border-radius: 3px; background:
 @media (hover: hover) { .paper:hover { background: var(--hover); } }
 .paper.on { background: var(--indigo-soft); }
 .paper.off { color: var(--text-3); }
+.paper.now { box-shadow: inset 3px 0 0 var(--indigo); }
+.paper .score { margin-right: 6px; }  /* room for the full-marks circle */
+.pq { display: grid; justify-items: end; gap: 5px; }
+.pq .cells { justify-content: flex-end; max-width: 210px; gap: 3px; }
+.pq .cell { width: 12px; height: 8px; }
+.pq small { font-size: 12px; color: var(--indigo); white-space: nowrap; }
 /* The tick box fills in like a bubble on an answer sheet. */
 .box { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 3px; box-shadow: inset 0 0 0 1.5px var(--print); color: var(--paper); transition: background .15s, box-shadow .15s; }
 .paper.on .box { background: rgb(var(--ink)); box-shadow: none; }
@@ -408,6 +418,12 @@ code { font: 12px var(--mono); padding: 1px 5px; border-radius: 3px; background:
 .focus .chapters { position: relative; max-height: 380px; overflow-y: auto; margin: -6px -6px 0; padding: 6px;
   mask-image: linear-gradient(transparent, #000 14px, #000 calc(100% - 14px), transparent); scrollbar-width: thin; }
 .focus .log { position: sticky; top: 24px; }
+.focus .of .stage { color: var(--indigo); font-weight: 500; }
+/* Each paper's title on one line, its question cells across the full width beneath, like an answer sheet. */
+.answers .chapter { grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px 12px; padding: 10px 0; }
+.answers .chapter .cells { grid-column: 1 / -1; grid-row: 2; }
+.answers .chapter .cells:empty { display: none; }
+@media (hover: hover) { .answers .cells .cell:hover { outline: none; } }
 .focus .log_body { max-height: min(560px, calc(100vh - 200px)); }
 .log { align-self: start; border-radius: 4px; background: var(--card); box-shadow: 0 0 0 1px var(--line); overflow: hidden; }
 .log_head { display: flex; align-items: center; gap: 4px; padding: 8px 10px 8px 12px; border-bottom: 1px solid var(--line); }
@@ -677,10 +693,18 @@ button.switch { border: 0; padding: 0; cursor: pointer; }
   .side { display: none; }
   .page { padding: 22px 16px 60px; }
   .title { font-size: 23px; }
-  .hero { grid-template-columns: minmax(0, 1fr); gap: 16px; padding: 18px 16px; }
-  .hero_side { justify-content: space-between; padding-top: 14px; border-top: 1px solid color-mix(in srgb, var(--c) 18%, transparent); }
-  .hero_stat { align-items: flex-start; } .pen_num { font-size: 40px; line-height: 36px; }
-  .digits i { width: 28px; height: 36px; font-size: 22px; }
+  .hero { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 16px 16px 14px; }
+  .hero_side { justify-content: space-between; padding-top: 12px; border-top: 1px solid color-mix(in srgb, var(--c) 18%, transparent); }
+  .hero .title { font-size: 21px; }
+  /* Each figure beside its label, so the hero takes two short lines instead of half the screen. */
+  .hero_stat { display: grid; grid-template-columns: auto auto; align-items: center; justify-content: start; gap: 2px 10px; }
+  .hero_stat > :nth-child(2) { grid-column: 1; grid-row: 1 / span 2; }
+  .hero_label { grid-column: 2; grid-row: 1; align-self: end; }
+  .hero_note { grid-column: 2; grid-row: 2; align-self: start; }
+  .pen_num { font-size: 36px; line-height: 32px; }
+  .digits i { width: 22px; height: 30px; font-size: 18px; }
+  .digits small { margin-left: 2px; }
+  .pq { justify-items: start; } .pq .cells { justify-content: flex-start; }
   .acts { grid-template-columns: 1fr; }
   .course_cards { grid-template-columns: minmax(0, 1fr); gap: 12px; margin-top: 18px; }
   .tabs { margin-top: 20px; }
@@ -699,7 +723,7 @@ button.switch { border: 0; padding: 0; cursor: pointer; }
   .paper { grid-template-columns: 18px minmax(0, 1fr) auto; gap: 10px; padding: 8px 12px; }
   .paper .stamp { display: none; }
   .paper > span:nth-child(4) { grid-column: 2; grid-row: 2; justify-self: start; }
-  .paper .score { grid-column: 3; grid-row: 1 / span 2; margin-right: 6px; }
+  .paper .score { grid-column: 3; grid-row: 1 / span 2; }
   .paper > span:nth-child(4):empty { display: none; }
   .dock { flex-wrap: wrap; padding: 10px; bottom: 10px; } .dock .info { flex-basis: 100%; padding: 0 4px; }
   .dock .btn { flex: 1; }
