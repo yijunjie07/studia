@@ -195,7 +195,7 @@ function currentPlatform() {
   return platformOf(state.current) || state.platforms.find((p) => p.logged_in) || state.platforms[state.platforms.length - 1];
 }
 function platformStatus(p) {
-  if (!p.logged_in) return "未登录";
+  if (!p.logged_in) return p.lapsed ? "登录已过期" : "未登录";
   if (p.rescan) return "问答区要重新扫码";
   if (qaSoon(p)) return `问答区还能用 ${hoursLeft(qaLeft(p))}`;
   return state.courses[p.id] ? `已登录 · ${state.courses[p.id].length} 门课程` : "已登录";
@@ -233,7 +233,7 @@ function renderSidebar() {
   patch($(".switcher_wrap"), platforms);
 
   const courses = [];
-  if (!p.logged_in) courses.push(item(`#/login/${p.id}`, ICON.login, `登录${/^[A-Za-z]/.test(p.short) ? " " : ""}${p.short}`));
+  if (!p.logged_in) courses.push(item(`#/login/${p.id}`, ICON.login, `${p.lapsed ? "重新" : ""}登录${/^[A-Za-z]/.test(p.short) ? " " : ""}${p.short}`));
   else if (!state.courses[p.id]) courses.push(`<div class="nav_item quiet"><span class="label">正在读取课程…</span></div>`);
   else courses.push(...state.courses[p.id].map((c) => {
     const busy = state.jobs.some((j) => j.platform === p.id && j.course === c.id);
@@ -817,14 +817,14 @@ const VIEWS = {
     if (p.logged_in && !again) return go(homeOf(p));
     const head = `<div class="crumb"><span class="dot ${pid}"></span>${esc(p.name)}</div><h1 class="title">${again ? "重新扫码" : `登录${/^[A-Za-z]/.test(p.short) ? " " : ""}${esc(p.short)}`}</h1>`;
     if (p.login === "qr") {
-      setPage(`${head}<p class="sub">${again ? `${p.rescan ? "问答区要重新认人" : "扫完问答区再用 8 小时"}，学习不受影响` : "用智慧树 App 扫码"}</p>
+      setPage(`${head}<p class="sub">${again ? `${p.rescan ? "问答区要重新认人" : "扫完问答区再用 8 小时"}，学习不受影响` : p.lapsed ? "登录已过期，用智慧树 App 重新扫码" : "用智慧树 App 扫码"}</p>
         <div class="login_card"><div class="qr"><div class="qr_empty">正在获取二维码…</div></div>
           <div class="login_status"><div data-status><b>等待扫码</b><p>${TOUCH ? "只有这台手机：长按二维码保存图片，在知到 App 扫一扫里从相册选它，确认后回到这里，会自动登录" : "二维码过期会自动刷新"}</p></div>
             <button class="btn" data-start-login>刷新二维码</button></div></div>`);
       $("[data-start-login]", page).onclick = () => qrLogin(pid);
       qrLogin(pid);
     } else {
-      setPage(`${head}<p class="sub">用职教云账号登录</p>
+      setPage(`${head}<p class="sub">${p.lapsed ? "登录已过期，请用职教云账号重新登录" : "用职教云账号登录"}</p>
         <div class="login_card"><div class="login_status"><div data-status><b>在浏览器中登录</b><p>登录完成后自动回到这里</p></div>
           <button class="btn primary" data-start-login>打开登录页</button></div></div>`);
       $("[data-start-login]", page).onclick = () => browserLogin(pid);

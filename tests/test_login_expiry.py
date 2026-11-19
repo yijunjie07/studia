@@ -60,6 +60,17 @@ class ExpireTest(unittest.TestCase):
         self.assertIsNone(self.store.session("mooc"))
         client.get_info.assert_called_once_with(strict=True)
 
+    def test_an_expired_login_found_on_restart_is_deleted(self):
+        # After a restart the client is rebuilt from the saved token, and building it reads the account.
+        platform = self.app.platforms["mooc"]
+        self.store.save_session("mooc", Mock(access_token="old"))
+        platform.spec = dict(platform.spec, api=Mock(side_effect=AuthenticationExpired("过期")))
+        with self.assertRaises(HttpError) as caught:
+            self.app.courses("mooc")
+        self.assertEqual((caught.exception.status, str(caught.exception)), (401, "MOOC 登录已过期，请重新登录"))
+        self.assertIsNone(self.store.session("mooc"))
+        self.assertEqual([p["lapsed"] for p in self.app.state()["platforms"] if p["id"] == "mooc"], [True])
+
     def test_a_job_refused_once_waits_without_signing_out(self):
         self.platform.client.signed_in = Mock(return_value=True)
         self.platform.rows = [{"courseName": "网络课", "zhs": {"kind": "ai", "courseId": "c1"}}]

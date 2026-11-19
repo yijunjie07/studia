@@ -138,11 +138,12 @@ class Platform:
         # never registered and people scanned again and again.
         self.qr = {}
         self.qr_done = None  # the code that signed in, for its page coming back after the server finished it
+        self.lapsed = False  # the saved login was deleted as expired, so the page says why it asks to sign in again
 
     def public(self, logged_in, rescan=False, rescan_at=None):
         spec = self.spec
         return {"id": self.id, "name": spec["name"], "short": spec["short"], "login": spec["login"],
-                "logged_in": logged_in, "rescan": rescan, "rescan_at": rescan_at,
+                "logged_in": logged_in, "lapsed": self.lapsed, "rescan": rescan, "rescan_at": rescan_at,
                 "features": {"answer": spec["answer"], "review": spec["review"], "qa": bool(spec.get("qa"))}}
 
 
@@ -237,7 +238,12 @@ class Studia:
                 saved = self.store.session(platform.id)
                 if not saved:
                     raise HttpError(401, "请先登录%s" % platform.spec["name"])
-                platform.client = platform.spec["api"](access_token=saved["access_token"])
+                try:
+                    platform.client = platform.spec["api"](access_token=saved["access_token"])
+                except AuthenticationExpired:
+                    # Building it already asked the platform (MOOC reads the account) or found the saved cookies
+                    # unreadable. Kept, the page went on showing a login that read no courses after a restart.
+                    raise self.lapse(platform) from None
             return platform.client
 
     def drop(self, platform):
@@ -247,6 +253,7 @@ class Studia:
             with platform.cache_lock:
                 platform.client, platform.rows, platform.entries, platform.cache = None, [], {}, {}
                 platform.score_reads = {}
+                platform.lapsed = False
 
     def passport(self, platform):
         """(rescan, rescan_at) for the page: whether the Q&A board waits for a fresh scan, and when the ticket
@@ -340,10 +347,16 @@ class Studia:
         if self.signed_in(platform) is not False:
             logger.warning("%s%s 拒绝了一次请求，但登录仍然有效，保留登录", self.who(), name)
             return HttpError(503, "%s 暂时拒绝了请求，请稍后重试" % name)
+        return self.lapse(platform)
+
+    def lapse(self, platform):
+        """Delete a login the platform confirmed gone. Open pages show the platform signed out, saying it expired."""
+        name = platform.spec["name"]
         logger.warning("%s%s 登录已失效，已删除保存的登录状态", self.who(), name)
         with self.lock:
             self.drop(platform)
             self.store.clear_session(platform.id)
+            platform.lapsed = True
         self.publish({"type": "account"})
         return HttpError(401, "%s 登录已过期，请重新登录" % name)
 
@@ -920,6 +933,8 @@ class Studia:
             state, summary = "waiting", str(exc) or "平台要求验证"
         except AuthenticationExpired:
             state, summary = "waiting", str(self.expire(platform))
+        except HttpError as exc:  # e.g. a queued job rebuilt the client and found the login expired
+            state, summary = "waiting" if exc.status == 401 else "error", str(exc)
         except Exception as exc:
             logger.exception("网页任务失败")
             state, summary = "error", str(exc) or "任务失败"
