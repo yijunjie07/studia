@@ -928,8 +928,7 @@ const VIEWS = {
               : admin ? '<button class="btn small" data-go="#/admin/site">去配置</button>' : ""}</span></div>`;
       const studia = me ? `<div class="section"><h3>Studia 账号</h3></div>
         <div class="models">${nameRow}${emailRow}
-          <div class="model plain"><span class="m1"><b>密码</b><small class="sans">${me.email
-            ? `修改链接会发到 ${esc(me.email)}，改完其他设备会退出登录` : "修改密码前需要先绑定邮箱"}</small></span>
+          <div class="model plain"><span class="m1"><b>密码</b></span>
             <span class="row_btns"><button class="btn small" data-password-link ${me.email && session.mail ? "" : "disabled"}>修改密码</button></span></div>
         </div>` : "";
       setPage(`${head}${studia}<div class="section"><h3>平台账号</h3></div>
