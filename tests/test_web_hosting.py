@@ -136,7 +136,8 @@ class HostedServerTest(unittest.TestCase):
         self.assertEqual(post("/api/auth/email/code", {"email": "Alice@Example.com"})[0], 200)
         self.assertEqual(post("/api/auth/email/code", {"email": "Alice@Example.com"})[0], 429)  # one a minute
         self.assertEqual(sent[0]["To"], "Alice@Example.com")
-        code = re.search(r"\d{6}", sent[0].get_content())[0]
+        code = re.search(r"\d{6}", sent[0].get_body(("plain",)).get_content())[0]
+        self.assertIn(">%s</div>" % code, sent[0].get_body(("html",)).get_content())  # the designed mail shows it too
         self.assertEqual(post("/api/auth/email", {"code": "000000" if code != "000000" else "111111"})[1]["error"], "验证码不正确")
         self.assertEqual(post("/api/auth/email", {"code": code})[1]["user"]["email"], "Alice@Example.com")
         self.assertEqual(post("/api/auth/email", {"code": code})[0], 400)  # used up
@@ -151,10 +152,12 @@ class HostedServerTest(unittest.TestCase):
         self.hub.accounts.set_email(alice, "alice@example.com")
         token, csrf = self.login("alice", "alice-password")
         sent = self.mail_ready()
-        link = lambda: re.search(r"/#/reset/([\w-]+)", sent[-1].get_content())[1]
+        link = lambda: re.search(r"/#/reset/([\w-]+)", sent[-1].get_body(("plain",)).get_content())[1]
         self.assertEqual(self.request("POST", "/api/auth/password", {}, cookie=token, csrf=csrf)[1], {"email": "alice@example.com"})
         old = link()
-        self.assertTrue(sent[-1].get_content().count(self.hub.public_url + "/#/reset/"))
+        page = sent[-1].get_body(("html",)).get_content()
+        self.assertIn('href="%s/#/reset/%s"' % (self.hub.public_url, old), page)
+        self.assertIn("alice，你好", page)
         self.request("POST", "/api/auth/password", {}, cookie=token, csrf=csrf)
         reset = lambda t, password="brand-new-pass": self.request("POST", "/api/auth/reset", {"token": t, "password": password})
         self.assertEqual(reset(old)[0], 400)  # superseded by the newer mail

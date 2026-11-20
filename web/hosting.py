@@ -157,6 +157,34 @@ def mail_error(exc):
     return str(exc) or exc.__class__.__name__
 
 
+MAIL_FONT = "font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;"
+MAIL_MONO = "font-family:'SF Mono',Menlo,Consolas,'Courier New',monospace;"
+
+
+def mail_page(preview, heading, intro, main, note):
+    """Studia's mail look: the brand, one heading, one action, a quiet footnote. Tables and inline styles
+    only: mail clients drop <style> blocks and most layout CSS. Arguments are HTML; escape what users typed."""
+    return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f4f4f0;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">{preview}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f4f0;"><tr><td align="center" style="padding:36px 14px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:480px;background:#ffffff;border:1px solid #e4e4df;border-radius:12px;">
+<tr><td style="padding:28px 32px 0;">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+    <td style="padding-right:10px;"><table role="presentation" cellpadding="0" cellspacing="2" border="0">
+      <tr><td width="9" height="9" style="background:#212429;border-radius:2px;"></td><td width="9" height="9" style="background:#212429;border-radius:2px;"></td></tr>
+      <tr><td width="9" height="9" style="background:#2d5fa6;border-radius:2px;"></td><td width="9" height="9" style="background:#d03b2e;border-radius:2px;"></td></tr></table></td>
+    <td style="{MAIL_FONT}font-size:16px;font-weight:700;color:#212429;">Studia</td></tr></table></td></tr>
+<tr><td style="padding:26px 32px 0;{MAIL_FONT}">
+  <h1 style="margin:0;font-size:21px;line-height:1.4;font-weight:700;color:#212429;">{heading}</h1>
+  <p style="margin:10px 0 0;font-size:14px;line-height:1.8;color:#55585c;">{intro}</p></td></tr>
+<tr><td style="padding:24px 32px 28px;{MAIL_FONT}">{main}</td></tr>
+<tr><td style="padding:18px 32px 26px;border-top:1px solid #eeeeea;{MAIL_FONT}font-size:12px;line-height:1.8;color:#8d9094;">{note}</td></tr>
+</table>
+<p style="margin:18px 0 0;{MAIL_FONT}font-size:12px;line-height:1.6;color:#a3a5a8;">这封邮件由 Studia 自动发送，请不要直接回复。</p>
+</td></tr></table></body></html>"""
+
+
 class Hub:
     """Accounts plus one Studia app per user, each rooted in data/users/<id>/."""
 
@@ -418,7 +446,7 @@ class Hub:
             raise HttpError(400, "连接测试失败，没有保存：%s" % mail_error(exc)) from None
         self.site_store.set("smtp", config)
 
-    def mail(self, to, subject, text):
+    def mail(self, to, subject, text, page=None):
         config = self.smtp()
         if config is None:
             raise HttpError(400, "管理员还没有配置邮件服务")
@@ -426,7 +454,9 @@ class Hub:
         message["From"] = formataddr((config["sender_name"] or "Studia", config["sender"]))
         message["To"] = to
         message["Subject"] = subject
-        message.set_content(text)
+        message.set_content(text)  # what a client that shows no HTML reads
+        if page:
+            message.add_alternative(page, subtype="html")
         try:
             server = smtp_open(config)
             try:
@@ -455,7 +485,12 @@ class Hub:
             self.email_codes[uid] = {"email": email, "code": code, "sent": time.time(), "tries": 0}
         try:
             self.mail(email, "Studia 邮箱验证码：%s" % code,
-                      "你的验证码是 %s，10 分钟内有效。\n\n如果不是你本人操作，请忽略这封邮件。" % code)
+                      "你的验证码是 %s，10 分钟内有效。\n\n如果不是你本人操作，请忽略这封邮件。" % code,
+                      mail_page("验证码 %s，10 分钟内有效" % code, "你的邮箱验证码",
+                                "在 Studia 里填写下面的验证码，完成邮箱绑定。验证码 10 分钟内有效。",
+                                '<div style="padding:20px 0 20px 10px;border-radius:10px;background:#f4f4f0;text-align:center;%s'
+                                'font-size:34px;line-height:1;font-weight:700;letter-spacing:10px;color:#212429;">%s</div>' % (MAIL_MONO, code),
+                                "如果不是你本人操作，请忽略这封邮件，你的账号不会有任何变化。"))
         except HttpError:
             self.email_codes.pop(uid, None)  # nothing arrived: let them try again at once
             raise
@@ -480,9 +515,18 @@ class Hub:
     def send_reset(self, user):
         """Mail a one-time link that sets a new password (修改密码 and 忘记密码 alike)."""
         token = self.accounts.create_reset(user["id"])
-        self.mail(user["email"], "Studia 修改密码",
-                  "%s，你好：\n\n打开下面的链接设置新密码。链接 30 分钟内有效，只能用一次：\n%s/#/reset/%s\n\n"
-                  "如果不是你本人操作，请忽略这封邮件，密码不会改变。" % (user["username"], self.public_url, token))
+        link, name = "%s/#/reset/%s" % (self.public_url, token), html.escape(user["username"])
+        self.mail(user["email"], "设置 Studia 新密码",
+                  "%s，你好：\n\n打开下面的链接设置新密码。链接 30 分钟内有效，只能用一次：\n%s\n\n"
+                  "如果不是你本人操作，请忽略这封邮件，密码不会改变。" % (user["username"], link),
+                  mail_page("点链接设置新密码，30 分钟内有效", "设置新密码",
+                            "%s，你好。点下面的按钮为你的 Studia 账号设置新密码，链接 30 分钟内有效，只能使用一次。" % name,
+                            '<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td style="border-radius:8px;background:#212429;">'
+                            '<a href="%s" style="display:inline-block;padding:13px 30px;%sfont-size:15px;font-weight:600;color:#ffffff;'
+                            'text-decoration:none;border-radius:8px;">设置新密码</a></td></tr></table>'
+                            '<p style="margin:20px 0 0;font-size:12px;line-height:1.7;color:#8d9094;">按钮打不开的话，把这个链接复制到浏览器：<br>'
+                            '<a href="%s" style="color:#2d5fa6;word-break:break-all;">%s</a></p>' % (html.escape(link), MAIL_FONT, html.escape(link), html.escape(link)),
+                            "设置后，已登录的其他设备会退出。如果不是你本人操作，请忽略这封邮件，你的密码不会改变。"))
 
     def default_job_limit(self):
         return self.accounts.setting("max_jobs", MAX_JOBS)
