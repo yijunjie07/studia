@@ -42,7 +42,7 @@ class HostedServerTest(unittest.TestCase):
         self.port = self.server.server_address[1]
         self.hub = Hub(directory.name, "http://127.0.0.1:%d" % self.port, key=os.urandom(32))
         self.server.RequestHandlerClass = make_handler(HostedAccess(self.hub, self.port))
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
         self.admin_id = self.hub.accounts.create_user("admin", "admin-password", role="admin")

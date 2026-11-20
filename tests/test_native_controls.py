@@ -40,13 +40,28 @@ class SizedOutput(DummyOutput):
         return Size(rows=self.rows, columns=self.columns)
 
 
+def settle(drawn, previous=""):
+    """Wait until the app has handled and drawn the last key, then let the next one go.
+
+    Keys sent back to back can land in one read and merge (Esc then Enter reads
+    as Alt+Enter), so each waits for a frame; a lone Esc is held for the app's
+    50 ms escape window, so after one also wait out that window."""
+    drawn.wait(2)
+    drawn.clear()
+    if previous.endswith(ESC):
+        time.sleep(0.1)
+
+
 def run(func, keys, *args, columns=80, rows=24, timeout=6, **kwargs):
     """Run one native control with real rendering, bounded by a watchdog."""
     frames = []
     real_application = native_ui.Application
 
     def factory(*a, **kw):
+        drawn = threading.Event()
+
         def grab(app):
+            drawn.set()
             screen = app.renderer.last_rendered_screen
             if not screen:
                 return
@@ -64,12 +79,14 @@ def run(func, keys, *args, columns=80, rows=24, timeout=6, **kwargs):
             app.create_background_task(watchdog())
 
             def feed():
+                previous = ""
                 for chunk in (keys if isinstance(keys, list) else [keys]):
-                    time.sleep(0.7 if chunk == ESC else 0.15)
+                    settle(drawn, previous)
                     try:
                         pipe.send_text(chunk)
                     except Exception:
                         return
+                    previous = chunk
             threading.Thread(target=feed, daemon=True).start()
         app.pre_run_callables.append(prep)
         return app

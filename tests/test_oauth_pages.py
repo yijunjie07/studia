@@ -14,7 +14,7 @@ class CallbackPageTests(unittest.TestCase):
     def setUp(self):
         self.handler = OAuthLoginHandler()
         self.server = HTTPServer(("127.0.0.1", 0), self.handler.create_request_handler())
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
         self.thread.start()
         self.addCleanup(self.close_server)
         self.session = requests.Session()

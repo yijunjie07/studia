@@ -9,7 +9,6 @@ string and resolved attributes), not just the presence of a label in output.
 """
 import asyncio
 import threading
-import time
 import unittest
 from unittest.mock import patch
 
@@ -18,6 +17,7 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
 from terminal import theme
+from tests.test_native_controls import settle
 
 DOWN = '\x1b[B'
 FOCUS_BG = theme.TEXT.lstrip('#')  # prompt_toolkit reports bgcolor without '#'
@@ -46,7 +46,10 @@ def run_frames(module, func, chunks, *args, columns=120, rows=30, timeout=6, out
     real_application = module.Application
 
     def application(*a, **kw):
+        drawn = threading.Event()
+
         def capture(app):
+            drawn.set()
             screen = app.renderer.last_rendered_screen
             if not screen:
                 return
@@ -70,8 +73,10 @@ def run_frames(module, func, chunks, *args, columns=120, rows=30, timeout=6, out
             app.create_background_task(watchdog())
 
             def feed():
+                previous = ""
                 for text in chunks:
-                    time.sleep(0.2)
+                    settle(drawn, previous)
+                    previous = "" if callable(text) else text
                     if callable(text):
                         # Resize-style steps get the running app so they can
                         # invalidate it exactly like a real SIGWINCH would.
