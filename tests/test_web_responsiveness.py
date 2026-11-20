@@ -83,7 +83,7 @@ class WebResponsivenessTests(unittest.TestCase):
         self.server.release_score = threading.Event()
         self.server.release_score.set()
         self.server.score_requests = 0
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
         self.page = self.browser.new_page()
         self.base = "http://127.0.0.1:%d/?t=test" % self.server.server_port
 

@@ -22,7 +22,7 @@ class WebServerTest(unittest.TestCase):
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), None)
         self.port = self.server.server_address[1]
         self.server.RequestHandlerClass = make_handler(LocalAccess(self.app, self.port))
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
 
