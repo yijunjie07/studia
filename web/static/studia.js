@@ -1038,8 +1038,8 @@ function paintSettings(tab, head, data, again) {
     // Small numbers: tap − / +, saved as soon as the taps stop. No keyboard, no save button.
     // The pace takes effect on its own tap; 快速 asks twice, since it risks the platform's slider check.
     const fast = data.pace === "fast", admin = session.user?.role === "admin";
-    const paceButtons = data.pace_locked
-      ? (admin ? '<button class="btn small" data-go="#/admin/site">去管理后台修改</button>' : "")
+    // On a hosted site the admin sets the pace for everyone: members don't see it, the admin gets a way there.
+    const paceButtons = data.pace_locked ? '<button class="btn small" data-go="#/admin/site">去管理后台修改</button>'
       : `<button class="btn small" data-pace="steady" aria-pressed="${!fast}">稳妥</button><button class="btn small" data-pace="fast" aria-pressed="${fast}" ${fast ? "" : 'data-confirm="确认用快速"'}>快速</button>`;
     const row = (k, label, note) => `<div class="model plain stepper_row"><span class="m1"><b>${label}</b><small class="sans">${note}</small></span>
       <span class="stepper"><button class="btn small" data-step="${k}" data-d="-1" aria-label="减少" ${data.concurrency[k] <= 1 ? "disabled" : ""}>−</button>
@@ -1047,11 +1047,11 @@ function paintSettings(tab, head, data, again) {
     quiet = again;
     setPage(`${head}<div class="section"><h3>并发数量</h3><span class="aside">1–8</span></div>
       <div class="models">${row("ai", "AI 答题", "同时作答的题数")}${row("study", "自动学习", "同时学的资源数，智慧树固定 1 个")}</div>
-      <div class="section"><h3>答题节奏</h3><span class="aside">只影响智慧树${data.pace_locked ? "，由管理员设置" : ""}</span></div>
+      ${data.pace_locked && !admin ? "" : `<div class="section"><h3>答题节奏</h3><span class="aside">只影响智慧树${data.pace_locked ? "，由管理员设置" : ""}</span></div>
       <div class="models"><div class="model plain stepper_row"><span class="m1"><b>${fast ? "快速" : "稳妥"}</b><small class="sans">${fast
         ? "拿题、保存答案之间只停 0.1–0.5 秒，快很多，但更可能触发滑块验证"
         : "拿题、保存答案之间像人一样停 0.5–2 秒，最不容易触发滑块验证"}</small></span>
-        <span class="row_btns">${paceButtons}</span></div></div>`);
+        <span class="row_btns">${paceButtons}</span></div></div>`}`);
     quiet = false;
     page.querySelectorAll("[data-pace]").forEach((el) => (el.onclick = async () => {
       const pace = el.dataset.pace;
