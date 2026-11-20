@@ -557,6 +557,7 @@ body.dragging, body.dragging * { cursor: grabbing !important; user-select: none;
 .model.password_form { grid-template-columns: minmax(0, 1fr); align-items: start; gap: 14px; }
 .form_msg { min-height: 18px; margin: 0 0 4px; font-size: 13px; line-height: 1.5; color: var(--seal); }
 .form_msg.ok { color: var(--text-3); }
+.form_msg:empty { display: none; }
 .code_row { display: flex; gap: 8px; }
 .code_row input { flex: 1; min-width: 0; }
 .code_row .btn { flex: none; height: 38px; }

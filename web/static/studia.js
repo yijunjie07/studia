@@ -90,7 +90,7 @@ async function api(path, { method = "GET", body } = {}) {
 const state = {
   platforms: [], courses: {}, papers: {}, paperErrors: {}, units: {}, selected: {}, earned: {}, qaDraft: {}, qaPosts: {}, qaRoom: {}, qaPeers: null, qaOpen: new Set(),
   jobs: [], runs: {}, focus: null, jobLimit: 4, zhsParallel: false, history: [], view: "", loginToken: { cancelled: true }, returnTo: "", lastDone: null,
-  current: store.get("studia-platform", ""), meOpen: false, adminTab: "people", logFilter: "all", accountEdit: null, adminEdit: null, pausedOpen: new Set(),
+  current: store.get("studia-platform", ""), meOpen: false, adminTab: "people", logFilter: "all", accountEdit: null, passwordSent: null, adminEdit: null, pausedOpen: new Set(),
 };
 function freshRun() { return { detail: "", overall: null, sub: null, lines: [], unit: null }; }
 const runOf = (id) => (state.runs[id] = state.runs[id] || freshRun());
@@ -406,7 +406,7 @@ document.addEventListener("mouseover", (event) => {
 /* ---------------------------------------------------------------- views */
 
 const ADMIN_TABS = [["people", "用户"], ["site", "站点"], ["logs", "日志"]];
-const SETTINGS_TABS = [["models", "AI 模型"], ["account", "账号"], ["study", "偏好"]];
+const SETTINGS_TABS = [["account", "账号"], ["models", "AI 模型"], ["study", "偏好"]];
 function pageHead(title, sub, base, tabs, active) {
   return `<h1 class="title">${title}</h1><p class="sub">${sub}</p>
     <div class="tabs" role="tablist">${tabs.map(([k, label]) => `<button class="tab" role="tab" aria-selected="${k === active}" data-go="${base}/${k}">${label}</button>`).join("")}</div>`;
@@ -868,7 +868,7 @@ const VIEWS = {
         `<span class="plat ${p.id}">${INITIAL[p.id]}</span>`, p.name, platformStatus(p),
         p.rescan || qaSoon(p) ? '<span class="lrow_go">扫码</span>' : p.logged_in ? ICON.chev : '<span class="lrow_go">登录</span>')).join("")}</div>
       <div class="section"><h3>设置</h3></div>
-      <div class="lrows">${row('data-go="#/settings/models"', ICON.spark, "AI 模型")}${row('data-go="#/settings/account"', ICON.key, "账号")}
+      <div class="lrows">${row('data-go="#/settings/account"', ICON.key, "账号")}${row('data-go="#/settings/models"', ICON.spark, "AI 模型")}
         ${row('data-go="#/settings/study"', ICON.gear, "偏好")}${me?.role === "admin" ? row('data-go="#/admin"', ICON.shield, "管理后台") : ""}</div>
       <div class="lrows" style="margin-top:14px">${row("data-toggle-theme", ICON.moon, "夜读模式", "", '<span class="switch" aria-hidden="true"></span>')}</div>
       ${me ? '<button class="btn danger me_out" data-signout>退出 Studia</button>' : ""}`);
@@ -904,8 +904,8 @@ const VIEWS = {
     renderCourse(p, c, courseTab(c, tab), true);
   },
 
-  async settings(tab = "models") {
-    tab = SETTINGS_TABS.some(([k]) => k === tab) ? tab : "models";
+  async settings(tab = SETTINGS_TABS[0][0]) {
+    tab = SETTINGS_TABS.some(([k]) => k === tab) ? tab : SETTINGS_TABS[0][0];
     const where = session.mode === "hosted" ? "只对你的账号生效" : "只保存在这台电脑上";
     const head = settingsHead(tab, where);
     if (tab === "account") {
@@ -926,11 +926,19 @@ const VIEWS = {
             : session.mail ? "未绑定。绑定后才能修改密码，忘记密码时也靠它找回" : "管理员还没有配置邮件服务，暂时不能绑定"}</small></span>
             <span class="row_btns">${session.mail ? `<button class="btn small ${me?.email ? "" : "primary"}" data-account-edit="email">${me?.email ? "更换" : "绑定邮箱"}</button>`
               : admin ? '<button class="btn small" data-go="#/admin/site">去配置</button>' : ""}</span></div>`;
+      // 修改密码 asks first, then says where the mail went; another link waits a minute, since it voids the last.
+      const sent = state.passwordSent;
+      const passwordRow = editing === "password" ? `<div class="model plain password_form" data-password-panel>
+            <span class="m1"><b>${sent ? "邮件已发送" : "修改密码"}</b><small class="sans">${sent
+              ? `已发到 ${esc(me?.email)}，打开邮件里的链接设置新密码。没收到的话看看垃圾邮件；重新发送后，之前那封邮件里的链接会失效。`
+              : `会给 ${esc(me?.email)} 发一封邮件，点邮件里的链接设置新密码。链接 30 分钟内有效，设置后其他设备会退出登录。`}</small></span>
+            <span class="pw_fields"><p class="form_msg" role="alert"></p><span class="row_btns">
+              <button type="button" class="btn" data-account-edit="">${sent ? "完成" : "取消"}</button>
+              <button type="button" class="btn ${sent ? "" : "primary"}" data-password-send>${sent ? "重新发送" : "发送邮件"}</button></span></span></div>`
+        : `<div class="model plain"><span class="m1"><b>密码</b></span>
+            <span class="row_btns"><button class="btn small" data-account-edit="password" ${me?.email && session.mail ? "" : "disabled"}>修改密码</button></span></div>`;
       const studia = me ? `<div class="section"><h3>Studia 账号</h3></div>
-        <div class="models">${nameRow}${emailRow}
-          <div class="model plain"><span class="m1"><b>密码</b></span>
-            <span class="row_btns"><button class="btn small" data-password-link ${me.email && session.mail ? "" : "disabled"}>修改密码</button></span></div>
-        </div>` : "";
+        <div class="models">${nameRow}${emailRow}${passwordRow}</div>` : "";
       setPage(`${head}${studia}<div class="section"><h3>平台账号</h3></div>
         <div class="models">${state.platforms.map((p) => `<div class="model"><span class="plat ${p.id}">${INITIAL[p.id]}</span>
           <span class="m1"><b>${esc(p.name)}</b><small class="sans">${esc(platformStatus(p))} · ${p.login === "qr" ? "App 扫码登录" : "职教云浏览器授权"}</small></span><span></span>
@@ -943,8 +951,9 @@ const VIEWS = {
       }));
       page.querySelectorAll("[data-account-edit]").forEach((el) => (el.onclick = () => {
         state.accountEdit = el.dataset.accountEdit || null;
+        state.passwordSent = null;
         quiet = true; VIEWS.settings("account"); quiet = false;
-        $("[data-username] input, [data-email-form] input", page)?.focus();
+        $("[data-username] input, [data-email-form] input, [data-password-send]", page)?.focus();
       }));
       const nameForm = $("[data-username]", page);
       if (nameForm) nameForm.onsubmit = async (event) => {
@@ -959,13 +968,23 @@ const VIEWS = {
       };
       const emailForm = $("[data-email-form]", page);
       if (emailForm) wireEmailForm(emailForm, () => { state.accountEdit = null; toast("邮箱已绑定"); VIEWS.settings("account"); });
-      const link = $("[data-password-link]", page);
-      if (link) link.onclick = async () => {
-        link.disabled = true;
-        try { const { email } = await api("/api/auth/password", { method: "POST" }); toast(`修改密码的链接已发到 ${email}，30 分钟内有效`); }
-        catch (e) { toast(e.message); }
-        link.disabled = false;
-      };
+      const send = $("[data-password-send]", page);
+      if (send) {
+        if (state.passwordSent) resendAfter(send, state.passwordSent);
+        send.onclick = async () => {
+          send.disabled = true;
+          send.textContent = "发送中…";
+          try {
+            await api("/api/auth/password", { method: "POST" });
+            state.passwordSent = Date.now();
+            quiet = true; VIEWS.settings("account"); quiet = false;
+          } catch (e) {
+            $("[data-password-panel] .form_msg", page).textContent = e.message;
+            send.disabled = false;
+            send.textContent = state.passwordSent ? "重新发送" : "发送邮件";
+          }
+        };
+      }
       return;
     }
     // Draw from the last copy at once; repaint only if the server's copy differs.
@@ -973,11 +992,20 @@ const VIEWS = {
     if (cached) paintSettings(tab, head, cached, false);
     else setPage(`${head}<div class="empty">正在读取…</div>`);
     try { state.settings = await api("/api/settings"); } catch (error) { if (!cached) toast(error.message); return; }
-    if (location.hash.startsWith(`#/settings/${tab}`) || (tab === "models" && location.hash === "#/settings")) {
+    if (location.hash.startsWith(`#/settings/${tab}`)) {
       if (!cached || JSON.stringify(cached) !== JSON.stringify(state.settings)) paintSettings(tab, head, state.settings, true);
     }
   },
 };
+
+// The resend button of the 修改密码 panel counts down from the last send.
+function resendAfter(button, sentAt) {
+  if (!button.isConnected) return;
+  const left = Math.ceil(60 - (Date.now() - sentAt) / 1000);
+  button.disabled = left > 0;
+  button.textContent = left > 0 ? `${left} 秒后可重新发送` : "重新发送";
+  if (left > 0) setTimeout(() => resendAfter(button, sentAt), 1000);
+}
 
 // Binding an email: a code mailed to the address. In 设置 → 账号 and in the prompt when the page opens.
 const emailFields = () => `<label class="auth_field"><span>邮箱</span><span class="code_row">
@@ -2101,7 +2129,7 @@ function route(event) {
   scroller.scrollTop = 0;
   if (name === "admin") { if (session.user?.role === "admin") VIEWS.admin(false, a); else go("#/settings"); }
   else if (name === "jobs") { VIEWS.jobs(a); if (a === "all" && session.user?.role === "admin") loadSiteJobs(); }
-  else if (name === "settings") { state.accountEdit = null; VIEWS.settings(a); }
+  else if (name === "settings") { state.accountEdit = state.passwordSent = null; VIEWS.settings(a); }
   else if (name === "course") VIEWS.course(a, decodeURIComponent(b || ""), c);
   else if (name === "login") VIEWS.login(a, b === "again");
   else if (VIEWS[name]) VIEWS[name]();
