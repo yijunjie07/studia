@@ -14,9 +14,13 @@ import os
 import re
 import secrets
 import signal
+import smtplib
+import ssl
 import threading
 import time
 from dataclasses import asdict, replace
+from email.message import EmailMessage
+from email.utils import formataddr
 from http.cookies import SimpleCookie
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -30,8 +34,8 @@ from zhs.memory import DatabaseAnswerMemory
 from ai.memory import MoocDatabaseAnswerMemory
 from ai.client import AIClient, AIConfig, AIError
 from ai.defaults import DEFAULT_PROVIDER_NAME, default_config
-from core.settings import SettingsError, SettingsStore
-from web.accounts import AccountError, Accounts, Sessions, Throttle
+from core.settings import ANSWER_PACES, SettingsError, SettingsStore
+from web.accounts import EMAIL, AccountError, Accounts, Sessions, Throttle
 from web.server import MAX_JOBS, MAX_PENDING, NOT_HANDLED, PEERS_MARKER, HttpError, Reply, Studia, _EventLogHandler, drain, \
     keep_passports, key_hint, make_handler
 
@@ -123,6 +127,36 @@ class EncryptedSettingsStore(SettingsStore):
                 temporary.unlink()
 
 
+SMTP_PORTS = {"ssl": 465, "starttls": 587, "none": 25}
+CODE_TTL = 10 * 60
+
+
+def smtp_open(config):
+    """Connect and sign in to the site's mail server. Raises OSError or smtplib.SMTPException."""
+    context = ssl.create_default_context()  # smtplib alone would not check the certificate on Python 3.9
+    if config["security"] == "ssl":
+        server = smtplib.SMTP_SSL(config["host"], config["port"], timeout=15, context=context)
+    else:
+        server = smtplib.SMTP(config["host"], config["port"], timeout=15)
+    try:
+        if config["security"] == "starttls":
+            server.starttls(context=context)
+        if config["username"]:
+            server.login(config["username"], config["password"])
+    except BaseException:
+        server.close()
+        raise
+    return server
+
+
+def mail_error(exc):
+    if isinstance(exc, smtplib.SMTPAuthenticationError):
+        return "账号或密码（授权码）不正确"
+    if isinstance(exc, smtplib.SMTPResponseException):
+        return "%d %s" % (exc.smtp_code, exc.smtp_error.decode("utf-8", "replace") if isinstance(exc.smtp_error, bytes) else exc.smtp_error)
+    return str(exc) or exc.__class__.__name__
+
+
 class Hub:
     """Accounts plus one Studia app per user, each rooted in data/users/<id>/."""
 
@@ -152,6 +186,10 @@ class Hub:
         self.setup_code = None if self.accounts.has_admin() else "-".join(
             secrets.token_hex(2).upper() for _ in range(3))
         self.throttle = Throttle()
+        # Mail costs the site's sender reputation: at most 5 an hour per person, per account and per address.
+        self.mail_throttle = Throttle(limit=5, window=3600)
+        # ponytail: binding codes live in memory, so a restart asks for a new one; a table if that ever matters.
+        self.email_codes = {}
         self.public_url = public_url.rstrip("/")
         self.trust_proxy = trust_proxy
         # The program writes its daily log files to the working directory (/data in Docker).
@@ -173,6 +211,7 @@ class Hub:
                              oauth_url=lambda pid, here=False, uid=uid: self.oauth_url(uid, pid, here),
                              job_limit=lambda uid=uid: self.job_limit(uid),
                              zhs_parallel=lambda: bool(self.accounts.setting("zhs_parallel_study", False)),
+                             answer_pace=self.answer_pace,
                              peers=lambda course_id, recruit_id, uid=uid: self.peer_questions(uid, course_id, recruit_id))
                 app.owner = (self.accounts.user(uid) or {}).get("username", uid)
                 self.apps[uid] = app
@@ -324,16 +363,126 @@ class Hub:
         return {"health": "ok", "message": "连接正常"}
 
     def site_settings(self):
-        config = self.default_model()
+        config, smtp = self.default_model(), self.smtp()
         health = self.default_model_health(config)
         return {"max_jobs": self.default_job_limit(),
                 "zhs_parallel_study": bool(self.accounts.setting("zhs_parallel_study", False)),
+                "answer_pace": self.answer_pace(),
+                "smtp": smtp and dict({k: v for k, v in smtp.items() if k != "password"},
+                                      password_hint="已保存" if smtp["password"] else ""),  # not even part of it
                 "builtin_available": default_config() is not None,
                 "default_model": config and dict(
                     provider_name=config.provider_name, base_url=config.base_url, model=config.model,
                     key_hint=key_hint(config.api_key), health=health.get("status", ""),
                     health_message=health.get("message", ""), checked_at=health.get("checked_at", ""),
                     source="site" if self.site_store.get("default_model") is not None else "builtin")}
+
+    def answer_pace(self):
+        """Zhihuishu answer pace for everyone on the site; only an admin changes it (stored like zhs_parallel_study)."""
+        pace = self.accounts.setting("answer_pace", "steady")
+        return pace if pace in ANSWER_PACES else "steady"
+
+    def smtp(self):
+        return self.site_store.get("smtp")
+
+    def save_smtp(self, body):
+        if body is None:
+            self.site_store.set("smtp", None)
+            return
+        fields = ("host", "security", "username", "password", "sender", "sender_name")
+        if not isinstance(body, dict) or any(k in body and not isinstance(body[k], str) for k in fields):
+            raise HttpError(400, "邮件服务配置格式不正确")
+        config = {k: body.get(k, "").strip() for k in fields}
+        if not config["host"]:
+            raise HttpError(400, "请填写 SMTP 服务器")
+        if config["security"] not in SMTP_PORTS:
+            raise HttpError(400, "加密方式只能是 SSL、STARTTLS 或不加密")
+        try:
+            config["port"] = int(body.get("port") or SMTP_PORTS[config["security"]])
+        except (TypeError, ValueError):
+            config["port"] = 0
+        if not 0 < config["port"] < 65536:
+            raise HttpError(400, "端口不正确")
+        config["sender"] = config["sender"] or config["username"]
+        if not EMAIL.fullmatch(config["sender"]):
+            raise HttpError(400, "请填写正确的发件地址")
+        previous = self.smtp()
+        if not config["password"] and previous:
+            # A blank password keeps the saved one, but never sends it to a different server.
+            if config["host"].lower() != previous["host"].lower():
+                raise HttpError(400, "更换服务器时请重新填写密码")
+            config["password"] = previous["password"]
+        try:  # sign in before anyone depends on it, outside the hub lock
+            smtp_open(config).quit()
+        except (OSError, smtplib.SMTPException) as exc:
+            raise HttpError(400, "连接测试失败，没有保存：%s" % mail_error(exc)) from None
+        self.site_store.set("smtp", config)
+
+    def mail(self, to, subject, text):
+        config = self.smtp()
+        if config is None:
+            raise HttpError(400, "管理员还没有配置邮件服务")
+        message = EmailMessage()
+        message["From"] = formataddr((config["sender_name"] or "Studia", config["sender"]))
+        message["To"] = to
+        message["Subject"] = subject
+        message.set_content(text)
+        try:
+            server = smtp_open(config)
+            try:
+                server.send_message(message)
+            finally:
+                server.close()
+        except (OSError, smtplib.SMTPException) as exc:
+            logger.warning("发送邮件失败：%s", mail_error(exc))
+            raise HttpError(400, "邮件发送失败：%s" % mail_error(exc)) from None
+
+    def send_email_code(self, uid, email):
+        email = str(email or "").strip()
+        if len(email) > 254 or not EMAIL.fullmatch(email):
+            raise HttpError(400, "邮箱格式不正确")
+        if self.accounts.email_taken(email, uid):
+            raise HttpError(400, "这个邮箱已经绑定了其他账号")
+        with self.lock:
+            pending = self.email_codes.get(uid)
+            wait = pending and 60 - (time.time() - pending["sent"])
+            if wait and wait > 0:
+                raise HttpError(429, "验证码刚发过，请 %d 秒后再试" % wait)
+            if self.mail_throttle.blocked("code:" + uid):
+                raise HttpError(429, "验证码发送太频繁，请过一会儿再试")
+            self.mail_throttle.fail("code:" + uid)
+            code = "%06d" % secrets.randbelow(10 ** 6)
+            self.email_codes[uid] = {"email": email, "code": code, "sent": time.time(), "tries": 0}
+        try:
+            self.mail(email, "Studia 邮箱验证码：%s" % code,
+                      "你的验证码是 %s，10 分钟内有效。\n\n如果不是你本人操作，请忽略这封邮件。" % code)
+        except HttpError:
+            self.email_codes.pop(uid, None)  # nothing arrived: let them try again at once
+            raise
+
+    def bind_email(self, uid, code):
+        with self.lock:
+            pending = self.email_codes.get(uid)
+            if not pending or time.time() - pending["sent"] > CODE_TTL:
+                raise HttpError(400, "验证码已过期，请重新发送")
+            pending["tries"] += 1
+            if pending["tries"] > 5:
+                self.email_codes.pop(uid, None)
+                raise HttpError(400, "错误次数太多，请重新发送验证码")
+            if not hmac.compare_digest(str(code or "").strip().encode(), pending["code"].encode()):
+                raise HttpError(400, "验证码不正确")
+            self.email_codes.pop(uid, None)
+        try:
+            self.accounts.set_email(uid, pending["email"])
+        except AccountError as exc:
+            raise HttpError(400, str(exc)) from None
+
+    def send_reset(self, user):
+        """Mail a one-time link that sets a new password (修改密码 and 忘记密码 alike)."""
+        token = self.accounts.create_reset(user["id"])
+        self.mail(user["email"], "Studia 修改密码",
+                  "%s，你好：\n\n打开下面的链接设置新密码。链接 30 分钟内有效，只能用一次：\n%s/#/reset/%s\n\n"
+                  "如果不是你本人操作，请忽略这封邮件，密码不会改变。" % (user["username"], self.public_url, token))
 
     def default_job_limit(self):
         return self.accounts.setting("max_jobs", MAX_JOBS)
@@ -489,6 +638,35 @@ class HostedAccess:
                 raise HttpError(400, str(exc))
             hub.audit("register", actor=hub.accounts.user(uid)["username"], ip=self._ip(request))
             return self._signed_in(uid)
+        if method == "POST" and path == "/api/auth/forgot":
+            ip, login = self._ip(request), str(body.get("login", "")).strip()
+            if hub.smtp() is None:
+                raise HttpError(400, "管理员还没有配置邮件服务，请联系管理员重置密码")
+            user = hub.accounts.find(login) if login else None
+            keys = ("ip:" + ip,) + (("reset:" + user["id"],) if user else ())
+            if hub.mail_throttle.blocked(*keys):
+                raise HttpError(429, "发送太频繁，请过一会儿再试")
+            hub.mail_throttle.fail(*keys)
+            sent = bool(user and user["email"] and not user["disabled"])
+            if sent:
+                hub.send_reset(user)
+            hub.audit("forgot", actor=login[:64], ip=ip, ok=sent)
+            return {}  # the same answer whether or not the account exists
+        if method == "POST" and path == "/api/auth/reset":
+            ip = self._ip(request)
+            if hub.throttle.blocked("ip:" + ip):
+                raise HttpError(429, "尝试次数太多，请稍后再试")
+            try:
+                uid = hub.accounts.reset_password(str(body.get("token", "")), str(body.get("password", "")))
+            except AccountError as exc:
+                hub.throttle.fail("ip:" + ip)
+                raise HttpError(400, str(exc))
+            hub.sessions.drop_user(uid)  # every other device signs in again
+            user = hub.accounts.user(uid)
+            hub.audit("reset", actor=user["username"], ip=ip)
+            if user["disabled"]:
+                raise HttpError(403, "这个账号已被停用，请联系管理员")
+            return self._signed_in(uid)
         match = re.fullmatch(r"/oauth/callback/([\w-]+)", path)
         if method == "GET" and match:
             session = hub.sessions.get(self._token(request))
@@ -518,18 +696,38 @@ class HostedAccess:
     def private(self, request, method, path, query, body, ctx):
         hub, user = self.hub, ctx["user"]
         if method == "GET" and path == "/api/auth/me":
-            return {"user": user, "csrf": ctx["session"]["csrf"]}
+            return {"user": user, "csrf": ctx["session"]["csrf"], "mail": hub.smtp() is not None}
         if method == "POST" and path == "/api/auth/logout":
             hub.sessions.drop(ctx["token"])
             return Reply({}, headers=self._cookie("", 0))
         if method == "POST" and path == "/api/auth/password":
+            # The password changes only through a link mailed to the bound address.
+            if not user["email"]:
+                raise HttpError(400, "请先绑定邮箱")
+            if hub.mail_throttle.blocked("reset:" + user["id"]):
+                raise HttpError(429, "邮件发送太频繁，请过一会儿再试")
+            hub.mail_throttle.fail("reset:" + user["id"])
+            hub.send_reset(user)
+            hub.audit("password_link", actor=user["username"], ip=self._ip(request))
+            return {"email": user["email"]}
+        if method == "POST" and path == "/api/auth/username":
             try:
-                hub.accounts.set_password(user["id"], str(body.get("new", "")), old_password=str(body.get("old", "")))
+                hub.accounts.set_username(user["id"], str(body.get("username", "")).strip())
             except AccountError as exc:
                 raise HttpError(400, str(exc))
-            hub.sessions.drop_user(user["id"])
-            hub.audit("password", actor=user["username"], ip=self._ip(request))
-            return self._signed_in(user["id"])
+            fresh = hub.accounts.user(user["id"])
+            if user["id"] in hub.apps:
+                hub.apps[user["id"]].owner = fresh["username"]  # runtime log lines name the account
+            hub.audit("username", actor=fresh["username"], target=user["username"], ip=self._ip(request))
+            return {"user": fresh}
+        if method == "POST" and path == "/api/auth/email/code":
+            hub.send_email_code(user["id"], body.get("email"))
+            return {}
+        if method == "POST" and path == "/api/auth/email":
+            hub.bind_email(user["id"], body.get("code"))
+            fresh = hub.accounts.user(user["id"])
+            hub.audit("email", actor=user["username"], ip=self._ip(request))
+            return {"user": fresh}
         if not path.startswith("/api/admin/"):
             return NOT_HANDLED
         if user["role"] != "admin":
@@ -574,12 +772,18 @@ class HostedAccess:
             return hub.test_default_model()
         if method == "POST" and path == "/api/admin/settings":
             limit = _job_limit(body["max_jobs"]) if "max_jobs" in body else None
+            if "answer_pace" in body and body["answer_pace"] not in ANSWER_PACES:
+                raise HttpError(400, "答题节奏只能是稳妥或快速")
             if "default_model" in body:
                 hub.save_default_model(body["default_model"])
+            if "smtp" in body:
+                hub.save_smtp(body["smtp"])
             if limit is not None:
                 hub.accounts.set_setting("max_jobs", limit)
             if "zhs_parallel_study" in body:
                 hub.accounts.set_setting("zhs_parallel_study", body.get("zhs_parallel_study") is True)
+            if "answer_pace" in body:
+                hub.accounts.set_setting("answer_pace", body["answer_pace"])
             return hub.site_settings()
         match = re.fullmatch(r"/api/admin/users/(\w+)/jobs/(\w+)/(stop|pause|continue|move)", path)
         if method == "POST" and match:

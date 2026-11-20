@@ -81,6 +81,26 @@ class WebServerTest(unittest.TestCase):
         response.read()
         self.assertIs(conn.sock, sock)
 
+    def test_page_names_its_build_so_an_open_page_notices_an_update(self):
+        build = json.loads(self.request("GET", "/api/state")[1])["build"]
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        self.addCleanup(conn.close)
+        conn.request("GET", "/")
+        response = conn.getresponse()
+        page = response.read().decode()
+        self.assertIn('src="studia.js?v=%s"' % build, page)
+        self.assertIn('href="studia.css?v=%s"' % build, page)
+        self.assertEqual(response.getheader("ETag"), '"%s"' % build)
+        self.assertEqual(self.request("GET", "/studia.js?v=" + build)[0], 200)
+        with patch("web.server.static_build", return_value="newer"):  # a file it loads changed: no 304 for the old page
+            conn.request("GET", "/", headers={"If-None-Match": '"%s"' % build})
+            self.assertIn('src="studia.js?v=newer"', conn.getresponse().read().decode())
+
+    def test_answer_pace_is_the_persons_own_choice_locally(self):
+        self.assertEqual(json.loads(self.request("GET", "/api/settings")[1])["pace_locked"], False)
+        self.assertEqual(self.request("POST", "/api/settings/pace", body={"pace": "fast"})[0], 200)
+        self.assertEqual(self.app.answer_pace(), "fast")
+
     def test_courses_need_login_and_jobs_validate_input(self):
         self.assertEqual(self.request("GET", "/api/platforms/zhs/courses")[0], 401)
         self.assertEqual(self.request("GET", "/api/platforms/nope/courses")[0], 404)

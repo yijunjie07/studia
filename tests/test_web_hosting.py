@@ -2,6 +2,7 @@ import http.client
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 import time
@@ -87,6 +88,111 @@ class HostedServerTest(unittest.TestCase):
         csrf = self.request("GET", "/api/auth/me", cookie=token)[1]["csrf"]
         return token, csrf
 
+    # ------------------------------------------------------------ email, username, password links
+
+    def mail_ready(self):
+        """Pretend the admin set up a mail server; every message lands in the returned list."""
+        sent = []
+        server = Mock(send_message=sent.append)
+        opened = patch("web.hosting.smtp_open", return_value=server)
+        opened.start()
+        self.addCleanup(opened.stop)
+        self.hub.site_store.set("smtp", {"host": "smtp.example.com", "port": 465, "security": "ssl", "username": "bot@example.com",
+                                         "password": "smtp-secret", "sender": "bot@example.com", "sender_name": "Studia"})
+        return sent
+
+    def test_admin_sets_up_mail_only_after_it_signs_in(self):
+        token, csrf = self.login("admin", "admin-password")
+        post = lambda body: self.request("POST", "/api/admin/settings", body, cookie=token, csrf=csrf)
+        self.assertFalse(self.request("GET", "/api/auth/me", cookie=token)[1]["mail"])
+        config = {"host": "smtp.qq.com", "security": "ssl", "username": "me@qq.com", "password": "auth-code"}
+        with patch("web.hosting.smtp_open", side_effect=web.hosting.smtplib.SMTPAuthenticationError(535, b"bad")):
+            status, reply, _, _ = post({"smtp": config})
+        self.assertEqual(status, 400)
+        self.assertIn("账号或密码", reply["error"])
+        self.assertIsNone(self.hub.smtp())
+        with patch("web.hosting.smtp_open") as opened:
+            saved = post({"smtp": config})[1]["smtp"]
+            self.assertEqual(opened.call_args[0][0]["port"], 465)  # the default port of the chosen security
+            self.assertEqual((saved["sender"], saved["password_hint"]), ("me@qq.com", "已保存"))
+            self.assertNotIn("password", saved)
+            self.assertNotIn(b"auth-code", (self.hub.data / "site" / "settings.enc").read_bytes())
+            self.assertEqual(post({"smtp": dict(config, password="", sender_name="课程助手")})[0], 200)
+            self.assertEqual(self.hub.smtp()["password"], "auth-code")  # blank keeps it on the same server
+            self.assertEqual(post({"smtp": dict(config, host="smtp.evil.example", password="")})[0], 400)
+            self.assertEqual(post({"smtp": dict(config, security="tls")})[0], 400)
+        self.assertTrue(self.request("GET", "/api/auth/me", cookie=token)[1]["mail"])
+        self.assertIsNone(post({"smtp": None})[1]["smtp"])
+
+    def test_email_is_bound_with_the_code_mailed_to_it(self):
+        alice = self.hub.accounts.create_user("alice", "alice-password")
+        self.hub.accounts.create_user("bob", "bob-password")
+        token, csrf = self.login("alice", "alice-password")
+        post = lambda path, body=None: self.request("POST", path, body or {}, cookie=token, csrf=csrf)
+        self.assertIn("没有配置邮件服务", post("/api/auth/email/code", {"email": "a@example.com"})[1]["error"])
+        sent = self.mail_ready()
+        self.assertEqual(post("/api/auth/password")[1]["error"], "请先绑定邮箱")
+        self.assertEqual(post("/api/auth/email/code", {"email": "not-an-email"})[0], 400)
+        self.assertEqual(post("/api/auth/email/code", {"email": "Alice@Example.com"})[0], 200)
+        self.assertEqual(post("/api/auth/email/code", {"email": "Alice@Example.com"})[0], 429)  # one a minute
+        self.assertEqual(sent[0]["To"], "Alice@Example.com")
+        code = re.search(r"\d{6}", sent[0].get_content())[0]
+        self.assertEqual(post("/api/auth/email", {"code": "000000" if code != "000000" else "111111"})[1]["error"], "验证码不正确")
+        self.assertEqual(post("/api/auth/email", {"code": code})[1]["user"]["email"], "Alice@Example.com")
+        self.assertEqual(post("/api/auth/email", {"code": code})[0], 400)  # used up
+        bob_token, bob_csrf = self.login("bob", "bob-password")
+        status, reply, _, _ = self.request("POST", "/api/auth/email/code", {"email": "alice@example.com"}, cookie=bob_token, csrf=bob_csrf)
+        self.assertIn("已经绑定了其他账号", reply["error"])
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(self.hub.accounts.user(alice)["email"], "Alice@Example.com")
+
+    def test_password_changes_only_through_the_newest_mailed_link(self):
+        alice = self.hub.accounts.create_user("alice", "alice-password")
+        self.hub.accounts.set_email(alice, "alice@example.com")
+        token, csrf = self.login("alice", "alice-password")
+        sent = self.mail_ready()
+        link = lambda: re.search(r"/#/reset/([\w-]+)", sent[-1].get_content())[1]
+        self.assertEqual(self.request("POST", "/api/auth/password", {}, cookie=token, csrf=csrf)[1], {"email": "alice@example.com"})
+        old = link()
+        self.assertTrue(sent[-1].get_content().count(self.hub.public_url + "/#/reset/"))
+        self.request("POST", "/api/auth/password", {}, cookie=token, csrf=csrf)
+        reset = lambda t, password="brand-new-pass": self.request("POST", "/api/auth/reset", {"token": t, "password": password})
+        self.assertEqual(reset(old)[0], 400)  # superseded by the newer mail
+        self.assertEqual(reset(link(), "short")[0], 400)  # a too-short password does not use up the link
+        status, payload, cookie, _ = reset(link())
+        self.assertEqual((status, payload["user"]["username"]), (200, "alice"))
+        self.assertTrue(cookie)
+        self.assertEqual(self.request("GET", "/api/auth/me", cookie=token)[0], 401)  # other devices are signed out
+        self.assertEqual(reset(link())[0], 400)  # single use
+        self.login("alice", "brand-new-pass")
+
+    def test_forgot_password_answers_the_same_for_unknown_accounts(self):
+        alice = self.hub.accounts.create_user("alice", "alice-password")
+        self.hub.accounts.set_email(alice, "alice@example.com")
+        self.hub.accounts.create_user("nomail", "nomail-password")
+        forgot = lambda login: self.request("POST", "/api/auth/forgot", {"login": login})
+        self.assertEqual(forgot("alice")[0], 400)  # no mail server: ask the admin
+        sent = self.mail_ready()
+        self.assertEqual([forgot(x)[:2] for x in ("ghost", "nomail")], [(200, {}), (200, {})])
+        self.assertEqual(sent, [])
+        self.assertEqual(forgot("ALICE@example.com")[0], 200)
+        self.assertEqual([m["To"] for m in sent], ["alice@example.com"])
+        self.hub.accounts.set_disabled(alice, True)
+        self.assertEqual(forgot("alice")[0], 200)
+        self.assertEqual(len(sent), 1)  # a disabled account gets no link
+        self.assertEqual([forgot("alice")[0] for _ in range(2)], [200, 429])  # five an hour from one address
+
+    def test_username_can_change_but_stays_unique(self):
+        alice = self.hub.accounts.create_user("alice", "alice-password")
+        token, csrf = self.login("alice", "alice-password")
+        rename = lambda name: self.request("POST", "/api/auth/username", {"username": name}, cookie=token, csrf=csrf)
+        self.assertEqual(rename("ADMIN")[1]["error"], "用户名已被使用")
+        self.assertEqual(rename("a")[0], 400)
+        self.assertEqual(rename("小爱")[1]["user"]["username"], "小爱")
+        self.assertEqual(self.hub.app(alice).owner, "小爱")  # runtime log lines follow the new name
+        self.login("小爱", "alice-password")
+        self.assertEqual(self.request("POST", "/api/auth/login", {"username": "alice", "password": "alice-password"})[0], 401)
+
     def test_everything_but_login_needs_a_session(self):
         self.assertEqual(self.request("GET", "/api/mode")[1], {"mode": "hosted", "setup": False})
         self.assertEqual(self.request("GET", "/api/state")[0], 401)
@@ -104,6 +210,17 @@ class HostedServerTest(unittest.TestCase):
         self.assertTrue(post("/api/admin/settings", {"zhs_parallel_study": True})[1]["zhs_parallel_study"])
         self.assertTrue(self.hub.app(alice).zhs_parallel())
         post("/api/admin/settings", {"zhs_parallel_study": False})
+        # The Zhihuishu answer pace is the admin's call for the whole site; people only see it.
+        self.assertEqual(settings["answer_pace"], "steady")
+        alice_token, alice_csrf = self.login("alice", "alice-password")
+        self.assertEqual(post("/api/admin/settings", {"answer_pace": "turbo"})[0], 400)
+        self.assertEqual(post("/api/admin/settings", {"answer_pace": "fast"})[1]["answer_pace"], "fast")
+        mine = self.request("GET", "/api/settings", cookie=alice_token)[1]
+        self.assertEqual((mine["pace"], mine["pace_locked"]), ("fast", True))
+        status, reply, _, _ = self.request("POST", "/api/settings/pace", {"pace": "steady"}, cookie=alice_token, csrf=alice_csrf)
+        self.assertEqual((status, self.hub.app(alice).answer_pace()), (403, "fast"))
+        post("/api/admin/settings", {"answer_pace": "steady"})
+        self.assertEqual(self.hub.app(alice).answer_pace(), "steady")
         self.assertEqual(self.hub.job_limit(alice), 2)
         self.assertEqual(post("/api/admin/users/%s/limit" % alice, {"max_jobs": 6})[0], 200)
         self.assertEqual(self.hub.job_limit(alice), 6)
@@ -460,6 +577,20 @@ class IsolationUnitTest(unittest.TestCase):
         self.assertGreater(throttle.blocked("k"), 0)
         throttle.clear("k")
         self.assertEqual(throttle.blocked("k"), 0)
+
+    def test_an_older_database_gains_unique_emails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old = web.accounts.sqlite3.connect(os.path.join(directory, "studia.db"))
+            old.executescript("CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE, "
+                              "password TEXT NOT NULL, role TEXT NOT NULL, disabled INTEGER NOT NULL DEFAULT 0, created REAL, last_login REAL);"
+                              "INSERT INTO users (id, username, password, role) VALUES ('u1', 'old', 'x', 'user'), ('u2', 'other', 'x', 'user');")
+            old.close()
+            accounts = Accounts(directory)
+            self.assertIsNone(accounts.user("u1")["email"])
+            accounts.set_email("u1", "Old@Example.com")
+            self.assertEqual(accounts.find("old@example.com")["id"], "u1")
+            with self.assertRaisesRegex(AccountError, "其他账号"):
+                accounts.set_email("u2", "old@example.com")
 
     def test_accounts_file_is_private(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(web.accounts, "ITERATIONS", 1000):

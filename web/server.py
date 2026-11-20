@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import hmac
 import json
 import logging
@@ -151,7 +152,7 @@ class Studia:
     """All state behind the web UI; one running job at a time across platforms."""
 
     def __init__(self, store=None, oauth=oauth_login, *, reports_dir="ai_results", oauth_url=None, memory=None, mooc_memory=None,
-                 job_limit=None, zhs_parallel=None, peers=None):
+                 job_limit=None, zhs_parallel=None, answer_pace=None, peers=None):
         self.store = store or SettingsStore()
         self.token = secrets.token_urlsafe(24)
         self.lock = threading.RLock()
@@ -165,6 +166,9 @@ class Studia:
         self.job_limit = job_limit or (lambda: MAX_JOBS)
         # Whether different Zhihuishu courses may play videos at the same time (an admin switch, off by default).
         self.zhs_parallel = zhs_parallel or (lambda: False)
+        # Hosted mode: the admin's site-wide Zhihuishu answer pace (Hub.answer_pace), not the person's to change.
+        self.answer_pace = answer_pace or self.store.answer_pace
+        self.pace_locked = answer_pace is not None
         # Hosted mode: questions other people on this site asked in the same class, answered first (Hub.peer_questions).
         self.peers = peers or (lambda course_id, recruit_id: [])
         self.oauth_url = oauth_url
@@ -236,7 +240,7 @@ class Studia:
     def state(self):
         return {"platforms": [p.public(self.logged_in(p), *self.passport(p)) for p in self.platforms.values()],
                 "jobs": self._running(), "history": [_job_public(j) for j in self.history], "last": dict(self.last),
-                "job_limit": self.job_limit(), "zhs_parallel": self.zhs_parallel()}
+                "job_limit": self.job_limit(), "zhs_parallel": self.zhs_parallel(), "build": static_build()}
 
     def client(self, platform):
         with self.lock:
@@ -1134,7 +1138,7 @@ class Studia:
             if platform.id == "zhs":
                 runner = ZHSAnswerRunner(
                     self.client(platform), ai, auto_submit=auto_submit, on_progress=on_progress,
-                    cancel_event=cancel, max_workers=workers, fast=self.store.answer_pace() == "fast",
+                    cancel_event=cancel, max_workers=workers, fast=self.answer_pace() == "fast",
                     memory=self.memory or AnswerMemory(Path(self.store.path).parent / "zhs-answers.json"))
             else:
                 # No manual-answer or confirm callbacks: unanswerable papers stay unsubmitted.
@@ -1346,7 +1350,8 @@ class Studia:
                            "base_url": config.base_url, "key_hint": key_hint(config.api_key), "active": profile.active,
                            "health": health.get("status") or "", "health_message": health.get("message") or "",
                            "deletable": profile.id != DEFAULT_PROFILE_ID})
-        return {"models": models, "concurrency": self.store.concurrency(), "pace": self.store.answer_pace()}
+        return {"models": models, "concurrency": self.store.concurrency(), "pace": self.answer_pace(),
+                "pace_locked": self.pace_locked}
 
     def _profile(self, profile_id):
         for profile in self.store.ai_profiles():
@@ -1416,6 +1421,8 @@ class Studia:
         return {}
 
     def save_pace(self, body):
+        if self.pace_locked:
+            raise HttpError(403, "答题节奏由管理员在管理后台设置")
         try:
             self.store.save_answer_pace(body.get("pace"))
         except SettingsError as exc:
@@ -1730,6 +1737,12 @@ class LocalAccess:
     def private(self, request, method, path, query, body, ctx):
         return NOT_HANDLED
 
+def static_build():
+    """Changes whenever a file the page loads changes; an open page that no longer matches reloads itself."""
+    files = sorted(f for f in STATIC.iterdir() if f.is_file())
+    stamp = "".join("%s:%x:%x;" % (f.name, f.stat().st_mtime_ns, f.stat().st_size) for f in files)
+    return hashlib.sha1(stamp.encode()).hexdigest()[:12]
+
 
 def make_handler(access):
     class Handler(BaseHTTPRequestHandler):
@@ -1783,16 +1796,24 @@ def make_handler(access):
             # Revalidate instead of downloading the script and styles again on every visit.
             stat = target.stat()
             etag = '"%x-%x"' % (stat.st_mtime_ns, stat.st_size)
+            # The page names the build in its script URL, so it changes when any file it loads does.
+            build = static_build() if target.name == "index.html" else None
+            if build:
+                etag = '"%s"' % build
             if self.headers.get("If-None-Match") == etag:
                 self.send_response(304)
                 self.send_header("ETag", etag)
                 self.send_header("Cache-Control", "no-cache")
                 self.end_headers()
                 return
+            body = target.read_bytes()
+            if build:  # the script reads its build from its own URL; the new URL also skips any stale cache
+                for name in (b"studia.js", b"studia.css"):
+                    body = body.replace(b'"%s"' % name, b'"%s?v=%s"' % (name, build.encode()))
             content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
             if content_type.startswith("text/") or target.suffix == ".js":
                 content_type = ("text/javascript" if target.suffix == ".js" else content_type) + "; charset=utf-8"
-            self._send(200, target.read_bytes(), content_type, {
+            self._send(200, body, content_type, {
                 "Content-Security-Policy": "default-src 'self'; script-src 'self'; "
                                            "img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; "
                                            "connect-src 'self'; frame-ancestors 'none'",

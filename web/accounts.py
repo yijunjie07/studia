@@ -16,9 +16,12 @@ from pathlib import Path
 
 ITERATIONS = 600_000  # PBKDF2-SHA256, OWASP 2023; scrypt is missing from LibreSSL builds
 USERNAME = re.compile(r"^[\w.\-]{2,32}$")
+USERNAME_RULE = "用户名需 2–32 位，只能包含字母、数字、汉字、下划线、点或减号"
+EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 MIN_PASSWORD = 8
 SESSION_TTL = 7 * 86400
 INVITE_TTL = 7 * 86400
+RESET_TTL = 30 * 60
 
 
 class AccountError(Exception):
@@ -47,7 +50,7 @@ _DUMMY = hash_password(secrets.token_urlsafe(16))
 
 def _validate(username, password):
     if not USERNAME.fullmatch(username or ""):
-        raise AccountError("用户名需 2–32 位，只能包含字母、数字、汉字、下划线、点或减号")
+        raise AccountError(USERNAME_RULE)
     if len(password or "") < MIN_PASSWORD:
         raise AccountError("密码至少 %d 位" % MIN_PASSWORD)
 
@@ -64,6 +67,7 @@ class Accounts:
         CREATE TABLE IF NOT EXISTS sessions (
             key TEXT PRIMARY KEY, uid TEXT NOT NULL, csrf TEXT NOT NULL, expires REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE IF NOT EXISTS resets (key TEXT PRIMARY KEY, uid TEXT NOT NULL, expires REAL NOT NULL);
     """
 
     def __init__(self, directory):
@@ -82,6 +86,10 @@ class Accounts:
             if "max_jobs" not in columns:
                 # A per-user override of the site's parallel-job limit; NULL means the default.
                 self.db.execute("ALTER TABLE users ADD COLUMN max_jobs INTEGER")
+            if "email" not in columns:
+                # Verified by a mailed code; needed to change a password and to reset a forgotten one.
+                self.db.execute("ALTER TABLE users ADD COLUMN email TEXT")
+            self.db.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users (email COLLATE NOCASE)")
         self._import_json()
 
     def _import_json(self):
@@ -119,7 +127,8 @@ class Accounts:
     @staticmethod
     def public(row):
         return {"id": row["id"], "username": row["username"], "role": row["role"], "disabled": bool(row["disabled"]),
-                "created": row["created"], "last_login": row["last_login"], "max_jobs": row["max_jobs"]}
+                "created": row["created"], "last_login": row["last_login"], "max_jobs": row["max_jobs"],
+                "email": row["email"]}
 
     # ------------------------------------------------------------ site settings and limits
 
@@ -169,6 +178,11 @@ class Accounts:
         with self.lock:
             return [self.public(row) for row in self.db.execute("SELECT * FROM users ORDER BY created")]
 
+    def find(self, login):
+        """A user by username or bound email (忘记密码 takes either)."""
+        row = self._one("SELECT * FROM users WHERE username = ? OR email = ? COLLATE NOCASE", login, login)
+        return self.public(row) if row else None
+
     def has_admin(self):
         return self._one("SELECT 1 FROM users WHERE role = 'admin'") is not None
 
@@ -190,16 +204,57 @@ class Accounts:
             self.db.execute("UPDATE users SET last_login = ? WHERE id = ? AND (last_login IS NULL OR last_login < ?)",
                             (now, uid, now - every))
 
-    def set_password(self, uid, password, old_password=None):
+    def set_password(self, uid, password):
         if len(password or "") < MIN_PASSWORD:
             raise AccountError("密码至少 %d 位" % MIN_PASSWORD)
-        row = self._one("SELECT password FROM users WHERE id = ?", uid)
-        if row is None:
-            raise AccountError("用户不存在")
-        if old_password is not None and not check_password(old_password, row["password"]):
-            raise AccountError("原密码不正确")
+        hashed = hash_password(password)
         with self.transaction():
-            self.db.execute("UPDATE users SET password = ? WHERE id = ?", (hash_password(password), uid))
+            if self.db.execute("UPDATE users SET password = ? WHERE id = ?", (hashed, uid)).rowcount == 0:
+                raise AccountError("用户不存在")
+            self.db.execute("DELETE FROM resets WHERE uid = ?", (uid,))  # a link mailed earlier must not undo this
+
+    def set_username(self, uid, username):
+        if not USERNAME.fullmatch(username or ""):
+            raise AccountError(USERNAME_RULE)
+        try:
+            with self.transaction():
+                if self.db.execute("UPDATE users SET username = ? WHERE id = ?", (username, uid)).rowcount == 0:
+                    raise AccountError("用户不存在")
+        except sqlite3.IntegrityError:
+            raise AccountError("用户名已被使用") from None
+
+    def email_taken(self, email, uid):
+        return self._one("SELECT 1 FROM users WHERE email = ? COLLATE NOCASE AND id != ?", email, uid) is not None
+
+    def set_email(self, uid, email):
+        try:
+            with self.transaction():
+                self.db.execute("UPDATE users SET email = ? WHERE id = ?", (email, uid))
+        except sqlite3.IntegrityError:
+            raise AccountError("这个邮箱已经绑定了其他账号") from None
+
+    def create_reset(self, uid, ttl=RESET_TTL):
+        """Token for a mailed password link. Single use, kept hashed like sessions (so links outlive a restart);
+        only the newest link of a user works."""
+        token = secrets.token_urlsafe(32)
+        with self.transaction():
+            self.db.execute("DELETE FROM resets WHERE uid = ? OR expires < ?", (uid, time.time()))
+            self.db.execute("INSERT INTO resets VALUES (?,?,?)", (Sessions._key(token), uid, time.time() + ttl))
+        return token
+
+    def reset_password(self, token, password):
+        """Set the password a mailed link was sent for; returns that user's id."""
+        if len(password or "") < MIN_PASSWORD:
+            raise AccountError("密码至少 %d 位" % MIN_PASSWORD)
+        hashed = hash_password(password)  # slow on purpose: outside the lock
+        with self.transaction():
+            row = self.db.execute("SELECT uid FROM resets WHERE key = ? AND expires >= ?",
+                                  (Sessions._key(token or ""), time.time())).fetchone()
+            if row is None:
+                raise AccountError("链接无效或已过期，请重新发送")
+            self.db.execute("DELETE FROM resets WHERE uid = ?", (row["uid"],))
+            self.db.execute("UPDATE users SET password = ? WHERE id = ?", (hashed, row["uid"]))
+        return row["uid"]
 
     def set_disabled(self, uid, disabled):
         with self.transaction():
