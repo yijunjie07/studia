@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 import requests
 
+from core.api_client import READ_PAUSES
 from mooc.export_questions import unwrap_paper
 
 DIGITS = {c: i for i, c in enumerate("零一二三四五六七八九")}
@@ -42,6 +43,12 @@ class TaskUnavailableError(ExamError):
     """The catalog window/type forbids opening this task; other tasks may run."""
 
 
+def _passing(error):
+    """Mark a failure that the same read may get past a moment later (code 500, 5xx, dropped connection)."""
+    error.passing = True
+    return error
+
+
 def checked_list(payload):
     """An unknown response structure must not mean 'no previous attempts'."""
     if isinstance(payload, list):
@@ -63,19 +70,38 @@ class ExamAPI:
         self.session = session or requests.Session()
         self.session.headers.update({"Authorization": "Bearer " + (client.access_token or "")})
 
-    def request(self, method, endpoint, **kwargs):
+    def request(self, method, endpoint, *, read="", **kwargs):
+        """read names a list read ("试卷列表"): it changes nothing, so a failure the platform gets past a moment
+        later (it answers code 500 now and then) is asked again after READ_PAUSES. Writes are sent once."""
+        for pause in (READ_PAUSES if read else ()) + (None,):
+            try:
+                return self._request(method, endpoint, read, **kwargs)
+            except ExamError as error:
+                passing = getattr(error, "passing", False)
+                if not passing or pause is None:
+                    if read:
+                        tried = "，连读 %d 次都没成功" % (len(READ_PAUSES) + 1) if passing else ""
+                        raise type(error)("%s没读到：%s%s，请稍后重试" % (read, error, tried)) from None
+                    raise
+            time.sleep(pause)
+
+    def _request(self, method, endpoint, read, **kwargs):
         try:
             response = self.session.request(method, self.base_url + endpoint, timeout=(10, 30), allow_redirects=False, **kwargs)
         except requests.RequestException:
+            if read:
+                raise _passing(ExamServiceError("连不上职教云（超时或连接断开）")) from None
             raise ExamServiceError("平台请求超时或连接失败；写入结果可能未知，请在网页核对，程序不会自动重试") from None
-        if response.status_code in (401, 429) or response.status_code >= 500:
-            raise ExamServiceError("平台登录失效、请求受限或服务不可用（HTTP %s）" % response.status_code)
+        if response.status_code >= 500:
+            raise _passing(ExamServiceError("平台服务不可用（HTTP %s）" % response.status_code))
+        if response.status_code in (401, 429):
+            raise ExamServiceError("平台登录失效或请求受限（HTTP %s）" % response.status_code)
         if response.status_code != 200:
             raise ExamError("平台返回 HTTP %s" % response.status_code)
         try:
             payload = response.json()
         except ValueError:
-            raise ExamError("平台返回非 JSON 数据") from None
+            raise _passing(ExamError("平台返回非 JSON 数据")) from None
         if isinstance(payload, dict) and str(payload.get("code")) in ("401", "429"):
             raise ExamServiceError("平台登录失效或请求受限（code=%s）" % payload["code"])
         # Unlike catalog/history/write endpoints, the current paper endpoint
@@ -88,13 +114,19 @@ class ExamAPI:
                 and payload["taskExamRecord"].get("id")):
             return payload
         if not isinstance(payload, dict) or str(payload.get("code")) != "200":
-            raise ExamError("平台拒绝请求（code=%s）；请在网页检查开放时间、权限及作答条件" % (payload.get("code") if isinstance(payload, dict) else "unknown"))
+            code = payload.get("code") if isinstance(payload, dict) else "unknown"
+            msg = str(payload.get("msg") or "").strip()[:60] if isinstance(payload, dict) else ""
+            if read:
+                # A list read is not refused over opening times; code 500 is the platform tripping over itself.
+                error = ExamError("职教云返回 code=%s%s" % (code, "（%s）" % msg if msg else ""))
+                raise _passing(error) if str(code) == "500" else error
+            raise ExamError("平台拒绝请求（code=%s%s）；请在网页检查开放时间、权限及作答条件" % (code, "：" + msg if msg else ""))
         return payload
 
     def catalog(self, course, category):
         items, seen = [], set()
         for page in range(1, 101):
-            result = self.request("GET", "/course/exam/record/getExamListByStudent", params={
+            result = self.request("GET", "/course/exam/record/getExamListByStudent", read="试卷列表", params={
                 "courseInfoId": course.get("id") or course.get("courseInfoId"),
                 "courseId": course["courseId"], "categoryId": category,
                 "pageNum": page, "pageSize": 100,
@@ -114,7 +146,8 @@ class ExamAPI:
     def records(self, exam_id):
         if not self.user_id:
             raise ExamError("无法确认当前登录用户 ID")
-        result = self.request("GET", "/course/exam/record/getStudentRecordByExamId", params={"examId": exam_id, "studentId": self.user_id})
+        result = self.request("GET", "/course/exam/record/getStudentRecordByExamId", read="作答记录",
+                              params={"examId": exam_id, "studentId": self.user_id})
         return checked_list(result)
 
     def completion_status(self, exam_id):

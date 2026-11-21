@@ -30,6 +30,7 @@ from mooc.export_questions import paper_display_name, paper_exam_id
 from mooc.main import AIMoocHandler, course_units as mooc_units
 from ai.client import AIClient, AIConfig, AIError
 from ai.runner import AnswerRunner
+from core.api_client import RequestRateLimited
 from core.concurrency import INTERACTIVE_WORKERS
 from core.auth import AuthenticationExpired, PlatformUnavailable
 from mooc.oauth_login import oauth_login
@@ -1875,6 +1876,8 @@ def make_handler(access):
                 self._send(exc.status, {"error": str(exc)})
             except (PlatformUnavailable, ZHSError) as exc:
                 self._send(502, {"error": str(exc) or "平台暂时无法访问"})
+            except RequestRateLimited as exc:
+                self._send(503, {"error": str(exc)})
             except AIError as exc:  # e.g. drafting questions: the model timed out or the key was refused
                 self._send(502, {"error": str(exc)})
             except AuthenticationExpired:

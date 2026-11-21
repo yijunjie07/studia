@@ -1,10 +1,13 @@
 import base64
 import json
+import time
 from typing import Dict, Any, Optional, List
 
+import requests
+
 from core.log import Logger
-from core.api_client import BaseAPIClient
-from core.auth import authenticated_get, PlatformUnavailable
+from core.api_client import READ_PAUSES, BaseAPIClient, RequestRateLimited
+from core.auth import AuthenticationExpired, authenticated_get, PlatformUnavailable
 
 logging = Logger(__name__).get_log()
 
@@ -12,6 +15,12 @@ logging = Logger(__name__).get_log()
 BASE_URL = "https://ai.icve.com.cn/prod-api"
 SSO_URL = "https://sso.icve.com.cn/prod-api"
 UPLOAD_BASE_URL = "https://urc.icve.com.cn/stage-api"
+
+
+def platform_message(payload) -> str:
+    """The platform's own words for a refusal (RuoYi puts them in msg), short enough for a page."""
+    msg = payload.get("msg") if isinstance(payload, dict) else None
+    return str(msg).strip()[:60] if msg else ""
 
 
 def _parse_jwt_user_id(token: Optional[str]) -> Optional[str]:
@@ -125,13 +134,60 @@ class AIMoocApi(BaseAPIClient):
             return authenticated_get(self, endpoint, params=params)
         return self.get(endpoint, params=params)
 
+    def read_list(self, endpoint: str, params: Dict[str, Any], what: str) -> List[Any]:
+        """A list the course page and study jobs build on. A failed read raises instead of answering None:
+        read as an empty list it showed 「没有可学习的单元」 and stayed in the page cache for ten minutes.
+        A code 500, a 5xx or a dropped connection is asked again (READ_PAUSES); the platform's own words
+        go into the error."""
+        problem = ""
+        for pause in READ_PAUSES + (None,):
+            retry, response = True, None
+            try:
+                response = self.session.get(self.default_base_url + endpoint, params=params,
+                                            timeout=(10, 30), allow_redirects=False)
+                status = response.status_code
+                payload = response.json() if status == 200 else None
+            except requests.RequestException:
+                problem = "连不上职教云"
+            except ValueError:
+                problem = "职教云返回的内容无法解析"
+            else:
+                code = str(payload.get("code")) if isinstance(payload, dict) and "code" in payload else None
+                if status == 429 or code == "429":
+                    raise RequestRateLimited("平台请求过于频繁，请稍后重试")
+                if status in (401, 403) or code in ("401", "403"):
+                    raise AuthenticationExpired("平台登录已过期或无权访问")
+                if status == 200 and code in (None, "200"):
+                    data = payload.get("data", payload) if code else payload
+                    if data is None:
+                        return []
+                    if isinstance(data, list):
+                        return data
+                    problem, retry = "职教云返回的格式不对", False
+                elif status != 200:
+                    problem, retry = "职教云返回 HTTP %s" % status, status >= 500
+                else:
+                    message = platform_message(payload)
+                    problem = "职教云返回 code=%s%s" % (code, "（%s）" % message if message else "")
+                    retry = code == "500"
+            finally:
+                if response is not None:
+                    response.close()
+            if not retry or pause is None:
+                break
+            logging.info("%s没读到（%s），%.1f 秒后再读", what, problem, pause)
+            time.sleep(pause)
+        tried = "，连读 %d 次都没成功" % (len(READ_PAUSES) + 1) if retry else ""
+        logging.warning("%s没读到：%s%s", what, problem, tried)
+        raise PlatformUnavailable("%s没读到：%s%s，请稍后重试" % (what, problem, tried))
+
     def study_design_list(
         self, course_info_id: str, course_id: str
     ) -> List[Dict[str, Any]]:
         """获取课程详细列表"""
         endpoint = "/course/courseDesign/getStudentDesignList"
         params = {"courseInfoId": course_info_id, "courseId": course_id}
-        return self.get(endpoint, params=params)
+        return self.read_list(endpoint, params, "章节目录")
 
     def study_record_list(
         self, course_info_id: str, course_id: str
@@ -139,7 +195,7 @@ class AIMoocApi(BaseAPIClient):
         """获取课程已完成的学习记录"""
         endpoint = "/course/studyRecord/completed/courseware"
         params = {"courseInfoId": course_info_id, "courseId": course_id}
-        return self.get(endpoint, params=params)
+        return self.read_list(endpoint, params, "学习记录")
 
     def get_cell_list(
         self, course_info_id: str, course_id: str, parent_id: str
@@ -151,7 +207,7 @@ class AIMoocApi(BaseAPIClient):
             "courseId": course_id,
             "parentId": parent_id,
         }
-        return self.get(endpoint, params=params)
+        return self.read_list(endpoint, params, "章节资源")
 
     def course_content(self, source_id: str) -> Dict[str, Any]:
         """获取单个课程详细信息"""

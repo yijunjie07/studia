@@ -24,13 +24,14 @@ def course_units(client, course):
     """Chapters with their leaf resources and how far each one is, without studying.
 
     The platform takes seconds per list, so the chapter list, the completion record and
-    every chapter's cells are requested at the same time (reads only)."""
+    every chapter's cells are requested at the same time (reads only). A list that cannot be read
+    raises: taken as empty, the course showed no units (or lost a chapter) until the cache ran out."""
     info_id, course_id = course.get("id"), course.get("courseId")
     with ThreadPoolExecutor(INTERACTIVE_WORKERS) as pool:
         records = pool.submit(client.study_record_list, info_id, course_id)
-        design = client.study_design_list(info_id, course_id) or []
-        cells = list(pool.map(lambda chapter: client.get_cell_list(info_id, course_id, chapter.get("id")) or [], design))
-        done = set(records.result() or ())
+        design = client.study_design_list(info_id, course_id)
+        cells = list(pool.map(lambda chapter: client.get_cell_list(info_id, course_id, chapter.get("id")), design))
+        done = set(records.result())
 
     def leaves(nodes):
         for node in nodes:

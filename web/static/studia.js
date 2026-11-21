@@ -2120,6 +2120,10 @@ function route(event) {
     const k = key(a, decodeURIComponent(b || ""));
     earnedErrors.delete(k);
     if (loadingEarned.has(k)) earnedRetry.add(k);
+    // Papers or units that failed to read (often while warming up in the background) are read again on
+    // entering the course or switching its tab, as a browser refresh did; a repaint does not retry.
+    delete state.paperErrors[k];
+    if (state.units[k]?.error) delete state.units[k];
   }
   state.adminEdit = null;
   state.view = name === "course" ? `#/course/${a}/${b}` : name === "login" ? `#/login/${a}` : `#/${name}`;
