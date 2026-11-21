@@ -1,0 +1,1 @@
+- 职教云（RuoYi 后端）偶尔对读接口回 `code 500`，稍后再读就好。列表读走 `AIMoocApi.read_list` / `ExamAPI.request(read=...)`（会重读）；读失败要报错，别当成空列表（网页会缓存 10 分钟）。

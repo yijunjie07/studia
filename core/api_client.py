@@ -7,6 +7,12 @@ from core.util import create_session, parse_response
 logger = Logger(__name__).get_log()
 
 
+# 职教云 now and then answers a read with code 500 (内部服务器错误) or drops the connection, and the same read
+# goes through a moment later. Reads change nothing, so the lists the pages depend on are asked again after
+# these pauses; writes are never repeated.
+READ_PAUSES = (0.5, 1.5)
+
+
 class RequestRateLimited(RuntimeError):
     """The platform rejected the request budget; stop dispatching work."""
 
