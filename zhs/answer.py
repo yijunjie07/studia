@@ -1072,7 +1072,7 @@ def catalog_ai(client, course):
             }
             # 掌握度只记最高分，作业可以一直重做、不限次数：满分的没必要再做，没满分的可以重做提分。
             if best >= 100:
-                entry["_unavailable"] = ("已满分", "已满分，无需重做。")
+                entry["_unavailable"] = ("已满分", "已满分。")
             elif done:
                 entry["_redo"] = True
                 entry["_hint"] = "重做只保留最高分（当前 %s 分）。" % score
@@ -1174,7 +1174,7 @@ def _shared_homework_items(client, recruit_id, course_id):
         item["_completion_status"] = "submitted" if state == 4 else "not_started"
         if state == 4:
             if _is_full_score(row):
-                item["_unavailable"] = ("已满分", "已满分，无需重做。")
+                item["_unavailable"] = ("已满分", "已满分。")
             elif retry is None or retry[0] <= 0:
                 item["_unavailable"] = ("无重做次数", "重做次数已用完。")
             else:
@@ -1224,7 +1224,7 @@ def _shared_exam_items(client, recruit_id, course_id, seen=()):
             items.append(item)
             continue
         if not row.get("studentStartTime") and state != 2:
-            item["_unavailable"] = ("未开考", "考试需要先在网页上手动开考，再回来答题。")
+            item["_unavailable"] = ("未开考", "先在平台网页上开考。")
         elif _positive_int(row.get("faStudentExamRemainCount")) <= 0:
             item["_unavailable"] = ("无剩余次数", "考试剩余次数不足或未知。")
         else:

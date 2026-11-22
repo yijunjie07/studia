@@ -45,12 +45,12 @@ def task_availability(item, category, *, now=None):
     Naive platform timestamps are Beijing time, regardless of host timezone.
     """
     if is_attachment_task(item, category):
-        return TaskAvailability(False, "暂不支持", "附件作业暂不支持，请在平台完成。")
+        return TaskAvailability(False, "暂不支持", "附件作业请在平台完成。")
     unavailable = item.get("_unavailable")
     if unavailable:
         return TaskAvailability(False, unavailable[0], unavailable[1])
     if str(item.get("answerCount")) == "-1":  # the catalog's "no attempt left", for every category
-        return TaskAvailability(False, "次数用完", "已经交过，平台显示答题次数用完了。")
+        return TaskAvailability(False, "次数用完", "答题次数已用完。")
     server_label = {"-1": "未开始", "-2": "已截止"}.get(str(item.get("status")))
     if server_label:
         return TaskAvailability(False, server_label,

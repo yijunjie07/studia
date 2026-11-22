@@ -105,7 +105,7 @@ function blocker(pid, cid, type) {
   for (const o of state.jobs) {
     if (GROUP[jobType(o)] !== GROUP[type] || o.platform !== pid) continue;
     if (o.course === cid) return o.state === "running" ? `${LIVE_WORD[o.title] || "进行中"}…` : `${WAIT_WORD[o.state]}（${o.title}）`;
-    if (pid === "zhs" && GROUP[type] === "learn" && !state.zhsParallel) return `智慧树一次只能播一个视频，等「${o.course_name}」的${o.title}结束`;
+    if (pid === "zhs" && GROUP[type] === "learn" && !state.zhsParallel) return `等「${o.course_name}」的${o.title}结束`;
   }
   return "";
 }
@@ -333,7 +333,7 @@ const STATE_WORD = { done: "完成", error: "失败", waiting: "等你操作", s
 
 /* ---------------------------------------------------------------- units (course grid) */
 
-const UNIT_WORD = { done: "已完成", queued: "待学", running: "正在学习", failed: "失败", skipped: "跳过（在答题里做或无法展开）", waiting: "等你操作" };
+const UNIT_WORD = { done: "已完成", queued: "待学", running: "正在学习", failed: "失败", skipped: "跳过", waiting: "等你操作" };
 const KIND_WORD = { video: "视频", doc: "文档", ppt: "课件", audio: "音频", img: "图片", pdf: "文档", word: "文档", excel: "表格" };
 function tally(chapters) {
   const t = { all: 0, done: 0, running: 0, queued: 0, failed: 0, skipped: 0, waiting: 0 };
@@ -408,7 +408,7 @@ document.addEventListener("mouseover", (event) => {
 const ADMIN_TABS = [["people", "用户"], ["site", "站点"], ["logs", "日志"]];
 const SETTINGS_TABS = [["account", "账号"], ["models", "AI 模型"], ["study", "偏好"]];
 function pageHead(title, sub, base, tabs, active) {
-  return `<h1 class="title">${title}</h1><p class="sub">${sub}</p>
+  return `<h1 class="title">${title}</h1>${sub ? `<p class="sub">${sub}</p>` : ""}
     <div class="tabs" role="tablist">${tabs.map(([k, label]) => `<button class="tab" role="tab" aria-selected="${k === active}" data-go="${base}/${k}">${label}</button>`).join("")}</div>`;
 }
 // Phones arrive from the list on 我的, which already names each tab: show just that one, titled by it.
@@ -558,7 +558,7 @@ const VIEWS = {
   async admin(refresh = false, tab = state.adminTab) {
     tab = ADMIN_TABS.some(([k]) => k === tab) ? tab : "people";
     state.adminTab = tab;
-    const head = pageHead("管理后台", "仅管理员可见", "#/admin", ADMIN_TABS, tab);
+    const head = pageHead("管理后台", "", "#/admin", ADMIN_TABS, tab);
     // Show the tab at once; its lists fill it in when they arrive.
     if (!refresh) {
       // Switching tabs inside the console swaps the content in place; arriving from elsewhere animates.
@@ -617,7 +617,7 @@ const VIEWS = {
             <small class="sans">${esc(smtp.host)}:${smtp.port} · ${SECURITY[smtp.security]}${smtp.username ? ` · ${esc(smtp.username)}` : ""}</small></span>
           <span class="row_btns"><button class="btn small" data-smtp-edit aria-pressed="${mailEditing}">编辑</button>
             <button class="btn small danger" data-smtp-clear data-confirm="确认清除">清除</button></span></div>`
-        : `<div class="model plain"><span class="m1"><small class="sans">还没有配置：用户不能绑定邮箱，也不能自己修改或找回密码</small></span>
+        : `<div class="model plain"><span class="m1"><small class="sans">还没有配置</small></span>
           <span class="row_btns"><button class="btn small primary" data-smtp-edit aria-pressed="${mailEditing}">配置</button></span></div>`;
       const smtpEdit = mailEditing ? `<form class="form_card" data-smtp>
           <div class="field"><label>SMTP 服务器</label><input name="host" value="${esc(sm.host)}" placeholder="例如 smtp.qq.com" autocapitalize="off" required></div>
@@ -628,7 +628,7 @@ const VIEWS = {
           <div class="field"><label>密码</label><input name="password" type="password" autocomplete="new-password" placeholder="${smtp?.password_hint ? `留空不修改（${esc(smtp.password_hint)}）` : "邮箱的 SMTP 授权码，不是登录密码"}"></div>
           <div class="field"><label>发件地址</label><input name="sender" value="${esc(sm.sender)}" autocapitalize="off" placeholder="留空用账号"></div>
           <div class="field"><label>发件人名称</label><input name="sender_name" value="${esc(sm.sender_name)}" placeholder="Studia"></div>
-          <div class="form_btns"><small class="grow sans">保存前会先登录测试；密码只存在服务端</small>
+          <div class="form_btns"><span class="grow"></span>
             <button type="button" class="btn" data-smtp-cancel>取消</button><button class="btn primary">测试并保存</button></div>
         </form>` : "";
       const [cls, label] = HEALTH[current?.health] || ["", "未测试"];
@@ -640,19 +640,19 @@ const VIEWS = {
           <span class="row_btns"><button class="btn small" data-default-test>测试</button>
             <button class="btn small" data-default-edit aria-pressed="${editing}">编辑</button>
             ${current.source === "site" && settings.builtin_available ? '<button class="btn small danger" data-default-reset data-confirm="确认恢复">恢复内置</button>' : ""}</span></div>`
-        : `<div class="model plain"><span class="m1"><small class="sans">还没有默认模型，用户需要自己添加</small></span>
+        : `<div class="model plain"><span class="m1"><small class="sans">还没有默认模型</small></span>
           <span class="row_btns"><button class="btn small primary" data-default-edit aria-pressed="${editing}">配置</button></span></div>`;
       const modelEdit = editing ? `<form class="form_card" data-default-model>
           <div class="field"><label>名称</label><input name="provider_name" value="${esc(model.provider_name)}" placeholder="默认供应商"></div>
           <div class="field"><label>服务地址</label><input name="base_url" value="${esc(model.base_url)}" placeholder="https://api.example.com/v1" required></div>
           <div class="field"><label>模型</label><input name="model" value="${esc(model.model)}" placeholder="例如 deepseek-chat" required></div>
           <div class="field"><label>API Key</label><input name="api_key" type="password" autocomplete="off"></div>
-          <div class="form_btns"><small class="grow sans">保存前会先测试连接，接口格式自动识别；密钥只存在服务端</small>
+          <div class="form_btns"><span class="grow"></span>
             <button type="button" class="btn" data-default-cancel>取消</button><button class="btn primary">测试并保存</button></div>
         </form>` : "";
-      body = `<div class="section"><h3>全站默认 AI 模型</h3><span class="aside">用户未自选模型时使用</span></div>
+      body = `<div class="section"><h3>全站默认 AI 模型</h3></div>
         <div class="models">${modelRow}${modelEdit}</div>
-        <div class="section"><h3>邮件服务</h3><span class="aside">绑定邮箱、修改和找回密码用</span></div>
+        <div class="section"><h3>邮件服务</h3></div>
         <div class="models">${smtpRow}${smtpEdit}</div>
         <div class="section"><h3>任务上限</h3></div>
         <div class="models"><div class="model plain"><span class="m1"><b>默认每人同时 <input class="inline_num" type="number" min="1" max="20" name="max_jobs" value="${esc(kept("max_jobs", settings.max_jobs))}"> 个任务</b></span>
@@ -661,10 +661,10 @@ const VIEWS = {
         <div class="models"><div class="model plain"><span class="m1"><b>多并发学习</b><span class="pill ${settings.zhs_parallel_study ? "wait" : ""}">${settings.zhs_parallel_study ? "已开启" : "已关闭"}</span></span>
           <span class="row_btns"><button class="btn small ${settings.zhs_parallel_study ? "" : "danger"}" data-zhs-parallel="${settings.zhs_parallel_study ? "off" : "on"}" ${settings.zhs_parallel_study ? "" : 'data-confirm="确认开启"'}>${settings.zhs_parallel_study ? "关闭" : "开启"}</button></span></div>
           <div class="model plain stepper_row"><span class="m1"><b>答题节奏 · ${fast ? "快速" : "稳妥"}</b><small class="sans">${fast
-            ? "全站拿题、保存答案之间只停 0.1–0.5 秒，快很多，但更可能触发滑块验证"
-            : "全站拿题、保存答案之间像人一样停 0.5–2 秒，最不容易触发滑块验证"}</small></span>
+            ? "每步间隔 0.1–0.5 秒"
+            : "每步间隔 0.5–2 秒"}</small></span>
             <span class="row_btns"><button class="btn small" data-site-pace="steady" aria-pressed="${!fast}">稳妥</button><button class="btn small" data-site-pace="fast" aria-pressed="${fast}" ${fast ? "" : 'data-confirm="确认用快速"'}>快速</button></span></div></div>
-        <div class="section"><h3>答案记忆</h3><span class="aside">按课程共享</span></div>
+        <div class="section"><h3>答案记忆</h3></div>
         <div class="models"><div class="model plain"><span class="m1"><b>智慧树 ${data.memory.questions} 题</b><small class="sans">${data.memory.confirmed} 题已确认正确</small></span></div>
           <div class="model plain"><span class="m1"><b>MOOC ${data.memory.mooc.questions} 题</b><small class="sans">平台公布的标准答案</small></span></div></div>`;
     } else {
@@ -707,7 +707,7 @@ const VIEWS = {
           state.adminEdit = null;
           defaultForm.removeAttribute("data-default-model");  // the refresh must not keep it as a draft
           state.settings = null;
-          toast("已测试并保存，新任务生效");
+          toast("已测试并保存");
           if (state.view === "#/admin" && state.adminTab === tab) await VIEWS.admin(true, tab);
         } catch (e) { toast(e.message); button.disabled = false; button.textContent = "测试并保存"; }
       };
@@ -754,15 +754,15 @@ const VIEWS = {
       try { const { code } = await api("/api/admin/invites", { method: "POST", body: { days: 7 } }); navigator.clipboard?.writeText(code).catch(() => {}); toast(`邀请码 ${code} 已复制`); VIEWS.admin(true, tab); }
       catch (e) { toast(e.message); }
     });
-    on("[data-save-limit]", () => act("/api/admin/settings", { max_jobs: Number($('[name="max_jobs"]', page).value) }, "已保存，马上生效"));
+    on("[data-save-limit]", () => act("/api/admin/settings", { max_jobs: Number($('[name="max_jobs"]', page).value) }, "已保存"));
     on("[data-zhs-parallel]", (el) => {
       const enable = el.dataset.zhsParallel === "on";
-      act("/api/admin/settings", { zhs_parallel_study: enable }, enable ? "已开启，新开的智慧树学习任务生效" : "已关闭");
+      act("/api/admin/settings", { zhs_parallel_study: enable }, enable ? "已开启" : "已关闭");
     });
     on("[data-site-pace]", (el) => {
       if (el.getAttribute("aria-pressed") === "true") return;
       state.settings = null;  // 偏好 shows the site pace too; read it again there
-      act("/api/admin/settings", { answer_pace: el.dataset.sitePace }, `已改为${el.dataset.sitePace === "fast" ? "快速" : "稳妥"}，全站下次答题生效`);
+      act("/api/admin/settings", { answer_pace: el.dataset.sitePace }, `已改为${el.dataset.sitePace === "fast" ? "快速" : "稳妥"}`);
     });
     on("[data-export-logs]", () => {
       const from = new Date($('[name="log_from"]', page).value).getTime() / 1000;
@@ -782,21 +782,20 @@ const VIEWS = {
       const { uid, rowForm } = form.dataset, value = form.elements.value.value.trim();
       if (rowForm === "password" && value.length < 8) { toast("新密码至少 8 位"); return; }
       state.adminEdit = null;
-      if (rowForm === "limit") act(`/api/admin/users/${uid}/limit`, { max_jobs: value }, "已保存，马上生效");
-      else act(`/api/admin/users/${uid}/password`, { password: value }, "密码已重置，对方需要重新登录");
+      if (rowForm === "limit") act(`/api/admin/users/${uid}/limit`, { max_jobs: value }, "已保存");
+      else act(`/api/admin/users/${uid}/password`, { password: value }, "密码已重置");
     }));
     on("[data-copy]", (el) => navigator.clipboard?.writeText(el.dataset.copy).then(() => toast("已复制"), () => toast(el.dataset.copy)));
     on("[data-revoke]", (el) => act(`/api/admin/invites/${el.dataset.revoke}/revoke`, null, "邀请码已作废"));
     on("[data-stop-user]", (el) => act(`/api/admin/users/${el.dataset.stopUser}/stop`, null, "已发出停止指令"));
     on("[data-enable]", (el) => act(`/api/admin/users/${el.dataset.enable}/enable`, null, "已启用"));
-    on("[data-disable]", (el) => act(`/api/admin/users/${el.dataset.disable}/disable`, null, "已停用，对方已被登出"));
+    on("[data-disable]", (el) => act(`/api/admin/users/${el.dataset.disable}/disable`, null, "已停用"));
   },
 
   jobs(scope) {
     const admin = session.user?.role === "admin", all = admin && scope === "all";
     const head = `<h1 class="title">任务</h1>
-      <p class="sub">${session.mode === "hosted" ? "在服务器上运行，关掉网页不影响" : "关掉网页不影响，关掉终端会停止"}</p>
-      ${admin ? `<div class="tabs" role="tablist"><button class="tab" role="tab" aria-selected="${!all}" data-go="#/jobs">我的</button>
+            ${admin ? `<div class="tabs" role="tablist"><button class="tab" role="tab" aria-selected="${!all}" data-go="#/jobs">我的</button>
         <button class="tab" role="tab" aria-selected="${all}" data-go="#/jobs/all">全站${siteCount() ? `<span class="n">${siteCount()}</span>` : ""}</button></div>` : ""}`;
     if (all) {
       const people = state.sitePeople;
@@ -881,7 +880,7 @@ const VIEWS = {
     if (p.logged_in && !again) return go(homeOf(p));
     const head = `<div class="crumb"><span class="dot ${pid}"></span>${esc(p.name)}</div><h1 class="title">${again ? "重新扫码" : `登录${/^[A-Za-z]/.test(p.short) ? " " : ""}${esc(p.short)}`}</h1>`;
     if (p.login === "qr") {
-      setPage(`${head}<p class="sub">${again ? `${p.rescan ? "问答区要重新认人" : "扫完问答区再用 8 小时"}，学习不受影响` : p.lapsed ? "登录已过期，用智慧树 App 重新扫码" : "用智慧树 App 扫码"}</p>
+      setPage(`${head}<p class="sub">${again ? `${p.rescan ? "问答区要重新扫码" : "扫完问答区再用 8 小时"}` : p.lapsed ? "登录已过期，用智慧树 App 重新扫码" : "用智慧树 App 扫码"}</p>
         <div class="login_card"><div class="qr"><div class="qr_empty">正在获取二维码…</div></div>
           <div class="login_status"><div data-status><b>等待扫码</b><p>${TOUCH ? "长按保存二维码，在知到 App 里从相册扫码" : "二维码过期会自动刷新"}</p></div>
             <button class="btn" data-start-login>刷新二维码</button></div></div>`);
@@ -906,13 +905,12 @@ const VIEWS = {
 
   async settings(tab = SETTINGS_TABS[0][0]) {
     tab = SETTINGS_TABS.some(([k]) => k === tab) ? tab : SETTINGS_TABS[0][0];
-    const where = session.mode === "hosted" ? "只对你的账号生效" : "只保存在这台电脑上";
-    const head = settingsHead(tab, where);
+    const head = settingsHead(tab, "");
     if (tab === "account") {
       const me = session.user, editing = state.accountEdit, admin = me?.role === "admin";
       const cancel = '<button type="button" class="btn" data-account-edit="">取消</button>';
       const nameRow = editing === "username" ? `<form class="model plain password_form" data-username>
-            <span class="m1"><b>修改用户名</b><small class="sans">以后用新用户名登录</small></span>
+            <span class="m1"><b>修改用户名</b></span>
             <span class="pw_fields"><label class="auth_field"><span>新用户名</span><input name="username" value="${esc(me?.username)}" autocomplete="username" autocapitalize="off" minlength="2" maxlength="32" required></label>
               <p class="form_msg" role="alert"></p><span class="row_btns">${cancel}<button class="btn primary">保存</button></span></span></form>`
         : `<div class="model plain"><span class="account_who"><span class="avatar big">${esc(me?.username.slice(0, 1).toUpperCase())}</span>
@@ -920,18 +918,18 @@ const VIEWS = {
             <small class="sans">${me?.created ? `${new Date(me.created * 1000).toLocaleDateString()} 加入` : ""}</small></span></span>
             <span class="row_btns"><button class="btn small" data-account-edit="username">修改用户名</button></span></div>`;
       const emailRow = editing === "email" ? `<form class="model plain password_form" data-email-form>
-            <span class="m1"><b>${me?.email ? "更换邮箱" : "绑定邮箱"}</b><small class="sans">验证码 10 分钟内有效</small></span>
+            <span class="m1"><b>${me?.email ? "更换邮箱" : "绑定邮箱"}</b></span>
             <span class="pw_fields">${emailFields()}<span class="row_btns">${cancel}<button class="btn primary">绑定</button></span></span></form>`
         : `<div class="model plain"><span class="m1"><b>邮箱</b><small class="sans">${me?.email ? esc(me.email)
-            : session.mail ? "未绑定。绑定后才能修改密码，忘记密码时也靠它找回" : "管理员还没有配置邮件服务，暂时不能绑定"}</small></span>
+            : session.mail ? "未绑定" : "管理员未配置邮件服务"}</small></span>
             <span class="row_btns">${session.mail ? `<button class="btn small ${me?.email ? "" : "primary"}" data-account-edit="email">${me?.email ? "更换" : "绑定邮箱"}</button>`
               : admin ? '<button class="btn small" data-go="#/admin/site">去配置</button>' : ""}</span></div>`;
       // 修改密码 asks first, then says where the mail went; another link waits a minute, since it voids the last.
       const sent = state.passwordSent;
       const passwordRow = editing === "password" ? `<div class="model plain password_form" data-password-panel>
             <span class="m1"><b>${sent ? "邮件已发送" : "修改密码"}</b><small class="sans">${sent
-              ? `已发到 ${esc(me?.email)}，打开邮件里的链接设置新密码。没收到的话看看垃圾邮件；重新发送后，之前那封邮件里的链接会失效。`
-              : `会给 ${esc(me?.email)} 发一封邮件，点邮件里的链接设置新密码。链接 30 分钟内有效，设置后其他设备会退出登录。`}</small></span>
+              ? `已发到 ${esc(me?.email)}`
+              : `链接会发到 ${esc(me?.email)}`}</small></span>
             <span class="pw_fields"><p class="form_msg" role="alert"></p><span class="row_btns">
               <button type="button" class="btn" data-account-edit="">${sent ? "完成" : "取消"}</button>
               <button type="button" class="btn ${sent ? "" : "primary"}" data-password-send>${sent ? "重新发送" : "发送邮件"}</button></span></span></div>`
@@ -962,7 +960,7 @@ const VIEWS = {
           ({ user: session.user } = await api("/api/auth/username", { method: "POST", body: { username: nameForm.elements.username.value.trim() } }));
           state.accountEdit = null;
           renderSidebar();
-          toast("用户名已修改，以后用新用户名登录");
+          toast("用户名已修改");
           VIEWS.settings("account");
         } catch (e) { $(".form_msg", nameForm).textContent = e.message; }
       };
@@ -1023,7 +1021,7 @@ function wireEmailForm(form, done) {
     send.textContent = "发送中…";
     try {
       await api("/api/auth/email/code", { method: "POST", body: { email: email.value.trim() } });
-      say(`验证码已发到 ${email.value.trim()}，10 分钟内有效`, true);
+      say(`验证码已发到 ${email.value.trim()}`, true);
       code.focus();
       for (let left = 60; left > 0 && form.isConnected; left -= 1) { send.textContent = `${left} 秒后重发`; await sleep(1000); }
     } catch (e) { say(e.message); }
@@ -1048,7 +1046,7 @@ function promptEmail() {
   dialog.setAttribute("aria-labelledby", "email-prompt");
   // On a phone, focusing the email field would pop the keyboard before the person has read the prompt.
   dialog.innerHTML = `<form data-email-form><h3 id="email-prompt" ${TOUCH ? 'tabindex="-1" autofocus' : ""}>绑定邮箱</h3>
-      <p class="sub">修改密码、忘记密码时，链接都会发到这个邮箱。</p>${emailFields()}
+      ${emailFields()}
       <div class="modal_btns"><button type="button" class="link" data-later>今天不再提醒</button><span class="grow"></span>
         <button type="button" class="btn" data-skip>暂时跳过</button><button class="btn primary">绑定</button></div></form>`;
   document.body.appendChild(dialog);
@@ -1072,11 +1070,11 @@ function paintSettings(tab, head, data, again) {
         <output>${data.concurrency[k]}</output><button class="btn small" data-step="${k}" data-d="1" aria-label="增加" ${data.concurrency[k] >= 8 ? "disabled" : ""}>＋</button></span></div>`;
     quiet = again;
     setPage(`${head}<div class="section"><h3>并发数量</h3><span class="aside">1–8</span></div>
-      <div class="models">${row("ai", "AI 答题", "同时作答的题数")}${row("study", "自动学习", "同时学的资源数，智慧树固定 1 个")}</div>
+      <div class="models">${row("ai", "AI 答题", "同时作答的题数")}${row("study", "自动学习", "同时学的资源数")}</div>
       ${data.pace_locked ? "" : `<div class="section"><h3>答题节奏</h3><span class="aside">只影响智慧树</span></div>
       <div class="models"><div class="model plain stepper_row"><span class="m1"><b>${fast ? "快速" : "稳妥"}</b><small class="sans">${fast
-        ? "拿题、保存答案之间只停 0.1–0.5 秒，快很多，但更可能触发滑块验证"
-        : "拿题、保存答案之间像人一样停 0.5–2 秒，最不容易触发滑块验证"}</small></span>
+        ? "每步间隔 0.1–0.5 秒"
+        : "每步间隔 0.5–2 秒"}</small></span>
         <span class="row_btns">${paceButtons}</span></div></div>`}`);
     quiet = false;
     page.querySelectorAll("[data-pace]").forEach((el) => (el.onclick = async () => {
@@ -1085,7 +1083,7 @@ function paintSettings(tab, head, data, again) {
       try {
         await api("/api/settings/pace", { method: "POST", body: { pace } });
         state.settings.pace = pace;
-        toast(`已改为${pace === "fast" ? "快速" : "稳妥"}，下次答题生效`);
+        toast(`已改为${pace === "fast" ? "快速" : "稳妥"}`);
       } catch (e) { toast(e.message); }
       paintSettings(tab, head, state.settings, true);
     }));
@@ -1157,7 +1155,7 @@ function renderModels(head, models, editing = null, again = true) {
   };
   quiet = again;
   setPage(`${head}<div class="section"><h3>${PHONE.matches ? "" : "AI 模型"}</h3><button class="link" data-add>＋ 添加模型</button></div>
-    ${editing === "new" ? form(null) : ""}<div class="models">${models.map(row).join("") || (editing === "new" ? "" : '<div class="model plain"><span class="m1"><small class="sans">还没有可用的模型，点「＋ 添加模型」填写自己的服务</small></span></div>')}</div>`);
+    ${editing === "new" ? form(null) : ""}<div class="models">${models.map(row).join("") || (editing === "new" ? "" : '<div class="model plain"><span class="m1"><small class="sans">还没有可用的模型</small></span></div>')}</div>`);
   quiet = false;
   const reload = async (edit = null) => {
     try { state.settings = await api("/api/settings"); renderModels(head, state.settings.models, edit); } catch (e) { toast(e.message); }
@@ -1219,7 +1217,7 @@ function studyActions(p, c) {
   const study = p.id === "zhs" ? (c.kind === "shared" ? "1.5 倍速看完剩下的视频，弹题自动答" : "完成文档、课件和视频")
     : "学完课件和视频，自动讨论和评价";
   return [["study", ICON.play, "自动学习", study],
-    ...(f.review ? [["review", ICON.repeat, "每日复习", "重看 30 分钟攒习惯分，每天一次"]] : [])];
+    ...(f.review ? [["review", ICON.repeat, "每日复习", "每天重看 30 分钟"]] : [])];
 }
 // "#/course/p/c/<tab>": the Q&A tab only exists on courses whose assessment counts it.
 const courseTab = (c, tab) => tab === "answer" ? "answer" : tab === "qa" && c.features?.qa ? "qa" : "study";
@@ -1254,7 +1252,7 @@ function qaBody(p, c) {
   const answerBlock = blocker(p.id, c.id, "qa") || (room && !room.answer ? room.why.answer : "");
   const head = `<div class="qa_head"><span class="qa_score"><b>${earned ? pts(earned.interactive) : "—"}</b><span class="of">/${c.shares?.interactive || 10}</span> 分</span>
     ${!p.rescan && !qaSoon(p) && qaLeft(p) > 0 ? `<span class="qa_time">问答区剩余 <span data-qa-left="${p.id}">${hoursLeft(qaLeft(p))}</span></span>` : ""}
-    <small class="sans">斜纹：今日发布 · 次日上午更新</small></div>`;
+    <small class="sans">斜纹：今日发布</small></div>`;
   const ask = qaLane("ask", room, { title: "提问", valid: q?.questions, today: today.ask,
     reason: draft?.loading ? `正在出第 ${draft.loading}/${draft.total} 条…` : askBlock,
     note: draft?.error || `今天还能问 ${room ? room.ask : "—"} 条 · 收获回答 ${q?.received ?? "—"}`,
@@ -1266,11 +1264,11 @@ function qaBody(p, c) {
   const drafts = texts.map((t, i) => `<div class="model plain qa_draft"><textarea rows="2" data-qa-edit="${i}" maxlength="200">${esc(t)}</textarea>
       <button class="btn small" data-qa-drop="${i}" aria-label="删掉这条">删掉</button></div>`).join("")
     + (texts.length ? `<div class="model plain qa_row"><span class="m1"><small class="sans">${esc(askBlock ||
-      (tooMany ? `今天还能发 ${room.ask} 条，删掉几条` : "隔 10–20 分钟发一条，免得像刷帖"))}</small></span>
+      (tooMany ? `今天还能发 ${room.ask} 条，删掉几条` : "隔 10–20 分钟发一条"))}</small></span>
       <span class="row_btns"><button class="btn primary" data-qa-ask ${p.rescan || askBlock || tooMany || draft?.loading ? "disabled" : ""}>发布 ${texts.length} 条</button></span></div>` : "");
   // Only a hosted site has classmates to answer; the person opts in, both ways.
   const peers = session.mode === "hosted" ? `<div class="model plain qa_row qa_switch"><span class="m1"><b>站内互答</b><small class="sans">${
-      state.qaPeers ? "先答同学的提问，你的提问也给同学答" : "和站里同班的同学互相回答"}</small></span>
+      state.qaPeers ? "先答同学的提问" : "和同班同学互相回答"}</small></span>
     <span class="row_btns"><button class="switch ${state.qaPeers ? "on" : ""}" role="switch" aria-checked="${!!state.qaPeers}" aria-label="站内互答" data-qa-peers></button></span></div>` : "";
   const list = !posts ? '<div class="empty">正在读取…</div>' : !posts.length ? '<div class="empty">还没在这门课发过</div>'
     : `<div class="runs">${posts.map((x) => {
@@ -1281,10 +1279,10 @@ function qaBody(p, c) {
         <span class="when"></span></div>
         ${x.kind === "answer" && open ? `<div class="qa_text">${esc(x.text)}</div>` : ""}`;
     }).join("")}</div>`;
-  const rescan = p.rescan ? `<div class="model plain qa_row qa_rescan"><span class="m1"><b>问答区进不去了</b><small class="sans">智慧树登录中心过期，扫一次码就好</small></span>
+  const rescan = p.rescan ? `<div class="model plain qa_row qa_rescan"><span class="m1"><b>问答区要重新扫码</b></span>
     <span class="row_btns"><button class="btn small primary" data-go="${rescanLink(p)}">重新扫码</button></span></div>`
     : qaSoon(p) ? `<div class="model plain qa_row qa_rescan"><span class="m1"><b>问答区还能用 <span data-qa-left="${p.id}">${hoursLeft(qaLeft(p))}</span></b>
-      <small class="sans">到点要重新扫码，现在扫能再用 8 小时</small></span>
+      <small class="sans">扫码后再用 8 小时</small></span>
     <span class="row_btns"><button class="btn small" data-go="${rescanLink(p)}">现在扫码</button></span></div>` : "";
   return `<div class="models qa_board">${head}${rescan}<div class="qa_lanes">${ask}${answer}</div>
     <div class="qa_rule"><header><b>获得至少 5 个有效回答的提问</b><span class="qa_num">${esc(q?.qualified ?? "—")}<span class="of"> 条</span></span></header></div>${drafts}${peers}</div>
@@ -1414,7 +1412,7 @@ function renderCourse(p, c, tab, full = false) {
         : x.redo_left != null ? `<span class="pill blue">可重做 · 剩 ${esc(x.redo_left)} 次</span>`
         : x.redo ? '<span class="pill blue">可重做</span>'
         : x.done ? `<span class="pill">已提交</span>` : "";
-      const note = x.reason || (x.redo_left != null ? "重做会覆盖当前成绩" : x.hint) || (x.available ? x.status : "");
+      const note = x.reason || (x.available ? x.status : "");
       return `<button class="paper ${on ? "on" : ""} ${r?.state === "running" ? "now" : ""} ${x.available && !(sheet && !r) ? "" : "off"}" data-paper="${esc(x.id)}">
         <span class="box">${on ? ICON.tick : ""}</span><span class="stamp ${STAMP[x.category] || ""}">${esc((x.category || "作")[0])}</span>
         <span class="pname"><b>${esc(x.name)}</b><small title="${esc(x.hint || note)}">${esc(note)}</small></span>
@@ -1433,7 +1431,7 @@ function renderCourse(p, c, tab, full = false) {
         <div class="papers">${list.map(row).join("")}</div>`;
     }).join("") || `<div class="empty">这门课没有作业、测验或考试</div>`;
     // While it runs, the player bar below carries the progress and the stop button.
-    if (categories.length && !sheet) body += `<div class="dock"><span class="info">${answerBlock ? esc(answerBlock) : n ? `已选 <b>${n}</b> 份 · 交卷前会再确认一次` : "勾选要作答的试卷"}</span>
+    if (categories.length && !sheet) body += `<div class="dock"><span class="info">${answerBlock ? esc(answerBlock) : n ? `已选 <b>${n}</b> 份` : "勾选要作答的试卷"}</span>
       <button class="btn" data-save ${n && !answerBlock ? "" : "disabled"}>仅生成答案</button>
       <button class="btn primary" data-submit data-confirm="再按一次，交 ${n} 份卷" ${n && !answerBlock ? "" : "disabled"}>AI 作答并交卷</button></div>`;
   }
@@ -1887,7 +1885,7 @@ async function qrLogin(pid) {
     try { result = await api(`/api/platforms/${pid}/login?id=${encodeURIComponent(started.id || "")}`); } catch (error) { say("网络异常", error.message); continue; }
     if (result.qr) setImage(result.qr);
     if (result.status === "scanned") say("已扫码", "请在手机上确认登录。");
-    else if (result.status === "refreshed") say("二维码已刷新", "旧二维码过期了，请扫描新的。");
+    else if (result.status === "refreshed") say("二维码已刷新", "请扫新的二维码。");
     else if (result.status === "failed") { say("登录未完成", result.message || "请点击刷新二维码重试。"); return; }
     else if (result.status === "done") { token.cancelled = true; await afterLogin(pid); return; }
   }
@@ -1916,7 +1914,7 @@ async function browserLogin(pid, resume = false) {
     let result;
     try { result = await api(`/api/platforms/${pid}/login`); }
     catch (error) { if (resume) return; say("网络异常", error.message); continue; }  // resuming: no login was started
-    if (resume && result.status === "waiting") { say("等待职教云登录", "登录完成后自动回到这里；没登成可以重新打开登录页"); button.textContent = "重新打开登录页"; }
+    if (resume && result.status === "waiting") { say("等待职教云登录", "登录完成后自动回到这里"); button.textContent = "重新打开登录页"; }
     resume = false;
     if (result.status === "failed") { say("登录未完成", result.message); button.disabled = false; button.textContent = "重新打开登录页"; return; }
     if (result.status === "done") { token.cancelled = true; await afterLogin(pid); return; }
@@ -2192,10 +2190,10 @@ function animateAuthGrid(box) {
 
 const AUTH = {
   login: { title: "登录", lead: "欢迎回来。", button: "登录", switch: ["还没有账号？", "用邀请码注册", "register"] },
-  register: { title: "注册", lead: "邀请码向管理员要，每个只能用一次。", button: "注册并登录", switch: ["已经有账号？", "去登录", "login"] },
+  register: { title: "注册", lead: "", button: "注册并登录", switch: ["已经有账号？", "去登录", "login"] },
   setup: { title: "创建管理员", lead: "设置码在服务器日志里（docker compose logs studia）。", button: "创建并进入" },
-  forgot: { title: "找回密码", lead: "填写用户名或绑定的邮箱，设置新密码的链接会发到邮箱。", button: "发送链接", switch: ["想起来了？", "去登录", "login"] },
-  reset: { title: "设置新密码", lead: "设置后其他设备会退出登录。", button: "保存并登录" },
+  forgot: { title: "找回密码", lead: "链接会发到绑定的邮箱。", button: "发送链接", switch: ["想起来了？", "去登录", "login"] },
+  reset: { title: "设置新密码", lead: "", button: "保存并登录" },
 };
 function showAuth(mode = "login") {
   document.body.classList.add("signed-out");
@@ -2258,7 +2256,7 @@ function showAuth(mode = "login") {
     try {
       await api(`/api/auth/${mode}`, { method: "POST", body });
       if (mode === "forgot") {
-        $(".auth_lead", form).textContent = "如果这个账号绑定了邮箱，链接已经发过去了，30 分钟内有效。没收到的话看看垃圾邮件。";
+        $(".auth_lead", form).textContent = "如果这个账号绑定了邮箱，链接已经发过去了。";
         button.disabled = false;
         button.textContent = "重新发送";
         return;
