@@ -134,6 +134,9 @@ class Platform:
         self.cache = {}
         self.score_reads = {}
         self.cache_lock = threading.Lock()
+        # Bumped whenever a job drops cached lists: a read begun before then may have seen the platform from
+        # before the job's change, so it is answered but not kept.
+        self.epoch = 0
         self.login = None
         # QR login id -> {"client", "qr", "refreshes"}. Each page showing a code polls its own: with one
         # shared code, a second tab starting over swapped the code out under the first, whose scans then
@@ -583,6 +586,7 @@ class Studia:
             hit = platform.cache.get(key)
             if hit and not fresh and time.time() - hit[0] < CACHE_TTL:
                 return hit[1]
+            epoch = platform.epoch
             pending = platform.score_reads.get(key) if key[0] == "earned" and not fresh else None
             leader = pending is None
             if leader and key[0] == "earned":
@@ -599,7 +603,7 @@ class Studia:
                     pending.set_exception(exc)
             raise
         with platform.cache_lock:
-            if pending is None or platform.score_reads.get(key) is pending:
+            if (pending is None or platform.score_reads.get(key) is pending) and platform.epoch == epoch:
                 platform.cache[key] = (time.time(), value)
             if pending:
                 if platform.score_reads.get(key) is pending:
@@ -951,13 +955,7 @@ class Studia:
             state, summary = "error", str(exc) or "任务失败"
         finally:
             if platform is not None:
-                # The job changed this course's progress and papers; read them afresh next time.
-                with platform.cache_lock:
-                    platform.cache.pop(("units", job["course"]), None)
-                    platform.cache.pop(("tasks", job["course"]), None)
-                    for stale in [k for k in platform.cache if k[0] == "earned"]:  # points may have moved
-                        platform.cache.pop(stale, None)
-                    platform.score_reads.clear()
+                self._forget(platform, job["course"])
                 self.save_sessions(platform)
             with self.lock:
                 if self.closing and state == "stopped":
@@ -968,6 +966,16 @@ class Studia:
                 self._save()
             self.publish(dict(_job_public(job), type="job"))
             JOBS.pop(job["id"], None)
+
+    def _forget(self, platform, course_id):
+        """The job changed this course's progress and papers; read them afresh next time."""
+        with platform.cache_lock:
+            platform.cache.pop(("units", course_id), None)
+            platform.cache.pop(("tasks", course_id), None)
+            for stale in [k for k in platform.cache if k[0] == "earned"]:  # points may have moved
+                platform.cache.pop(stale, None)
+            platform.score_reads.clear()
+            platform.epoch += 1
 
     # ------------------------------------------------------------ restarts
 
@@ -1169,6 +1177,8 @@ class Studia:
                 status = result["status"]
                 if status == "ai_error":
                     self.store.save_ai_health(ai.config, "error", result.get("message", "AI 服务失败"))
+                # Before the event: the page reads the papers again on a handed-in one, and must get its new score.
+                self._forget(platform, job["course"])
                 self.progress_event(job, "result", name, status=status)
                 if result.get("message"):
                     self.publish({"type": "log", "text": f"{name}：{result['message']}", "job": job["id"],

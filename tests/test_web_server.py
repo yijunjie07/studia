@@ -5,6 +5,7 @@ import threading
 import time
 import unittest
 import unittest.mock
+from concurrent.futures import ThreadPoolExecutor
 from http.server import ThreadingHTTPServer
 from unittest.mock import Mock, patch
 
@@ -222,6 +223,49 @@ class WebServerTest(unittest.TestCase):
         self.assertEqual([(t["id"], t["category"], t["score"]) for t in tasks], [("1-e_1", "作业", "92"), ("3-q2", "测验", None)])
         self.assertEqual(tasks[0]["status"], "已提交")
         self.assertIn("1-e_1", platform.entries["c1"])
+
+    def test_each_handed_in_paper_drops_the_paper_list_before_the_page_hears_of_it(self):
+        # The page rereads the papers on a "submitted" result; a list cached before it would still say 0 points.
+        platform = self.app.platforms["mooc"]
+        row = {"courseName": "英语", "courseId": "c1"}
+        platform.rows, platform.client = [row], Mock()
+        self.app._ai, self.app.mooc_memory = Mock(), Mock()
+        cached = []
+
+        def run_paper(course, item, category):
+            platform.cache[("tasks", "c1")] = (time.time(), ({}, [{"id": item["id"], "score": "0"}]))
+            return {"status": "submitted"}
+
+        def publish(event):
+            if event.get("kind") == "result":
+                cached.append(("tasks", "c1") in platform.cache)
+
+        job = {"id": "j1", "course": "c1", "cancel": threading.Event()}
+        selected = [(row, {"id": "e1", "name": "第一单元作业"}, 1), (row, {"id": "e2", "name": "第二单元作业"}, 1)]
+        with patch("web.server.AnswerRunner") as runner, patch("web.server.ExamAPI"), \
+                patch.object(self.app, "publish", side_effect=publish):
+            runner.return_value.run_paper.side_effect = run_paper
+            self.assertEqual(self.app._answer(platform, selected, True, job), "处理完成 2/2 份试卷")
+        self.assertEqual(cached, [False, False])
+
+    def test_a_list_read_under_way_when_a_paper_is_handed_in_is_not_kept(self):
+        platform = self.app.platforms["mooc"]
+        entered, release = threading.Event(), threading.Event()
+
+        def before_the_paper():
+            entered.set()
+            self.assertTrue(release.wait(3))
+            return "0 分"
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(self.app._cached, platform, ("tasks", "c1"), False, before_the_paper)
+            self.assertTrue(entered.wait(2))
+            self.app._forget(platform, "c1")
+            release.set()
+            self.assertEqual(pending.result(), "0 分")
+        self.assertNotIn(("tasks", "c1"), platform.cache)
+        self.assertEqual(self.app._cached(platform, ("tasks", "c1"), False, lambda: "92 分"), "92 分")
+        self.assertEqual(platform.cache[("tasks", "c1")][1], "92 分")
 
     def test_settings_never_return_full_api_key(self):
         from ai.client import AIConfig
