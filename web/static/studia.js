@@ -883,7 +883,7 @@ const VIEWS = {
     if (p.login === "qr") {
       setPage(`${head}<p class="sub">${again ? `${p.rescan ? "问答区要重新认人" : "扫完问答区再用 8 小时"}，学习不受影响` : p.lapsed ? "登录已过期，用智慧树 App 重新扫码" : "用智慧树 App 扫码"}</p>
         <div class="login_card"><div class="qr"><div class="qr_empty">正在获取二维码…</div></div>
-          <div class="login_status"><div data-status><b>等待扫码</b><p>${TOUCH ? "只有这台手机：长按二维码保存图片，在知到 App 扫一扫里从相册选它，确认后回到这里，会自动登录" : "二维码过期会自动刷新"}</p></div>
+          <div class="login_status"><div data-status><b>等待扫码</b><p>${TOUCH ? "长按保存二维码，在知到 App 里从相册扫码" : "二维码过期会自动刷新"}</p></div>
             <button class="btn" data-start-login>刷新二维码</button></div></div>`);
       $("[data-start-login]", page).onclick = () => qrLogin(pid);
       qrLogin(pid);
