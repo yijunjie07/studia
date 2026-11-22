@@ -1495,24 +1495,46 @@ function renderCourse(p, c, tab, full = false) {
   if (tab === "answer" && p.features.answer && !papers && !state.paperErrors[k]) loadPapers(p, c);
 }
 
-const loadingPapers = new Set();
-async function loadPapers(p, c) {
+const loadingPapers = new Set(), papersAgain = new Set();
+// again: the list on the page is out of date (a paper was handed in), read it once more even if a read is under way.
+async function loadPapers(p, c, again = false) {
   const k = key(p.id, c.id);
-  if (loadingPapers.has(k)) return;
+  if (loadingPapers.has(k)) { if (again) papersAgain.add(k); return; }
   loadingPapers.add(k);
   try {
     const papers = (await api(`/api/platforms/${p.id}/tasks?course=${encodeURIComponent(c.id)}`)).tasks;
     state.papers[k] = papers;
     delete state.paperErrors[k];
     const selected = selectedOf(k);
-    if (!selected.size) papers.filter((x) => x.available && !x.done && x.status !== "状态未知").forEach((x) => selected.add(x.id));
+    if (!again && !selected.size) papers.filter((x) => x.available && !x.done && x.status !== "状态未知").forEach((x) => selected.add(x.id));
   } catch (error) {
     // A failed read is not an empty course: keep it unloaded so a retry or the next login reads it again.
-    state.paperErrors[k] = error.message;
+    // A failed reread keeps the list already shown.
+    if (!again || !state.papers[k]) state.paperErrors[k] = error.message;
   } finally {
     loadingPapers.delete(k);
+    if (papersAgain.delete(k)) loadPapers(p, c, true);
   }
   repaint();
+}
+// The papers changed on the platform: drop the list, and a read already under way (begun before) runs again.
+function stalePapers(pid, cid) {
+  const k = key(pid, cid);
+  delete state.papers[k];
+  if (loadingPapers.has(k)) papersAgain.add(k);
+  if (rereads[k]?.timer) { clearTimeout(rereads[k].timer); rereads[k].timer = 0; }  // the next look reads it anyway
+}
+// A paper handed in mid-run: its score shows without waiting for the whole job. At most one read per 15 s,
+// the last one always made: 智慧树 reads its list one knowledge point at a time.
+const rereads = {};
+function rereadPapers(pid, cid) {
+  const k = key(pid, cid), r = (rereads[k] ||= { last: 0, timer: 0 });
+  if (r.timer || !state.papers[k]) return;  // not shown yet: the first look reads it afresh anyway
+  r.timer = setTimeout(() => {
+    r.timer = 0;
+    r.last = Date.now();
+    if (state.papers[k]) loadPapers({ id: pid }, { id: cid }, true);
+  }, Math.max(0, r.last + 15000 - Date.now()));
 }
 
 /* ---------------------------------------------------------------- player & focus sheet */
@@ -1764,7 +1786,7 @@ function handleEvent(event) {
       state.lastDone = Object.assign({}, event, { shownAt: Date.now(), run });
       toast(`${event.title} · ${event.summary || STATE_WORD[event.state] || "结束"}`);
       finishUnits(event);
-      delete state.papers[key(event.platform, event.course)];
+      stalePapers(event.platform, event.course);
       delete state.earned[key(event.platform, event.course)];
       delete state.qaPosts[key(event.platform, event.course)];
       delete state.qaRoom[key(event.platform, event.course)];
@@ -1795,6 +1817,7 @@ function handleEvent(event) {
         run.sub = null;
       }
       pushLine(run, `${event.name} · ${STATUS[event.status] || event.status || ""}`, event.status === "error" || event.status === "ai_error" ? "error" : event.status === "waiting" ? "warn" : "", true);
+      if (isAnswer(job) && ["submitted", "submission_unknown"].includes(event.status)) rereadPapers(job.platform, job.course);
     } else if (event.kind === "resources" || event.kind === "questions") {
       run.sub = { name: event.name, done: event.completed || 0, total: event.total || 0, unit: event.unit === "项资源" ? "项" : event.unit };
     }
@@ -1982,7 +2005,7 @@ async function refreshState(catchUp = false) {
       delete state.runs[gone.id];
       const ended = state.history.find((h) => h.id === gone.id);
       if (ended) finishUnits(ended);
-      delete state.papers[key(gone.platform, gone.course)];
+      stalePapers(gone.platform, gone.course);
     }
     state.jobs = live;
     for (const job of live) markLive(key(job.platform, job.course));
