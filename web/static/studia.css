@@ -643,7 +643,9 @@ body.signed-out .app, body.signed-out .player { display: none; }
 .auth_note .link { margin-left: 4px; }
 
 @media (max-width: 860px) {
-  .auth { grid-template-columns: minmax(0, 1fr); align-content: start; }
+  /* Rows as tall as their content: the art panel clips its overflow, so a short screen squeezed it (and cut its text)
+     instead of letting the page scroll. */
+  .auth { grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; align-content: start; }
   .auth_art { padding: calc(24px + env(safe-area-inset-top)) 20px 22px; border-right: 0; border-bottom: 1px solid var(--line); }
   .auth_pitch { margin-top: 22px; }
   .auth_pitch h1 { font-size: 22px; }
@@ -655,6 +657,8 @@ body.signed-out .app, body.signed-out .player { display: none; }
   .auth_side { grid-template-columns: minmax(0, 1fr); place-items: start stretch; padding: 26px 20px calc(32px + env(safe-area-inset-bottom)); }
   .auth_card { width: 100%; }
 }
+/* A phone with its browser bars has little height: the form matters more than the decorative grid. */
+@media (max-width: 860px) and (max-height: 820px) { .auth_grid { display: none; } }
 
 /* ---------------------------------------------------------------- palette */
 .palette_wrap { position: fixed; inset: 0; z-index: 40; display: none; align-items: flex-start; justify-content: center; padding: 16vh 16px 0; background: rgb(var(--ink) / .14); }
