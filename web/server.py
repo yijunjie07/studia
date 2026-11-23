@@ -472,16 +472,13 @@ class Studia:
             return {"status": "scanned", "message": "已扫码，请在手机上确认登录"}
         if status == 1:
             client = platform.qr.pop(qid)["client"]
+            started = time.monotonic()
             try:
                 client.finish_qr_login(result.get("oncePassword", ""))
             except Exception as exc:  # 手机上已确认，但换登录状态失败：说出来，别让页面一直转
                 logger.exception("%s%s 扫码已确认，但登录没完成", self.who(), name)
                 client.close()
                 return {"status": "failed", "message": "扫码已确认，但登录没完成（%s），请刷新二维码重试" % (str(exc) or "平台没响应")}
-            try:
-                client.shared_exam_sso()
-            except (AuthenticationExpired, PlatformUnavailable, ZHSError):
-                logger.warning("考试会话初始化失败，进入共享课试卷时将重新尝试")
             for other in platform.qr.values():  # the other pages' codes are moot now
                 other["client"].close()
             platform.qr.clear()
@@ -489,11 +486,14 @@ class Studia:
             self.drop(platform)
             platform.client = client
             self.store.save_session(platform.id, client)
-            logger.info("%s%s 扫码登录成功", self.who(), name)
+            logger.info("%s%s 扫码登录成功（换登录状态 %.1f 秒）", self.who(), name, time.monotonic() - started)
             if pid == "zhs":  # a scan hands out a new ticket; its eight hours count from here
                 self.store.set("zhs_signed_in_at", time.time())
                 self.store.set(PASSPORT_LAPSED, None)
             self.publish({"type": "account"})  # other tabs and devices pick up the login
+            # The exam session is set up while the fresh ticket still works, but after the page is told: its
+            # redirects took a second or more that people sat watching the code.
+            threading.Thread(target=self._exam_sso, args=(platform, client), daemon=True).start()
             return {"status": "done", "message": "登录成功"}
         if status == 2:
             login["refreshes"] += 1
@@ -507,6 +507,18 @@ class Studia:
             logger.info("%s%s 在手机上取消了扫码登录", self.who(), name)
             return {"status": "failed", "message": "已在手机上取消登录"}
         return {"status": "waiting", "message": ""}
+
+    def _exam_sso(self, platform, client):
+        try:
+            client.shared_exam_sso()
+        except (AuthenticationExpired, PlatformUnavailable, ZHSError):
+            logger.warning("考试会话初始化失败，进入共享课试卷时将重新尝试")
+            return
+        except Exception:  # signed out (client closed) or replaced meanwhile
+            logger.warning("考试会话初始化失败，进入共享课试卷时将重新尝试", exc_info=True)
+            return
+        if platform.client is client:  # keep its cookies, so a restart still finds the exam session
+            self.save_sessions(platform)
 
     def logout(self, pid):
         platform = self.platform(pid)

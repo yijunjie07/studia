@@ -2002,7 +2002,8 @@ function repaint() {
       else if (name === "home") VIEWS.home();
       else if (name === "me") VIEWS.me();
       // Signed in elsewhere; a fresh scan is done once the ticket is back.
-      else if (name === "login" && platformOf(a)?.logged_in && !(b === "again" && rescannable(platformOf(a)))) go(homeOf(platformOf(a)));
+      else if (name === "login" && platformOf(a)?.logged_in && !(b === "again" && rescannable(platformOf(a)))
+               && (state.loginToken.cancelled || state.loginToken.qr !== a)) go(homeOf(platformOf(a)));
       else if (name === "course") {
         const p = platformOf(a), course = courseOf(a, decodeURIComponent(b || ""));
         if (p && course) renderCourse(p, course, courseTab(course, c));
@@ -2033,23 +2034,26 @@ function connectEvents() {
 
 async function qrLogin(pid) {
   state.loginToken.cancelled = true;
-  const token = (state.loginToken = { cancelled: false });
+  // qr: this tab's own scan is under way, so the account event it sends leaves the finish to afterLogin.
+  const token = (state.loginToken = { cancelled: false, qr: pid });
   const box = $(".qr", page), status = $("[data-status]", page);
   const say = (title, text) => { status.innerHTML = `<b>${esc(title)}</b><p>${esc(text)}</p>`; };
   const setImage = (src) => { box.innerHTML = `<img alt="登录二维码" src="${src}">`; };
-  let started;
+  let started, wait = 1500;
   try { started = await api(`/api/platforms/${pid}/login`, { method: "POST" }); setImage(started.qr); }
-  catch (error) { say("获取二维码失败", error.message); return; }
+  catch (error) { token.cancelled = true; say("获取二维码失败", error.message); return; }
   while (!token.cancelled) {
-    await sleep(1500);
+    await sleep(wait);
     if (token.cancelled || !box.isConnected) return;
     let result;
     // This page's own code: another tab or device showing a code must not swap it out.
     try { result = await api(`/api/platforms/${pid}/login?id=${encodeURIComponent(started.id || "")}`); } catch (error) { say("网络异常", error.message); continue; }
     if (result.qr) setImage(result.qr);
+    // Scanned: the tap on the phone is seconds away, so look more often and go in as soon as it lands.
+    wait = result.status === "scanned" ? 500 : 1500;
     if (result.status === "scanned") say("已扫码", "请在手机上确认登录。");
     else if (result.status === "refreshed") say("二维码已刷新", "请扫新的二维码。");
-    else if (result.status === "failed") { say("登录未完成", result.message || "请点击刷新二维码重试。"); return; }
+    else if (result.status === "failed") { token.cancelled = true; say("登录未完成", result.message || "请点击刷新二维码重试。"); return; }
     else if (result.status === "done") { token.cancelled = true; await afterLogin(pid); return; }
   }
 }
@@ -2099,9 +2103,15 @@ async function afterLogin(pid) {
   toast("登录成功");
   forgetPlatform(pid);
   await refreshState();
-  if (!state.courses[pid]) await loadCourses(pid);  // the account event's refresh may be the one still reading them
-  if (back) go(back);
-  else switchPlatform(pid);
+  // Go in now: the platform takes a second or more for the course list, and the page fills in when it lands.
+  const courses = state.courses[pid] ? null : loadCourses(pid);
+  if (back) { go(back); return; }
+  switchPlatform(pid);
+  // The desktop opens the first course once the list is in (as boot does), unless the user went elsewhere.
+  if (courses && !PHONE.matches) {
+    await courses;
+    if (state.current === pid && location.hash === "#/home") go(homeOf(platformOf(pid)));
+  }
 }
 
 // One read per platform at a time: a login seen by this tab and by the server's account event asks twice.
@@ -2171,8 +2181,9 @@ async function refreshState(catchUp = false) {
     state.jobs = live;
     for (const job of live) markLive(key(job.platform, job.course));
     for (const p of state.platforms) if (!p.logged_in) { delete state.courses[p.id]; forgetPlatform(p.id); }
-    // Signed in from another tab or device: this tab has no course list for it yet.
-    if (before) await Promise.all(state.platforms.filter((p) => p.logged_in && !before.has(p.id)).map((p) => loadCourses(p.id)));
+    // Signed in from another tab or device: this tab has no course list for it yet. Not awaited: readCourses
+    // repaints when it lands, and a scan's page goes in without waiting on it.
+    if (before) for (const p of state.platforms) if (p.logged_in && !before.has(p.id)) loadCourses(p.id);
     watchTicket();
   } catch (error) { toast(error.message); }
   renderSidebar();

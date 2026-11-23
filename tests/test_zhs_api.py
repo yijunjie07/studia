@@ -1,4 +1,5 @@
 import json
+import threading
 import unittest
 import urllib.parse
 from unittest.mock import Mock, patch
@@ -409,6 +410,19 @@ class CourseListTest(unittest.TestCase):
         self.assertEqual(shared["studySpeed"], 46)
         self.assertEqual(ai["zhs"]["courseId"], 1234567890123456789)
         self.assertEqual(ai["studySpeed"], 58)
+
+    def test_both_lists_are_read_side_by_side(self):
+        # Right after a scan the page waits on this list: neither read waits for the other.
+        client = make_api()
+        both = threading.Barrier(2, timeout=5)
+
+        def listed():
+            both.wait()
+            return []
+
+        client.shared_courses = Mock(side_effect=listed)
+        client.ai_courses = Mock(side_effect=listed)
+        self.assertEqual(client.my_course_list()["rows"], [])
 
     def test_one_side_failure(self):
         client = make_api()

@@ -289,12 +289,21 @@ class WebServerTest(unittest.TestCase):
     def test_qr_login_completion_saves_session(self):
         client = Mock()
         client.login_qr_status.return_value = {"status": 1, "oncePassword": "once"}
+        sso = threading.Event()
+        client.shared_exam_sso.side_effect = lambda: sso.wait(5)
         self.app.platforms["zhs"].qr = {"a": {"client": client, "qr": "q", "refreshes": 0}}
         self.app.store.save_session = Mock()
+        # The page is told while the exam sign-on still runs: its redirects kept people watching the code.
         self.assertEqual(self.app.login_status("zhs", "a")["status"], "done")
         client.finish_qr_login.assert_called_once_with("once")
         self.app.store.save_session.assert_called_once_with("zhs", client)
         self.assertIs(self.app.platforms["zhs"].client, client)
+        sso.set()
+        for _ in range(500):  # then the cookies are saved again, so a restart still finds the exam session
+            if self.app.store.save_session.call_count == 2:
+                break
+            time.sleep(0.01)
+        self.assertEqual(self.app.store.save_session.call_count, 2)
 
     def test_each_page_keeps_its_own_qr_code(self):
         codes = iter(range(10))
