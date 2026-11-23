@@ -294,7 +294,8 @@ function closeMe() {
   const menu = $(".me_menu");
   if (menu?.getAnimations().some((a) => a.id === "out")) return;
   const done = () => { state.meOpen = false; renderSidebar(); };
-  const out = menu && moves(menu, [{ opacity: 1 }, { opacity: 0, transform: "translateY(6px) scale(.98)" }], { duration: 180, id: "out", fill: "forwards" });
+  const out = menu && moves(menu, [{ clipPath: "inset(-30px)" }, { clipPath: "inset(calc(100% + 30px) -30px -30px -30px)", transform: "translateY(4px)" }],
+    { duration: 260, easing: EASE_IO, id: "out", fill: "forwards" });
   if (out) out.onfinish = done; else done();
 }
 // The sidebar's highlight and the phone tab bar's mark sit under the current item and glide when it changes. Placed
@@ -327,11 +328,18 @@ Object.values(bars).forEach((el) => barSizes.observe(el));
 // Live progress repaints several times a second. Patch the existing DOM instead of
 // replacing it, so buttons, running animations and a finger mid-tap survive the update.
 /* ---------------------------------------------------------------- motion
-   Only transform and opacity move, so animations stay on the compositor while a job streams progress.
-   Web Animations (el.animate) rather than classes: nothing to clean up, and a later repaint cannot restart them. */
+   Studia moves like a scanner and a pen over an answer sheet: blocks are swept in from the top (a clip passing down
+   them), rows are filled in from the left like bubbles, digits roll up like a counter, and things travelling from one
+   place to another go decisively. Web Animations (el.animate) rather than classes: nothing to clean up, and a later
+   repaint cannot restart them. The clips reach 24px past the edges so rings and shadows are not cut. */
 const STILL = matchMedia("(prefers-reduced-motion: reduce)");
-const EASE = "cubic-bezier(.22, 1, .36, 1)";  // the stylesheet's --ease
+const EASE = "cubic-bezier(.16, 1, .3, 1)", EASE_IO = "cubic-bezier(.65, .05, 0, 1)";  // the stylesheet's --ease, --ease-io
 const moves = (el, frames, options) => (STILL.matches || !el.animate ? null : el.animate(frames, { duration: 420, easing: EASE, ...options }));
+// Swept in from the top edge down, settling `lift` pixels.
+const scanned = (lift = 10) => [{ clipPath: "inset(-24px -24px calc(100% + 24px) -24px)", transform: `translateY(${lift}px)` }, { clipPath: "inset(-24px)", transform: "none" }];
+// Filled in from one side: -1 from the left, 1 from the right.
+const filled = (side = -1) => [{ clipPath: side < 0 ? "inset(-24px calc(100% + 24px) -24px -24px)" : "inset(-24px -24px -24px calc(100% + 24px))",
+  transform: `translateX(${side * 14}px)` }, { clipPath: "inset(-24px)", transform: "none" }];
 let born = [], rolled = new Set();  // what a patch inserted (to fade in) and the numbers it changed (to roll)
 
 function patch(target, html, motion = true) {
@@ -342,7 +350,8 @@ function patch(target, html, motion = true) {
   rolled = new Set();
   patchChildren(target, fresh.content);
   // A count that changed (可作答 3 → 2, a progress digit) rolls up into place.
-  for (const el of rolled) moves(el, [{ opacity: 0, transform: "translateY(45%)" }, { opacity: 1, transform: "none" }], { duration: 480 });
+  for (const el of rolled) moves(el, el.closest(".digits") ? [{ transform: "translateY(115%)" }, { transform: "none" }]
+    : [{ opacity: 0, transform: "translateY(45%)" }, { opacity: 1, transform: "none" }], { duration: 600, easing: EASE_IO });
   if (!before) return;
   // A row that moved (a job leaving the queue for a slot, a list re-sorted) slides from where it was;
   // one that is new fades in. A few at most, so a page of fresh rows does not ripple for long.
@@ -350,10 +359,9 @@ function patch(target, html, motion = true) {
     const was = before.get(el.dataset.key);
     if (!was || born.includes(el)) continue;
     const now = el.getBoundingClientRect(), dx = was.left - now.left, dy = was.top - now.top;
-    if (Math.abs(dx) + Math.abs(dy) > 1) moves(el, [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }], { duration: 520 });
+    if (Math.abs(dx) + Math.abs(dy) > 1) moves(el, [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }], { duration: 560, easing: EASE_IO });
   }
-  born.slice(0, 24).forEach((el, i) => moves(el, [{ opacity: 0, transform: "translateY(8px)" }, { opacity: 1, transform: "none" }],
-    { duration: 460, delay: Math.min(i, 8) * 35, fill: "backwards" }));
+  born.slice(0, 24).forEach((el, i) => moves(el, filled(-1), { duration: 520, easing: EASE_IO, delay: Math.min(i, 8) * 40, fill: "backwards" }));
 }
 // Where each keyed row sits now. A key seen twice is ambiguous and left out.
 function keyedRects(root) {
@@ -385,7 +393,7 @@ function patchChildren(from, to) {
     else if (node.nodeType === 1) patchElement(at, node);
     else if (at.nodeValue !== node.nodeValue) {
       at.nodeValue = node.nodeValue;
-      if (from.matches?.(".digits i, .pen_num")) rolled.add(from);
+      if (from.matches?.(".digits span, .pen_num")) rolled.add(from);
     }
   });
   while (from.childNodes.length > next.length) from.lastChild.remove();
@@ -419,8 +427,7 @@ function rise(els, lift = 14) {
   let turn = 0;
   for (const el of els.flatMap((x) => (x.matches(".course_cards, .acts") ? [...x.children] : [x]))) {
     const below = revealer && el.getBoundingClientRect().top > innerHeight;
-    const a = moves(el, [{ opacity: 0, transform: `translateY(${below ? lift + 6 : lift}px)` }, { opacity: 1, transform: "none" }],
-      { duration: below ? 720 : 600, delay: below ? 0 : Math.min(turn++, 6) * 45, fill: "backwards" });
+    const a = moves(el, scanned(below ? lift + 6 : lift), { duration: below ? 760 : 680, easing: EASE_IO, delay: below ? 0 : Math.min(turn++, 6) * 55, fill: "backwards" });
     if (a && below) { a.pause(); el.reveal = a; revealer.observe(el); }
   }
 }
@@ -439,9 +446,9 @@ function setPage(html) {
     const marker = now.bar.classList.contains("seg") ? "::before" : "::after";
     try {
       moves(now.on, [{ transform: `translateX(${was.rect.left - now.rect.left}px) scaleX(${was.rect.width / now.rect.width})` }, { transform: "none" }],
-        { pseudoElement: marker, duration: 520 });
+        { pseudoElement: marker, duration: 520, easing: EASE_IO });
     } catch { /* no pseudo-element animations: the marker just moves */ }
-    for (const el of pageBody(now)) moves(el, [{ opacity: 0, transform: `translateX(${side * 24}px)` }, { opacity: 1, transform: "none" }], { duration: 480 });
+    pageBody(now).forEach((el, i) => moves(el, filled(side), { duration: 560, easing: EASE_IO, delay: Math.min(i, 4) * 40, fill: "backwards" }));
   } else if (!quiet) rise([...page.children]);
   else if (loading && !page.querySelector(".loading")) rise(pageBody(tabBar()), 10);
   // Tab bars scroll sideways on narrow phones: keep the current tab in sight.
@@ -675,7 +682,8 @@ function openJobMenu(button) {
 }
 const closeJobMenu = () => {
   if (jobMenu.hidden || jobMenu.getAnimations().some((a) => a.id === "out")) return;
-  const out = moves(jobMenu, [{ opacity: 1 }, { opacity: 0, transform: "translateY(4px) scale(.98)" }], { duration: 140, id: "out" });
+  const out = moves(jobMenu, [{ clipPath: "inset(-30px)" }, { clipPath: "inset(-30px -30px calc(100% + 30px) -30px)", transform: "translateY(-4px)" }],
+    { duration: 240, easing: EASE_IO, id: "out" });
   if (out) out.onfinish = () => { jobMenu.hidden = true; out.cancel(); };
   else jobMenu.hidden = true;
 };
@@ -1137,7 +1145,7 @@ const VIEWS = {
       lines.hidden = !lines.hidden;
       lines.innerHTML = lines.hidden ? "" : logHtml(j.lines || [], "all", j.course_name);
       el.classList.toggle("open", !lines.hidden);
-      if (!lines.hidden) moves(lines, [{ opacity: 0, transform: "translateY(-6px)" }, { opacity: 1, transform: "none" }]);
+      if (!lines.hidden) moves(lines, scanned(-6), { duration: 520, easing: EASE_IO });
     }));
     page.querySelectorAll("[data-retry]").forEach((el) => (el.onclick = () => {
       const j = state.history[el.dataset.retry];
@@ -1355,8 +1363,9 @@ function wireEmailForm(form, done) {
 // Once each time the page opens, until the email is bound or the person picks 今天不显示.
 // A dialog sinks and fades (its backdrop with it) before it closes.
 function closeModal(dialog) {
-  const out = moves(dialog, [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "translateY(12px) scale(.985)" }], { duration: 240, fill: "forwards" });
-  try { moves(dialog, [{ opacity: 1 }, { opacity: 0 }], { duration: 240, pseudoElement: "::backdrop", fill: "forwards" }); } catch { /* backdrop stays until close */ }
+  // Folded back to its middle line, as it opened.
+  const out = moves(dialog, [{ clipPath: "inset(-40px)" }, { clipPath: "inset(50% -40px 50% -40px)", transform: "scale(.985)" }], { duration: 360, easing: EASE_IO, fill: "forwards" });
+  try { moves(dialog, [{ opacity: 1 }, { opacity: 0 }], { duration: 360, pseudoElement: "::backdrop", fill: "forwards" }); } catch { /* backdrop stays until close */ }
   if (out) out.onfinish = () => dialog.close(); else dialog.close();
 }
 function promptEmail() {
@@ -1689,7 +1698,7 @@ function renderCourse(p, c, tab, full = false) {
       </div>
       <div class="hero_side">
         <div class="hero_stat"><span class="hero_label">学习进度</span>
-          ${c.progress == null ? '<span class="digits"><i>—</i></span>' : `<span class="digits">${[...String(c.progress)].map((d) => `<i>${esc(d)}</i>`).join("")}<small>%</small></span>`}
+          ${c.progress == null ? '<span class="digits"><i>—</i></span>' : `<span class="digits">${[...String(c.progress)].map((d) => `<i><span>${esc(d)}</span></i>`).join("")}<small>%</small></span>`}
           <span class="hero_note score_note">${scoreNote(c, papers, state.earned[k])}</span></div>
         ${p.features.answer ? `<button class="hero_stat" data-go="#/course/${p.id}/${c.id}/answer"><span class="hero_label">可作答</span>
           <span class="pen_num">${papers ? open : "—"}</span><span class="hero_note">份试卷 ›</span></button>` : ""}
