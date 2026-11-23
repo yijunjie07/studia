@@ -287,29 +287,62 @@ function renderSidebar() {
     <button class="mtab" data-go="#/home" aria-current="${under("#/home", "#/course", "#/login")}">${ICON.cells}<span>课程</span></button>
     <button class="mtab" data-go="#/jobs" aria-current="${view === "#/jobs"}">${ICON.pulse}<span>任务</span>${state.jobs.length ? `<b class="badge">${state.jobs.length}</b>` : ""}</button>
     <button class="mtab" data-go="#/me" aria-current="${under("#/me", "#/settings", "#/admin")}"><span class="avatar">${esc(initial)}</span><span>我的</span></button>`);
+  placeInk();
+}
+// The account menu fades down before it is gone; a second close while it fades does nothing.
+function closeMe() {
+  const menu = $(".me_menu");
+  if (menu?.getAnimations().some((a) => a.id === "out")) return;
+  const done = () => { state.meOpen = false; renderSidebar(); };
+  const out = menu && moves(menu, [{ opacity: 1 }, { opacity: 0, transform: "translateY(6px) scale(.98)" }], { duration: 180, id: "out", fill: "forwards" });
+  if (out) out.onfinish = done; else done();
+}
+// The sidebar's highlight and the phone tab bar's mark sit under the current item and glide when it changes. Placed
+// first without a transition (inked is off), so a page load does not slide them in from the top.
+function placeInk() {
+  const nav = $(".nav"), on = nav.querySelector('.nav_item[aria-current="true"]');
+  if (on) {
+    nav.style.setProperty("--ink-y", `${on.offsetTop}px`);
+    nav.style.setProperty("--ink-h", `${on.offsetHeight}px`);
+  }
+  const tabs = $(".mtabs"), i = [...tabs.querySelectorAll(".mtab")].findIndex((t) => t.getAttribute("aria-current") === "true");
+  if (i >= 0) tabs.style.setProperty("--i", i);
+  for (const [el, shown] of [[nav, Boolean(on)], [tabs, i >= 0]]) {
+    if (shown && !el.classList.contains("inked")) void el.offsetWidth;  // settle the position before it can animate
+    el.classList.toggle("inked", shown);
+  }
 }
 
 
 /* ---------------------------------------------------------------- page helpers */
 
 const page = $(".page");
-const scroller = $(".scroll");
+// Bars that stay on screen while the document scrolls. Their heights, kept in CSS variables, let the job sheet, the
+// answer dock and scrolled-to rows clear them (a phone's bars change height with its safe areas and font size).
+const bars = { "--mbar-h": $(".mbar"), "--mtabs-h": $(".mtabs"), "--player-h": $(".player") };
+const barSizes = new ResizeObserver(() => {
+  for (const [name, el] of Object.entries(bars)) document.documentElement.style.setProperty(name, `${el.getClientRects().length ? el.offsetHeight : 0}px`);
+});
+Object.values(bars).forEach((el) => barSizes.observe(el));
 // Live progress repaints several times a second. Patch the existing DOM instead of
 // replacing it, so buttons, running animations and a finger mid-tap survive the update.
 /* ---------------------------------------------------------------- motion
    Only transform and opacity move, so animations stay on the compositor while a job streams progress.
    Web Animations (el.animate) rather than classes: nothing to clean up, and a later repaint cannot restart them. */
 const STILL = matchMedia("(prefers-reduced-motion: reduce)");
-const EASE = "cubic-bezier(.2, .8, .2, 1)";
-const moves = (el, frames, options) => (STILL.matches || !el.animate ? null : el.animate(frames, { duration: 260, easing: EASE, ...options }));
-let born = [];  // keyed rows a patch inserted, to fade in once it is done
+const EASE = "cubic-bezier(.22, 1, .36, 1)";  // the stylesheet's --ease
+const moves = (el, frames, options) => (STILL.matches || !el.animate ? null : el.animate(frames, { duration: 420, easing: EASE, ...options }));
+let born = [], rolled = new Set();  // what a patch inserted (to fade in) and the numbers it changed (to roll)
 
 function patch(target, html, motion = true) {
   const fresh = document.createElement("template");
   fresh.innerHTML = html;
   const before = motion && !STILL.matches ? keyedRects(target) : null;
   born = [];
+  rolled = new Set();
   patchChildren(target, fresh.content);
+  // A count that changed (可作答 3 → 2, a progress digit) rolls up into place.
+  for (const el of rolled) moves(el, [{ opacity: 0, transform: "translateY(45%)" }, { opacity: 1, transform: "none" }], { duration: 480 });
   if (!before) return;
   // A row that moved (a job leaving the queue for a slot, a list re-sorted) slides from where it was;
   // one that is new fades in. A few at most, so a page of fresh rows does not ripple for long.
@@ -317,10 +350,10 @@ function patch(target, html, motion = true) {
     const was = before.get(el.dataset.key);
     if (!was || born.includes(el)) continue;
     const now = el.getBoundingClientRect(), dx = was.left - now.left, dy = was.top - now.top;
-    if (Math.abs(dx) + Math.abs(dy) > 1) moves(el, [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }], { duration: 320 });
+    if (Math.abs(dx) + Math.abs(dy) > 1) moves(el, [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }], { duration: 520 });
   }
-  born.slice(0, 24).forEach((el, i) => moves(el, [{ opacity: 0, transform: "translateY(6px)" }, { opacity: 1, transform: "none" }],
-    { duration: 280, delay: Math.min(i, 8) * 22, fill: "backwards" }));
+  born.slice(0, 24).forEach((el, i) => moves(el, [{ opacity: 0, transform: "translateY(8px)" }, { opacity: 1, transform: "none" }],
+    { duration: 460, delay: Math.min(i, 8) * 35, fill: "backwards" }));
 }
 // Where each keyed row sits now. A key seen twice is ambiguous and left out.
 function keyedRects(root) {
@@ -350,7 +383,10 @@ function patchChildren(from, to) {
     } else if (!at || (at.nodeType === 1 && at.dataset.key)) from.insertBefore(node, at);
     else if (at.nodeType !== node.nodeType || at.nodeName !== node.nodeName) from.replaceChild(node, at);
     else if (node.nodeType === 1) patchElement(at, node);
-    else if (at.nodeValue !== node.nodeValue) at.nodeValue = node.nodeValue;
+    else if (at.nodeValue !== node.nodeValue) {
+      at.nodeValue = node.nodeValue;
+      if (from.matches?.(".digits i, .pen_num")) rolled.add(from);
+    }
   });
   while (from.childNodes.length > next.length) from.lastChild.remove();
 }
@@ -373,9 +409,21 @@ function tabBar() {
 }
 // Everything below the tab bar (or the whole page without one): what changes when the tab or the data does.
 const pageBody = (bar) => (bar ? [...page.children].slice([...page.children].indexOf(bar.bar) + 1) : [...page.children]);
-// Blocks rise into place one after another. fill "backwards": a block waiting for its turn is not shown early.
-const rise = (els, lift = 10) => els.slice(0, 10).forEach((el, i) =>
-  moves(el, [{ opacity: 0, transform: `translateY(${lift}px)` }, { opacity: 1, transform: "none" }], { duration: 320, delay: Math.min(i, 5) * 30, fill: "backwards" }));
+// Blocks rise into place one after another (fill "backwards": one waiting its turn is not shown early). A block below
+// the fold waits, paused at its start, and rises once it scrolls into view; cards in a grid go one by one.
+const revealer = "IntersectionObserver" in window ? new IntersectionObserver((entries) => {
+  for (const e of entries) if (e.isIntersecting) { revealer.unobserve(e.target); e.target.reveal?.play(); }
+}, { rootMargin: "0px 0px -6% 0px" }) : null;
+function rise(els, lift = 14) {
+  revealer?.disconnect();
+  let turn = 0;
+  for (const el of els.flatMap((x) => (x.matches(".course_cards, .acts") ? [...x.children] : [x]))) {
+    const below = revealer && el.getBoundingClientRect().top > innerHeight;
+    const a = moves(el, [{ opacity: 0, transform: `translateY(${below ? lift + 6 : lift}px)` }, { opacity: 1, transform: "none" }],
+      { duration: below ? 720 : 600, delay: below ? 0 : Math.min(turn++, 6) * 45, fill: "backwards" });
+    if (a && below) { a.pause(); el.reveal = a; revealer.observe(el); }
+  }
+}
 
 // Navigating fades the new page in, its blocks one after another. Another tab of the same bar keeps the title and
 // tabs still: the marker glides over and the content slides in from that tab's side. Data arriving in place of a
@@ -391,11 +439,11 @@ function setPage(html) {
     const marker = now.bar.classList.contains("seg") ? "::before" : "::after";
     try {
       moves(now.on, [{ transform: `translateX(${was.rect.left - now.rect.left}px) scaleX(${was.rect.width / now.rect.width})` }, { transform: "none" }],
-        { pseudoElement: marker, duration: 300 });
+        { pseudoElement: marker, duration: 520 });
     } catch { /* no pseudo-element animations: the marker just moves */ }
-    for (const el of pageBody(now)) moves(el, [{ opacity: 0, transform: `translateX(${side * 18}px)` }, { opacity: 1, transform: "none" }]);
+    for (const el of pageBody(now)) moves(el, [{ opacity: 0, transform: `translateX(${side * 24}px)` }, { opacity: 1, transform: "none" }], { duration: 480 });
   } else if (!quiet) rise([...page.children]);
-  else if (loading && !page.querySelector(".loading")) rise(pageBody(tabBar()), 6);
+  else if (loading && !page.querySelector(".loading")) rise(pageBody(tabBar()), 10);
   // Tab bars scroll sideways on narrow phones: keep the current tab in sight.
   const nav = page.querySelector(".tabs"), on = nav?.querySelector('[aria-selected="true"]');
   if (on && (on.offsetLeft < nav.scrollLeft || on.offsetLeft + on.offsetWidth > nav.scrollLeft + nav.clientWidth)) nav.scrollLeft = on.offsetLeft - 16;
@@ -484,6 +532,7 @@ const ADMIN_TABS = [["people", "用户"], ["invites", "邀请码"], ["site", "�
    showing stays while the console is open; the page size is remembered in the browser. */
 const PAGE_SIZES = [10, 20, 50, 100];
 let adminData = null;  // the lists last read, so searching, filtering and paging redraw without asking again
+const adminCache = {};  // each tab's lists as last read: a tab opened again shows them at once, then reads them anew
 // facets: the options picked per filter; open: the filter whose menu shows, with facetQ typed in its box.
 const adminList = (kind) => (state.adminLists[kind] ||= { q: "", page: 1, facets: {}, open: null, facetQ: "" });
 const pageSize = (kind) => { const n = store.get("studia-admin-size", {})[kind]; return PAGE_SIZES.includes(n) ? n : PAGE_SIZES[0]; };
@@ -653,7 +702,7 @@ document.addEventListener("pointermove", (event) => {
   drag.ghost.style.left = `${event.clientX - Math.min(drag.x, 300)}px`;
   drag.ghost.style.top = `${event.clientY - drag.y}px`;
   // Near the top or bottom edge the page scrolls, so a long queue can be dragged end to end on a phone.
-  if (event.clientY < 72 || event.clientY > innerHeight - 72) scroller.scrollBy(0, event.clientY < 72 ? -14 : 14);
+  if (event.clientY < 72 || event.clientY > innerHeight - 72) scrollBy(0, event.clientY < 72 ? -14 : 14);
   drag.box.querySelectorAll(".drop, .drop_before, .drop_after").forEach((el) => el.classList.remove("drop", "drop_before", "drop_after"));
   drag.target = null;
   const slot = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-slot]");
@@ -701,23 +750,29 @@ const VIEWS = {
     tab = ADMIN_TABS.some(([k]) => k === tab) ? tab : "people";
     state.adminTab = tab;
     const head = pageHead("管理后台", "", "#/admin", ADMIN_TABS, tab);
-    // Show the tab at once; its lists fill it in when they arrive.
+    // Show the tab at once: its lists as last read if it was open before (read again below), or a placeholder they fill.
+    // Switching tabs inside the console swaps the content in place; arriving from elsewhere animates.
+    const inConsole = state.view === "#/admin" && Boolean(page.querySelector('[data-go^="#/admin/"]'));
+    const cached = !refresh && adminCache[tab];
     if (!refresh) {
       for (const list of Object.values(state.adminLists)) list.open = null;  // arriving: no filter menu left open
-      // Switching tabs inside the console swaps the content in place; arriving from elsewhere animates.
-      quiet = state.view === "#/admin" && Boolean(page.querySelector('[data-go^="#/admin/"]'));
-      setPage(`${head}<div class="empty loading">正在读取…</div>`);
-      quiet = false;
+      if (!cached) {
+        quiet = inConsole;
+        setPage(`${head}<div class="empty loading">正在读取…</div>`);
+        quiet = false;
+      }
     }
     const need = { people: ["users"], invites: ["invites", "users"], site: ["settings", "memory"], logs: [] }[tab];
     let data;
     // "local": the same lists drawn again (a search, a filter, another page), without reading them again.
     if (refresh === "local" && adminData?.tab === tab) data = adminData.data;
+    else if (cached) data = cached;
     else {
       try { data = Object.fromEntries(await Promise.all(need.map(async (x) => [x, await api(`/api/admin/${x}`)]))); }
       catch (error) { if (!refresh) setPage(`${head}<div class="empty">${esc(error.message)}</div>`); return; }
-      adminData = { tab, data };
+      adminCache[tab] = data;
     }
+    adminData = { tab, data };
     if (state.view !== "#/admin" || state.adminTab !== tab) return;
     const users = data.users?.users || [];
     const modelForm = $("[data-default-model]", page);
@@ -869,9 +924,10 @@ const VIEWS = {
             <label>类型 <select name="log_kind"><option value="app">运行日志</option><option value="audit">操作记录</option></select></label></span>
           <span class="row_btns"><button class="btn small primary" data-export-logs>导出</button></span></div></div>`;
     }
-    quiet = true;
+    quiet = !(cached && !inConsole);  // cached lists on arrival get the page's entrance
     setPage(head + body);
     quiet = false;
+    if (cached) VIEWS.admin(true, tab);  // then read them anew; what changed patches in
     const act = async (path, payload, message) => {
       try { await api(path, { method: "POST", body: payload || {} }); toast(message); VIEWS.admin(true, tab); } catch (e) { toast(e.message); }
     };
@@ -1081,6 +1137,7 @@ const VIEWS = {
       lines.hidden = !lines.hidden;
       lines.innerHTML = lines.hidden ? "" : logHtml(j.lines || [], "all", j.course_name);
       el.classList.toggle("open", !lines.hidden);
+      if (!lines.hidden) moves(lines, [{ opacity: 0, transform: "translateY(-6px)" }, { opacity: 1, transform: "none" }]);
     }));
     page.querySelectorAll("[data-retry]").forEach((el) => (el.onclick = () => {
       const j = state.history[el.dataset.retry];
@@ -1296,6 +1353,12 @@ function wireEmailForm(form, done) {
   };
 }
 // Once each time the page opens, until the email is bound or the person picks 今天不显示.
+// A dialog sinks and fades (its backdrop with it) before it closes.
+function closeModal(dialog) {
+  const out = moves(dialog, [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "translateY(12px) scale(.985)" }], { duration: 240, fill: "forwards" });
+  try { moves(dialog, [{ opacity: 1 }, { opacity: 0 }], { duration: 240, pseudoElement: "::backdrop", fill: "forwards" }); } catch { /* backdrop stays until close */ }
+  if (out) out.onfinish = () => dialog.close(); else dialog.close();
+}
 function promptEmail() {
   const me = session.user, later = `studia-email-later:${me?.id}`;
   if (session.mode !== "hosted" || !me || me.email || !session.mail || store.get(later, "") === new Date().toDateString()) return;
@@ -1309,9 +1372,9 @@ function promptEmail() {
         <button type="button" class="btn" data-skip>暂时跳过</button><button class="btn primary">绑定</button></div></form>`;
   document.body.appendChild(dialog);
   dialog.addEventListener("close", () => dialog.remove());
-  $("[data-skip]", dialog).onclick = () => dialog.close();
-  $("[data-later]", dialog).onclick = () => { store.set(later, new Date().toDateString()); dialog.close(); };
-  wireEmailForm($("form", dialog), () => { dialog.close(); toast("邮箱已绑定"); });
+  $("[data-skip]", dialog).onclick = () => closeModal(dialog);
+  $("[data-later]", dialog).onclick = () => { store.set(later, new Date().toDateString()); closeModal(dialog); };
+  wireEmailForm($("form", dialog), () => { closeModal(dialog); toast("邮箱已绑定"); });
   dialog.showModal();
 }
 
@@ -1966,9 +2029,10 @@ function openSheet(id) {
   if (!focusedJob() && !state.lastDone) return;
   renderFocus();
   sheet.classList.add("open");
+  document.documentElement.classList.add("locked");
   renderPlayer();
 }
-function closeSheet() { sheet.classList.remove("open"); renderPlayer(); }
+function closeSheet() { sheet.classList.remove("open"); document.documentElement.classList.remove("locked"); renderPlayer(); }
 
 setInterval(() => {
   const byId = (id) => state.jobs.find((j) => j.id === id);
@@ -2214,8 +2278,20 @@ const coursesLoading = {};
 function loadCourses(pid) {
   return (coursesLoading[pid] ||= readCourses(pid).finally(() => delete coursesLoading[pid]));
 }
+// The course lists as last read in this tab (per account), so a reload — a phone bringing the tab back — shows them at
+// once instead of 正在读取课程…; the fresh read replaces them a moment later.
+const courseShelf = () => `studia-courses:${session.user?.id || "local"}`;
+function unshelveCourses() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(courseShelf()) || "{}");
+    for (const p of state.platforms) if (p.logged_in && Array.isArray(saved[p.id]) && !state.courses[p.id]) state.courses[p.id] = saved[p.id];
+  } catch { /* storage blocked: read as before */ }
+}
 async function readCourses(pid) {
-  try { state.courses[pid] = (await api(`/api/platforms/${pid}/courses`)).courses; }
+  try {
+    state.courses[pid] = (await api(`/api/platforms/${pid}/courses`)).courses;
+    try { sessionStorage.setItem(courseShelf(), JSON.stringify(state.courses)); } catch { /* full or blocked */ }
+  }
   catch (error) { toast(error.message); state.courses[pid] = state.courses[pid] || []; }
   repaint();
   const p = platformOf(pid);
@@ -2334,8 +2410,8 @@ overlay.addEventListener("click", (event) => { if (event.target === overlay) clo
 document.addEventListener("click", (event) => {
   const t = event.target;
   if (!t.closest("[data-job-menu]")) closeJobMenu();  // its items still act below: the hidden menu keeps them
-  if (state.meOpen && !t.closest("[data-me]")) { state.meOpen = false; renderSidebar(); }
-  if (t.closest("[data-me]")) { state.meOpen = !state.meOpen; renderSidebar(); return; }
+  if (state.meOpen && !t.closest("[data-me]")) closeMe();
+  if (t.closest("[data-me]")) { if (state.meOpen) closeMe(); else { state.meOpen = true; renderSidebar(); } return; }
   if (t.closest("[data-signout]")) { signOut(); return; }
   const sw = t.closest("[data-switch]"); if (sw) { switchPlatform(sw.dataset.switch); return; }
   const target = t.closest("[data-go]"); if (target) { closeSheet(); go(target.dataset.go); }
@@ -2384,7 +2460,7 @@ window.addEventListener("keydown", (event) => {
   if (mod && event.key.toLowerCase() === "k") { event.preventDefault(); openFinder(); return; }
   if (mod && event.key.toLowerCase() === "j") { event.preventDefault(); toggleTheme(); return; }
   if (mod && event.key === ",") { event.preventDefault(); go("#/settings"); return; }
-  if (event.key === "Escape" && state.meOpen) { state.meOpen = false; renderSidebar(); return; }
+  if (event.key === "Escape" && state.meOpen) { closeMe(); return; }
   if (event.key === "Escape") { closeSheet(); return; }
   if (mod || event.altKey || event.target.closest("input, textarea, select") || document.body.classList.contains("signed-out")) return;
   if (event.key === "S" && event.shiftKey) { stopJob(focusedJob()?.id); return; }
@@ -2420,7 +2496,7 @@ function route(event) {
   page.style.removeProperty("--c");
   renderSidebar();
   renderPlayer();
-  scroller.scrollTop = 0;
+  scrollTo({ top: 0, behavior: "instant" });
   if (name === "admin") { if (session.user?.role === "admin") VIEWS.admin(false, a); else go("#/settings"); }
   else if (name === "jobs") { VIEWS.jobs(a); if (a === "all" && session.user?.role === "admin") loadSiteJobs(); }
   else if (name === "settings") { state.accountEdit = state.passwordSent = null; VIEWS.settings(a); }
@@ -2431,7 +2507,7 @@ function route(event) {
 }
 window.addEventListener("hashchange", route);
 window.addEventListener("hashchange", closeJobMenu);
-scroller.addEventListener("scroll", closeJobMenu, { passive: true });
+addEventListener("scroll", closeJobMenu, { passive: true });
 window.addEventListener("resize", closeJobMenu);
 
 // The sign-in page's left half: a course grid quietly studying itself.
@@ -2595,6 +2671,7 @@ async function loadMe() {
   if (RESET && session.mode === "hosted") { showAuth("reset"); return; }  // the link mailed for a new password
   if (session.mode === "hosted" && !(await loadMe())) { showAuth(); return; }
   await refreshState();
+  unshelveCourses();
   connectEvents();
   promptEmail();
   state.platforms.filter((p) => p.logged_in).forEach((p) => loadCourses(p.id));
