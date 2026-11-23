@@ -5,6 +5,7 @@ import json
 import re
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 from Crypto.Cipher import AES
@@ -492,32 +493,20 @@ class ZHSApi:
     def my_course_list(self, page_size=9999, strict=False):
         rows = []
         failures = 0
-
-        try:
-            shared = self.shared_courses()
-        except AuthenticationExpired:
-            raise
-        except Exception as exc:
-            failures += 1
-            logger.warning("读取智慧树共享课失败：%s", exc)
-        else:
-            for item in shared:
-                row = self._shared_row(item)
-                if row:
-                    rows.append(row)
-
-        try:
-            ai_courses = self.ai_courses()
-        except AuthenticationExpired:
-            raise
-        except Exception as exc:
-            failures += 1
-            logger.warning("读取智慧树智慧课程失败：%s", exc)
-        else:
-            for item in ai_courses:
-                row = self._ai_row(item)
-                if row:
-                    rows.append(row)
+        # Two lists from the same gateway: read side by side, the page waits on them right after a scan.
+        with ThreadPoolExecutor(2) as pool:
+            reads = [("共享课", pool.submit(self.shared_courses), self._shared_row),
+                     ("智慧课程", pool.submit(self.ai_courses), self._ai_row)]
+        for name, read, row_of in reads:
+            try:
+                items = read.result()
+            except AuthenticationExpired:
+                raise
+            except Exception as exc:
+                failures += 1
+                logger.warning("读取智慧树%s失败：%s", name, exc)
+                continue
+            rows.extend(row for row in map(row_of, items) if row)
 
         if failures >= 2:
             raise PlatformUnavailable("智慧树课程列表读取失败，请稍后重试")
