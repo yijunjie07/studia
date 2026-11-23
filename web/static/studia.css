@@ -533,6 +533,10 @@ body.dragging, body.dragging * { cursor: grabbing !important; user-select: none;
 .facet_clear { display: block; width: 100%; height: 34px; text-align: center; margin-top: 4px; border-radius: 8px; font-size: 13px; color: var(--text-2); box-shadow: 0 -1px 0 var(--line); }
 .facet_reset { display: inline-flex; align-items: center; gap: 5px; height: 32px; padding: 0 10px; border-radius: 8px; font-size: 13px; color: var(--text-2); }
 .facet_reset span { font-size: 15px; line-height: 1; }
+.list_note { margin: -2px 0 12px; font-size: 12.5px; color: var(--text-3); }
+.list_note .link { margin-left: 8px; font-size: 12.5px; }
+.code_send { min-width: 84px; }
+.code_send[disabled] { opacity: .6; }
 .pager { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 12px; font-size: 12.5px; color: var(--text-3); }
 .pager_size { display: flex; align-items: center; gap: 6px; }
 .pager_size select { height: 28px; padding: 0 6px; border: 0; border-radius: 5px; background: var(--card); box-shadow: inset 0 0 0 1px var(--line-2); font: 12.5px var(--mono); color: var(--text); }
@@ -630,6 +634,7 @@ body.signed-out .app, body.signed-out .player { display: none; }
 .auth_field input::placeholder { color: var(--text-4); }
 .pw { position: relative; display: block; }
 .pw input { padding-right: 64px; }
+.pw input:has(+ .code_send) { padding-right: 104px; }
 .pw_eye { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); height: 30px; padding: 0 10px; border-radius: 4px; font-size: 12px; color: var(--text-3); }
 @media (hover: hover) { .pw_eye:hover { background: var(--hover); color: var(--text); } }
 .auth_error { min-height: 20px; margin: 2px 0 10px; font-size: 13px; color: var(--seal); }

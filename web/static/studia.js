@@ -69,7 +69,8 @@ ICON.paused = ICON.stopped;
 /* ------------------------------------------------------------------ api */
 
 // local: one person, token from the terminal URL; hosted: cookie session + CSRF header.
-const session = { mode: "local", user: null, csrf: "" };
+// register: who may sign up ({open, invite, email}), from /api/mode; null before it answers or on a local server.
+const session = { mode: "local", user: null, csrf: "", register: null };
 let mockModule = null;
 async function api(path, { method = "GET", body } = {}) {
   if (MOCK) {
@@ -698,7 +699,9 @@ const VIEWS = {
       const inviteRow = (i) => `<div class="model plain invite_row"><span class="m1"><b><code>${esc(i.code)}</code></b><span class="pill ${inviteState[i.state][0]}">${inviteState[i.state][1]}</span>
             <small class="sans">${i.used_by ? `${esc(nameOf(i.used_by))} 已注册` : `创建于 ${ago(i.created)} · ${new Date(i.expires * 1000).toLocaleDateString()} 过期`}</small></span>
           <span class="row_btns">${i.state === "open" ? `<button class="btn small" data-copy="${esc(i.code)}">复制</button><button class="btn small danger" data-revoke="${esc(i.code)}" data-confirm="确认作废">作废</button>` : ""}</span></div>`;
+      const reg = data.invites.registration, idle = !reg ? "" : !reg.open ? "注册已关闭，邀请码用不上" : reg.invite ? "" : "注册不需要邀请码";
       body = `${listTools("invites", "搜索邀请码或注册的用户", FACETS, counts, '<button class="btn small primary" data-invite>生成邀请码</button>')}
+        ${idle ? `<p class="list_note">${idle}<button class="link" data-go="#/admin/site">去设置</button></p>` : ""}
         <div class="models">${pageOf("invites", rows).map(inviteRow).join("")
           || `<div class="model plain"><span class="m1"><small class="sans">${invites.length ? "没有符合条件的邀请码" : "还没有邀请码"}</small></span></div>`}</div>
         ${pagerHtml("invites", rows.length, "个")}`;
@@ -750,10 +753,22 @@ const VIEWS = {
           <div class="form_btns"><span class="grow"></span>
             <button type="button" class="btn" data-default-cancel>取消</button><button class="btn primary">测试并保存</button></div>
         </form>` : "";
+      // Who may sign up: closed, the two rules below have nothing to apply to and stay hidden.
+      const reg = settings.registration;
+      const choice = (key, value, label, attrs = "") =>
+        `<button class="btn small" data-registration="${key}" data-value="${value ? 1 : 0}" aria-pressed="${reg[key] === value}" ${attrs}>${label}</button>`;
+      const registrationRows = `<div class="model plain stepper_row"><span class="m1"><b>允许注册</b></span>
+          <span class="row_btns">${choice("open", false, "关闭")}${choice("open", true, "开放")}</span></div>
+        ${reg.open ? `<div class="model plain stepper_row"><span class="m1"><b>邀请码</b>${reg.invite || reg.email ? "" : '<small class="sans">任何人都能注册</small>'}</span>
+          <span class="row_btns">${choice("invite", true, "需要")}${choice("invite", false, "不需要", reg.invite ? 'data-confirm="确认不需要"' : "")}</span></div>
+        <div class="model plain stepper_row"><span class="m1"><b>验证邮箱</b>${smtp ? "" : '<small class="sans">先配置邮件服务</small>'}</span>
+          <span class="row_btns">${choice("email", true, "需要", smtp ? "" : "disabled")}${choice("email", false, "不需要")}</span></div>` : ""}`;
       body = `<div class="section"><h3>全站默认 AI 模型</h3></div>
         <div class="models">${modelRow}${modelEdit}</div>
         <div class="section"><h3>邮件服务</h3></div>
         <div class="models">${smtpRow}${smtpEdit}</div>
+        <div class="section"><h3>注册</h3></div>
+        <div class="models">${registrationRows}</div>
         <div class="section"><h3>任务上限</h3></div>
         <div class="models"><div class="model plain"><span class="m1"><b>默认每人同时 <input class="inline_num" type="number" min="1" max="20" name="max_jobs" value="${esc(kept("max_jobs", settings.max_jobs))}"> 个任务</b></span>
           <span class="row_btns"><button class="btn small primary" data-save-limit>保存</button></span></div></div>
@@ -866,6 +881,10 @@ const VIEWS = {
     on("[data-zhs-parallel]", (el) => {
       const enable = el.dataset.zhsParallel === "on";
       act("/api/admin/settings", { zhs_parallel_study: enable }, enable ? "已开启" : "已关闭");
+    });
+    on("[data-registration]", (el) => {
+      if (el.getAttribute("aria-pressed") === "true") return;
+      act("/api/admin/settings", { registration: { [el.dataset.registration]: el.dataset.value === "1" } }, "已保存");
     });
     on("[data-site-pace]", (el) => {
       if (el.getAttribute("aria-pressed") === "true") return;
@@ -2363,7 +2382,7 @@ function animateAuthGrid(box) {
 }
 
 const AUTH = {
-  login: { title: "登录", lead: "欢迎回来。", button: "登录", switch: ["还没有账号？", "用邀请码注册", "register"] },
+  login: { title: "登录", lead: "欢迎回来。", button: "登录", switch: ["还没有账号？", "注册", "register"] },
   register: { title: "注册", lead: "", button: "注册并登录", switch: ["已经有账号？", "去登录", "login"] },
   setup: { title: "创建管理员", lead: "设置码在服务器日志里（docker compose logs studia）。", button: "创建并进入" },
   forgot: { title: "找回密码", lead: "链接会发到绑定的邮箱。", button: "发送链接", switch: ["想起来了？", "去登录", "login"] },
@@ -2373,7 +2392,10 @@ function showAuth(mode = "login") {
   document.body.classList.add("signed-out");
   let box = $(".auth");
   if (!box) { box = document.createElement("div"); box.className = "auth"; document.body.appendChild(box); }
-  const text = AUTH[mode];
+  const rules = session.register || { open: false };
+  if (mode === "register" && !rules.open) mode = "login";  // sign-ups closed since this page was opened
+  const text = { ...AUTH[mode] };
+  if (mode === "login") text.switch = rules.open ? ["还没有账号？", rules.invite ? "用邀请码注册" : "注册", "register"] : null;
   const field = (name, label, attrs) => `<label class="auth_field"><span>${label}</span>${attrs.includes("password")
     ? `<span class="pw"><input name="${name}" ${attrs}><button type="button" class="pw_eye" data-reveal aria-label="显示密码">显示</button></span>`
     : `<input name="${name}" ${attrs}>`}</label>`;
@@ -2389,9 +2411,12 @@ function showAuth(mode = "login") {
       <form class="auth_card" data-auth novalidate>
         <h2>${text.title}</h2><p class="auth_lead">${esc(text.lead)}</p>
         ${mode === "setup" ? field("code", "设置码", 'required autocomplete="off" autocapitalize="characters" placeholder="例如 2593-2D9E-D41F"') : ""}
-        ${mode === "register" ? field("invite", "邀请码", 'required autocomplete="off" autocapitalize="characters" placeholder="例如 3F2A-91BC-04DE"') : ""}
+        ${mode === "register" && rules.invite ? field("invite", "邀请码", 'required autocomplete="off" autocapitalize="characters" placeholder="例如 3F2A-91BC-04DE"') : ""}
         ${mode === "forgot" ? field("login", "用户名或邮箱", 'required autocomplete="username" autocapitalize="off"') : ""}
         ${mode === "reset" || mode === "forgot" ? "" : field("username", mode === "setup" ? "管理员用户名" : "用户名", `required autocomplete="username" autocapitalize="off" ${mode === "login" ? "" : 'minlength="2" maxlength="32"'}`)}
+        ${mode === "register" && rules.email ? `${field("email", "邮箱", 'type="email" required autocomplete="email" autocapitalize="off"')}
+          <label class="auth_field"><span>验证码</span><span class="pw"><input name="code" required inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位数字">
+            <button type="button" class="pw_eye code_send" data-send-code>发送验证码</button></span></label>` : ""}
         ${mode === "forgot" ? "" : field("password", mode === "reset" ? "新密码" : "密码", `type="password" required autocomplete="${mode === "login" ? "current-password" : "new-password"}" ${mode === "login" ? "" : 'minlength="8" placeholder="至少 8 位"'}`)}
         ${mode === "login" ? '<p class="auth_forgot"><button type="button" class="link" data-auth-mode="forgot">忘记密码？</button></p>' : ""}
         ${mode === "setup" || mode === "reset" ? field("again", "再输一次密码", 'type="password" required autocomplete="new-password" minlength="8"') : ""}
@@ -2410,6 +2435,30 @@ function showAuth(mode = "login") {
   }));
   const form = $("[data-auth]", box);
   const error = $(".auth_error", form);
+  const send = $("[data-send-code]", form);
+  if (send) send.onclick = async () => {
+    const email = form.elements.email;
+    if (!email.value.trim() || !email.checkValidity()) { error.textContent = email.value.trim() ? "邮箱格式不正确" : "请填写邮箱"; email.focus(); return; }
+    send.disabled = true;
+    send.textContent = "发送中…";
+    try {
+      await api("/api/auth/register/code", { method: "POST", body: { email: email.value.trim() } });
+      $(".auth_lead", form).textContent = `验证码已发到 ${email.value.trim()}，10 分钟内有效。`;
+      form.elements.code.focus();
+      let left = 60;
+      const tick = () => {
+        if (!send.isConnected) return;
+        send.textContent = left ? `${left} 秒后重发` : "重新发送";
+        send.disabled = left > 0;
+        if (left--) setTimeout(tick, 1000);
+      };
+      tick();
+    } catch (failure) {
+      error.textContent = failure.message;
+      send.disabled = false;
+      send.textContent = "发送验证码";
+    }
+  };
   if (!TOUCH) form.querySelector("input").focus();  // on a phone this would pop the keyboard over the page
   form.oninput = () => { error.textContent = ""; };
   form.onsubmit = async (event) => {
@@ -2417,7 +2466,8 @@ function showAuth(mode = "login") {
     const missing = [...form.querySelectorAll("input")].find((input) => !input.checkValidity());
     if (missing) {
       const label = missing.closest("label").firstElementChild.textContent;
-      error.textContent = missing.validity.tooShort ? `${label}至少 ${missing.minLength} 位` : `请填写${label}`;
+      error.textContent = missing.validity.tooShort ? `${label}至少 ${missing.minLength} 位`
+        : missing.validity.typeMismatch ? `${label}格式不正确` : `请填写${label}`;
       missing.focus();
       return;
     }
@@ -2460,7 +2510,7 @@ async function loadMe() {
 
 (async function boot() {
   let setup = false;
-  if (!MOCK) { try { ({ mode: session.mode, setup } = await api("/api/mode")); } catch { /* old server: local */ } }
+  if (!MOCK) { try { ({ mode: session.mode, setup, register: session.register = null } = await api("/api/mode")); } catch { /* old server: local */ } }
   if (MOCK && params.has("auth")) { showAuth(params.get("auth") || "login"); return; }
   if (MOCK && params.has("hosted")) session.mode = "hosted";  // ?mock&hosted previews what a hosted site shows
   if (setup) { showAuth("setup"); return; }

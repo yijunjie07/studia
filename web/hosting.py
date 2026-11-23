@@ -129,6 +129,9 @@ class EncryptedSettingsStore(SettingsStore):
 
 SMTP_PORTS = {"ssl": 465, "starttls": 587, "none": 25}
 CODE_TTL = 10 * 60
+# Who may sign up: open (a sign-up page at all), invite (with an unused invite code), email (with a code mailed
+# to the address, which the account then keeps). The defaults are how the site worked before they could change.
+REGISTRATION = {"open": True, "invite": True, "email": False}
 
 
 def smtp_open(config):
@@ -218,6 +221,7 @@ class Hub:
         self.mail_throttle = Throttle(limit=5, window=3600)
         # ponytail: binding codes live in memory, so a restart asks for a new one; a table if that ever matters.
         self.email_codes = {}
+        self.signup_codes = {}  # address (lowercase) -> the code mailed for signing up with it
         self.public_url = public_url.rstrip("/")
         self.trust_proxy = trust_proxy
         # The program writes its daily log files to the working directory (/data in Docker).
@@ -390,10 +394,23 @@ class Hub:
             self._record_default_health(detected, "ok")
         return {"health": "ok", "message": "连接正常"}
 
+    def registration(self):
+        saved = self.accounts.setting("registration", {})
+        return {k: saved[k] if isinstance(saved, dict) and isinstance(saved.get(k), bool) else v for k, v in REGISTRATION.items()}
+
+    def save_registration(self, body):
+        if not isinstance(body, dict) or any(k not in REGISTRATION or not isinstance(v, bool) for k, v in body.items()):
+            raise HttpError(400, "注册设置格式不正确")
+        rules = dict(self.registration(), **body)
+        if rules["open"] and rules["email"] and self.smtp() is None:
+            raise HttpError(400, "先配置邮件服务，才能要求注册时验证邮箱")
+        self.accounts.set_setting("registration", rules)
+
     def site_settings(self):
         config, smtp = self.default_model(), self.smtp()
         health = self.default_model_health(config)
         return {"max_jobs": self.default_job_limit(),
+                "registration": self.registration(),
                 "zhs_parallel_study": bool(self.accounts.setting("zhs_parallel_study", False)),
                 "answer_pace": self.answer_pace(),
                 "smtp": smtp and dict({k: v for k, v in smtp.items() if k != "password"},
@@ -415,6 +432,9 @@ class Hub:
 
     def save_smtp(self, body):
         if body is None:
+            rules = self.registration()
+            if rules["open"] and rules["email"]:
+                raise HttpError(400, "注册要求验证邮箱，先关掉它再清除邮件服务")
             self.site_store.set("smtp", None)
             return
         fields = ("host", "security", "username", "password", "sender", "sender_name")
@@ -484,16 +504,63 @@ class Hub:
             code = "%06d" % secrets.randbelow(10 ** 6)
             self.email_codes[uid] = {"email": email, "code": code, "sent": time.time(), "tries": 0}
         try:
-            self.mail(email, "Studia 邮箱验证码：%s" % code,
-                      "你的验证码是 %s，10 分钟内有效。\n\n如果不是你本人操作，请忽略这封邮件。" % code,
-                      mail_page("验证码 %s，10 分钟内有效" % code, "你的邮箱验证码",
-                                "在 Studia 里填写下面的验证码，完成邮箱绑定。验证码 10 分钟内有效。",
-                                '<div style="padding:20px 0 20px 10px;border-radius:10px;background:#f4f4f0;text-align:center;%s'
-                                'font-size:34px;line-height:1;font-weight:700;letter-spacing:10px;color:#212429;">%s</div>' % (MAIL_MONO, code),
-                                "如果不是你本人操作，请忽略这封邮件，你的账号不会有任何变化。"))
+            self.mail_code(email, code, "完成邮箱绑定", "你的账号不会有任何变化")
         except HttpError:
             self.email_codes.pop(uid, None)  # nothing arrived: let them try again at once
             raise
+
+    def mail_code(self, email, code, purpose, otherwise):
+        self.mail(email, "Studia 邮箱验证码：%s" % code,
+                  "你的验证码是 %s，10 分钟内有效。\n\n如果不是你本人操作，请忽略这封邮件。" % code,
+                  mail_page("验证码 %s，10 分钟内有效" % code, "你的邮箱验证码",
+                            "在 Studia 里填写下面的验证码，%s。验证码 10 分钟内有效。" % purpose,
+                            '<div style="padding:20px 0 20px 10px;border-radius:10px;background:#f4f4f0;text-align:center;%s'
+                            'font-size:34px;line-height:1;font-weight:700;letter-spacing:10px;color:#212429;">%s</div>' % (MAIL_MONO, code),
+                            "如果不是你本人操作，请忽略这封邮件，%s。" % otherwise))
+
+    def send_signup_code(self, email, ip):
+        """Mail a code proving the address someone signs up with. Codes are kept by address: there is no account yet."""
+        email = str(email or "").strip()
+        if len(email) > 254 or not EMAIL.fullmatch(email):
+            raise HttpError(400, "邮箱格式不正确")
+        if self.accounts.email_taken(email, ""):
+            raise HttpError(400, "这个邮箱已经注册过了")
+        key = email.lower()
+        with self.lock:
+            now = time.time()
+            for other in [k for k, v in self.signup_codes.items() if now - v["sent"] > CODE_TTL]:
+                del self.signup_codes[other]  # strangers' addresses must not pile up in memory
+            pending = self.signup_codes.get(key)
+            wait = pending and 60 - (now - pending["sent"])
+            if wait and wait > 0:
+                raise HttpError(429, "验证码刚发过，请 %d 秒后再试" % wait)
+            keys = ("signup-ip:" + ip, "signup:" + key)
+            if self.mail_throttle.blocked(*keys):
+                raise HttpError(429, "验证码发送太频繁，请过一会儿再试")
+            self.mail_throttle.fail(*keys)
+            code = "%06d" % secrets.randbelow(10 ** 6)
+            self.signup_codes[key] = {"email": email, "code": code, "sent": now, "tries": 0}
+        try:
+            self.mail_code(email, code, "完成注册", "不会有账号用到这个邮箱")
+        except HttpError:
+            self.signup_codes.pop(key, None)
+            raise
+
+    def signup_email(self, email, code):
+        """The address a sign-up proved with its mailed code. The code stays until the account exists, so a
+        taken username does not cost a new one."""
+        key = str(email or "").strip().lower()
+        with self.lock:
+            pending = self.signup_codes.get(key)
+            if not pending or time.time() - pending["sent"] > CODE_TTL:
+                raise HttpError(400, "验证码已过期，请重新发送" if pending else "请先给邮箱发送验证码")
+            pending["tries"] += 1
+            if pending["tries"] > 5:
+                self.signup_codes.pop(key, None)
+                raise HttpError(400, "错误次数太多，请重新发送验证码")
+            if not hmac.compare_digest(str(code or "").strip().encode(), pending["code"].encode()):
+                raise HttpError(400, "验证码不正确")
+            return pending["email"]
 
     def bind_email(self, uid, code):
         with self.lock:
@@ -629,7 +696,7 @@ class HostedAccess:
     def public(self, request, method, path, query, body):
         hub = self.hub
         if method == "GET" and path == "/api/mode":
-            return {"mode": self.mode, "setup": not hub.accounts.has_admin()}
+            return {"mode": self.mode, "setup": not hub.accounts.has_admin(), "register": hub.registration()}
         if method == "POST" and path == "/api/auth/setup":
             ip = self._ip(request)
             key = "ip:" + ip
@@ -669,18 +736,30 @@ class HostedAccess:
             hub.throttle.clear(*keys)
             hub.audit("login", actor=user["username"], ip=ip)
             return self._signed_in(user["id"])
+        if method == "POST" and path == "/api/auth/register/code":
+            rules = hub.registration()
+            if not (rules["open"] and rules["email"]):
+                raise HttpError(403, "现在注册不需要验证邮箱" if rules["open"] else "现在不开放注册")
+            hub.send_signup_code(body.get("email"), self._ip(request))
+            return {}
         if method == "POST" and path == "/api/auth/register":
-            key = "ip:" + self._ip(request)
+            rules, key, ip = hub.registration(), "ip:" + self._ip(request), self._ip(request)
+            if not rules["open"]:
+                raise HttpError(403, "现在不开放注册")
             if hub.throttle.blocked(key):
                 raise HttpError(429, "尝试次数太多，请稍后再试")
+            username = str(body.get("username", "")).strip()
             try:
-                uid = hub.accounts.register(str(body.get("invite", "")), str(body.get("username", "")).strip(),
-                                            str(body.get("password", "")))
-            except AccountError as exc:
+                email = hub.signup_email(body.get("email"), body.get("code")) if rules["email"] else None
+                uid = hub.accounts.register(str(body.get("invite", "")), username, str(body.get("password", "")),
+                                            invite=rules["invite"], email=email)
+            except (AccountError, HttpError) as exc:
                 hub.throttle.fail(key)
-                hub.audit("register", actor=str(body.get("username", "")), ip=self._ip(request), ok=False)
-                raise HttpError(400, str(exc))
-            hub.audit("register", actor=hub.accounts.user(uid)["username"], ip=self._ip(request))
+                hub.audit("register", actor=username, ip=ip, ok=False)
+                raise exc if isinstance(exc, HttpError) else HttpError(400, str(exc))
+            if email:
+                hub.signup_codes.pop(email.lower(), None)
+            hub.audit("register", actor=hub.accounts.user(uid)["username"], ip=ip)
             return self._signed_in(uid)
         if method == "POST" and path == "/api/auth/forgot":
             ip, login = self._ip(request), str(body.get("login", "")).strip()
@@ -805,7 +884,7 @@ class HostedAccess:
         if method == "GET" and path == "/api/admin/users":
             return {"users": hub.overview()}
         if method == "GET" and path == "/api/admin/invites":
-            return {"invites": hub.accounts.invites()}
+            return {"invites": hub.accounts.invites(), "registration": hub.registration()}
         if method == "GET" and path == "/api/admin/memory":
             return dict(hub.memory.stats(), mooc=hub.mooc_memory.stats())
         if method == "GET" and path == "/api/admin/jobs":
@@ -822,6 +901,8 @@ class HostedAccess:
                 hub.save_default_model(body["default_model"])
             if "smtp" in body:
                 hub.save_smtp(body["smtp"])
+            if "registration" in body:
+                hub.save_registration(body["registration"])
             if limit is not None:
                 hub.accounts.set_setting("max_jobs", limit)
             if "zhs_parallel_study" in body:

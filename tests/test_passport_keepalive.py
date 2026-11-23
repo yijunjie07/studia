@@ -36,6 +36,8 @@ class KeepPassportTest(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
+        # A finished scan saves its cookies again from a background thread: let it write before the directory goes.
+        self.addCleanup(lambda: [t.join(5) for t in threading.enumerate() if t.name == "exam-sso"])
         self.store = SettingsStore(directory.name)
         self.app = Studia(self.store, oauth=Mock(return_value=None))
         self.platform = self.app.platforms["zhs"]
