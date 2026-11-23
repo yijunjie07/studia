@@ -197,7 +197,8 @@ class HostedServerTest(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/auth/login", {"username": "alice", "password": "alice-password"})[0], 401)
 
     def test_everything_but_login_needs_a_session(self):
-        self.assertEqual(self.request("GET", "/api/mode")[1], {"mode": "hosted", "setup": False})
+        self.assertEqual(self.request("GET", "/api/mode")[1], {"mode": "hosted", "setup": False,
+                                                               "register": {"open": True, "invite": True, "email": False}})
         self.assertEqual(self.request("GET", "/api/state")[0], 401)
         self.assertEqual(self.request("GET", "/")[0], 200)
         self.assertEqual(self.request("GET", "/api/mode", host="evil.example")[0], 403)
@@ -425,6 +426,66 @@ class HostedServerTest(unittest.TestCase):
         self.assertEqual(again[0], 400)
         invites = self.request("GET", "/api/admin/invites", cookie=token)[1]["invites"]
         self.assertEqual(invites[0]["state"], "used")
+
+    def registration(self, token, csrf, **rules):
+        return self.request("POST", "/api/admin/settings", {"registration": rules}, cookie=token, csrf=csrf)
+
+    def test_registration_starts_as_before_invite_only(self):
+        self.assertEqual(self.request("GET", "/api/mode")[1]["register"], {"open": True, "invite": True, "email": False})
+        status, reply, _, _ = self.request("POST", "/api/auth/register", {"username": "alice", "password": "alice-password"})
+        self.assertEqual((status, reply["error"]), (400, "邀请码无效或已过期"))
+
+    def test_closed_registration_turns_away_even_a_valid_invite(self):
+        token, csrf = self.login("admin", "admin-password")
+        code = self.request("POST", "/api/admin/invites", {"days": 3}, cookie=token, csrf=csrf)[1]["code"]
+        self.assertEqual(self.registration(token, csrf, open=False)[1]["registration"], {"open": False, "invite": True, "email": False})
+        self.assertFalse(self.request("GET", "/api/mode")[1]["register"]["open"])
+        status, reply, _, _ = self.request("POST", "/api/auth/register", {"invite": code, "username": "alice", "password": "alice-password"})
+        self.assertEqual((status, reply["error"]), (403, "现在不开放注册"))
+        self.assertEqual(self.request("POST", "/api/auth/register/code", {"email": "a@example.com"})[0], 403)
+        self.assertEqual(self.request("GET", "/api/admin/invites", cookie=token)[1]["invites"][0]["state"], "open")
+
+    def test_registration_rules_only_admins_change_and_only_as_booleans(self):
+        token, csrf = self.login("admin", "admin-password")
+        self.assertEqual(self.registration(token, csrf, open="no")[0], 400)
+        self.assertEqual(self.registration(token, csrf, anyone=True)[0], 400)
+        self.hub.accounts.create_user("bob", "bob-password")
+        bob_token, bob_csrf = self.login("bob", "bob-password")
+        self.assertEqual(self.registration(bob_token, bob_csrf, open=False)[0], 403)
+        self.assertTrue(self.hub.registration()["open"])
+
+    def test_open_registration_without_invites(self):
+        token, csrf = self.login("admin", "admin-password")
+        self.registration(token, csrf, invite=False)
+        status, reply, new_token, _ = self.request("POST", "/api/auth/register", {"username": "alice", "password": "alice-password"})
+        self.assertEqual((status, reply["user"]["username"]), (200, "alice"))
+        self.assertTrue(new_token)
+        self.assertEqual(self.request("POST", "/api/auth/register", {"username": "Alice", "password": "other-password"})[1]["error"], "用户名已被使用")
+
+    def test_registration_with_a_mailed_code_binds_the_email(self):
+        token, csrf = self.login("admin", "admin-password")
+        status, reply, _, _ = self.registration(token, csrf, invite=False, email=True)
+        self.assertEqual(status, 400)
+        self.assertIn("先配置邮件服务", reply["error"])
+        sent = self.mail_ready()
+        self.assertEqual(self.registration(token, csrf, invite=False, email=True)[1]["registration"]["email"], True)
+        self.assertIn("先关掉", self.request("POST", "/api/admin/settings", {"smtp": None}, cookie=token, csrf=csrf)[1]["error"])
+        form = {"username": "alice", "password": "alice-password", "email": "Alice@Example.com"}
+        register = lambda **extra: self.request("POST", "/api/auth/register", dict(form, **extra))
+        self.assertEqual(register(code="123456")[1]["error"], "请先给邮箱发送验证码")
+        code_for = lambda email: self.request("POST", "/api/auth/register/code", {"email": email})
+        self.assertEqual(code_for("not-an-email")[0], 400)
+        self.assertEqual(code_for("Alice@Example.com")[0], 200)
+        self.assertEqual(code_for("alice@example.com")[0], 429)  # one a minute per address
+        code = re.search(r"\d{6}", sent[0]["Subject"]).group()
+        self.assertIn("完成注册", sent[0].get_body(("html",)).get_content())
+        self.assertEqual(register(code="000000" if code != "000000" else "111111")[1]["error"], "验证码不正确")
+        self.hub.accounts.create_user("alice", "someone-else")
+        self.assertEqual(register(code=code)[1]["error"], "用户名已被使用")  # the code is still good
+        status, reply, _, _ = register(code=code, username="alice2")
+        self.assertEqual((status, reply["user"]["email"]), (200, "Alice@Example.com"))
+        self.assertEqual(register(code=code, username="alice3")[1]["error"], "请先给邮箱发送验证码")  # used up
+        self.assertEqual(code_for("ALICE@example.com")[1]["error"], "这个邮箱已经注册过了")
 
     def test_last_seen_counts_cookie_visits_not_only_password_logins(self):
         token, csrf = self.login("admin", "admin-password")

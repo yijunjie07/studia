@@ -493,7 +493,7 @@ class Studia:
             self.publish({"type": "account"})  # other tabs and devices pick up the login
             # The exam session is set up while the fresh ticket still works, but after the page is told: its
             # redirects took a second or more that people sat watching the code.
-            threading.Thread(target=self._exam_sso, args=(platform, client), daemon=True).start()
+            threading.Thread(target=self._exam_sso, args=(platform, client), name="exam-sso", daemon=True).start()
             return {"status": "done", "message": "登录成功"}
         if status == 2:
             login["refreshes"] += 1

@@ -286,20 +286,24 @@ class Accounts:
             if self.db.execute("DELETE FROM invites WHERE code = ?", (code,)).rowcount == 0:
                 raise AccountError("邀请码不存在")
 
-    def register(self, code, username, password):
+    def register(self, code, username, password, *, invite=True, email=None):
+        """A new account. invite: the site wants an unused invite code, which this uses up. email: one already
+        proven by a mailed code, bound from the start."""
         _validate(username, password)
         code = (code or "").strip().upper()
         uid = secrets.token_hex(8)
         with self.transaction():
-            invite = self.db.execute("SELECT * FROM invites WHERE code = ?", (code,)).fetchone()
-            if invite is None or invite["used_by"] or invite["expires"] < time.time():
-                raise AccountError("邀请码无效或已过期")
+            if invite:
+                row = self.db.execute("SELECT * FROM invites WHERE code = ?", (code,)).fetchone()
+                if row is None or row["used_by"] or row["expires"] < time.time():
+                    raise AccountError("邀请码无效或已过期")
             try:
-                self.db.execute("INSERT INTO users (id, username, password, role, created) VALUES (?,?,?,'user',?)",
-                                (uid, username, hash_password(password), time.time()))
-            except sqlite3.IntegrityError:
-                raise AccountError("用户名已被使用")
-            self.db.execute("UPDATE invites SET used_by = ? WHERE code = ?", (uid, code))
+                self.db.execute("INSERT INTO users (id, username, password, role, created, email) VALUES (?,?,?,'user',?,?)",
+                                (uid, username, hash_password(password), time.time(), email))
+            except sqlite3.IntegrityError as exc:
+                raise AccountError("这个邮箱已经注册过了" if "email" in str(exc) else "用户名已被使用") from None
+            if invite:
+                self.db.execute("UPDATE invites SET used_by = ? WHERE code = ?", (uid, code))
         return uid
 
 
