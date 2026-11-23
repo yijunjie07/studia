@@ -197,7 +197,7 @@ class HostedServerTest(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/auth/login", {"username": "alice", "password": "alice-password"})[0], 401)
 
     def test_everything_but_login_needs_a_session(self):
-        self.assertEqual(self.request("GET", "/api/mode")[1], {"mode": "hosted", "setup": False,
+        self.assertEqual(self.request("GET", "/api/mode")[1], {"mode": "hosted", "setup": False, "speed": 1.0,
                                                                "register": {"open": True, "invite": True, "email": False}})
         self.assertEqual(self.request("GET", "/api/state")[0], 401)
         self.assertEqual(self.request("GET", "/")[0], 200)
@@ -486,6 +486,19 @@ class HostedServerTest(unittest.TestCase):
         self.assertEqual((status, reply["user"]["email"]), (200, "Alice@Example.com"))
         self.assertEqual(register(code=code, username="alice3")[1]["error"], "请先给邮箱发送验证码")  # used up
         self.assertEqual(code_for("ALICE@example.com")[1]["error"], "这个邮箱已经注册过了")
+
+    def test_admin_nudges_the_animation_speed_for_everyone(self):
+        self.assertEqual(self.request("GET", "/api/mode")[1]["speed"], 1.0)
+        token, csrf = self.login("admin", "admin-password")
+        post = lambda speed: self.request("POST", "/api/admin/settings", {"ui_speed": speed}, cookie=token, csrf=csrf)
+        self.assertEqual(post(1.3000000001)[1]["ui_speed"], 1.3)  # kept to one decimal, as the stepper shows it
+        self.assertEqual(self.request("GET", "/api/mode")[1]["speed"], 1.3)  # every page, signed in or not
+        for bad in (0.4, 2.1, "fast", True, None):
+            self.assertEqual(post(bad)[0], 400)
+        self.assertEqual(self.hub.ui_speed(), 1.3)
+        self.hub.accounts.create_user("bob", "bob-password")
+        bob_token, bob_csrf = self.login("bob", "bob-password")
+        self.assertEqual(self.request("POST", "/api/admin/settings", {"ui_speed": 2.0}, cookie=bob_token, csrf=bob_csrf)[0], 403)
 
     def test_last_seen_counts_cookie_visits_not_only_password_logins(self):
         token, csrf = self.login("admin", "admin-password")
