@@ -334,8 +334,19 @@ Object.values(bars).forEach((el) => barSizes.observe(el));
    repaint cannot restart them. The clips reach 24px past the edges so rings and shadows are not cut. */
 const STILL = matchMedia("(prefers-reduced-motion: reduce)");
 const EASE = "cubic-bezier(.16, 1, .3, 1)", EASE_IO = "cubic-bezier(.65, .05, 0, 1)";  // the stylesheet's --ease, --ease-io
-// The stylesheet's --pace scales every length here too, so one number sets the tempo of the whole site.
-const PACE = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--pace")) || 1;
+// The stylesheet's --pace scales every length here too, so one number sets the tempo of the whole site. The admin's
+// speed (管理后台 → 站点, 1.0× = the stylesheet's tempo) divides it: at 1.5× everything takes two thirds as long.
+const BASE_PACE = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--pace")) || 1;
+let PACE = BASE_PACE;
+function applySpeed(speed) {
+  if (!(speed > 0)) return;
+  PACE = BASE_PACE / speed;
+  document.documentElement.style.setProperty("--pace", PACE.toFixed(3));
+}
+// Six cells filled in turn at the tempo just set, so a nudge can be felt without leaving the page.
+function demoSpeed() {
+  page.querySelectorAll(".pace_demo .cell").forEach((c, i) => moves(c, filled(-1), { duration: 420, easing: EASE_IO, delay: i * 70, fill: "backwards" }));
+}
 const moves = (el, frames, options) => {
   if (STILL.matches || !el.animate) return null;
   const o = { duration: 420, easing: EASE, ...options };
@@ -917,6 +928,11 @@ const VIEWS = {
         <div class="models">${smtpRow}${smtpEdit}</div>
         <div class="section"><h3>注册</h3></div>
         <div class="models">${registrationRows}</div>
+        <div class="section"><h3>界面</h3><span class="aside">0.5–2.0×</span></div>
+        <div class="models"><div class="model plain stepper_row"><span class="m1"><b>动画速度</b><small class="sans">越大越快</small></span>
+          <span class="row_btns"><span class="pace_demo" aria-hidden="true">${'<i class="cell done"></i>'.repeat(6)}</span>
+            <span class="stepper"><button class="btn small" data-ui-speed="-1" aria-label="慢一点" ${settings.ui_speed <= 0.5 ? "disabled" : ""}>−</button>
+              <output>${(settings.ui_speed ?? 1).toFixed(1)}×</output><button class="btn small" data-ui-speed="1" aria-label="快一点" ${settings.ui_speed >= 2 ? "disabled" : ""}>＋</button></span></span></div></div>
         <div class="section"><h3>任务上限</h3></div>
         <div class="models"><div class="model plain"><span class="m1"><b>默认每人同时 <input class="inline_num" type="number" min="1" max="20" name="max_jobs" value="${esc(kept("max_jobs", settings.max_jobs))}"> 个任务</b></span>
           <span class="row_btns"><button class="btn small primary" data-save-limit>保存</button></span></div></div>
@@ -1034,6 +1050,18 @@ const VIEWS = {
     on("[data-registration]", (el) => {
       if (el.getAttribute("aria-pressed") === "true") return;
       act("/api/admin/settings", { registration: { [el.dataset.registration]: el.dataset.value === "1" } }, "已保存");
+    });
+    // Tap − / + as often as needed: this page follows at once (the strip plays at the new tempo); saved once the taps stop.
+    on("[data-ui-speed]", (el) => {
+      const settings = adminData.data.settings;
+      settings.ui_speed = Math.round(Math.min(2, Math.max(0.5, (settings.ui_speed ?? 1) + Number(el.dataset.uiSpeed) * 0.1)) * 10) / 10;
+      applySpeed(settings.ui_speed);
+      VIEWS.admin("local", tab).then(demoSpeed);
+      clearTimeout(stepTimer);
+      stepTimer = setTimeout(async () => {
+        try { await api("/api/admin/settings", { method: "POST", body: { ui_speed: settings.ui_speed } }); toast("已保存"); }
+        catch (e) { toast(e.message); VIEWS.admin(true, tab); }
+      }, 600);
     });
     on("[data-site-pace]", (el) => {
       if (el.getAttribute("aria-pressed") === "true") return;
@@ -2681,8 +2709,9 @@ async function loadMe() {
 }
 
 (async function boot() {
-  let setup = false;
-  if (!MOCK) { try { ({ mode: session.mode, setup, register: session.register = null } = await api("/api/mode")); } catch { /* old server: local */ } }
+  let setup = false, speed = 1;
+  if (!MOCK) { try { ({ mode: session.mode, setup, register: session.register = null, speed = 1 } = await api("/api/mode")); } catch { /* old server: local */ } }
+  applySpeed(speed);
   if (MOCK && params.has("auth")) { showAuth(params.get("auth") || "login"); return; }
   if (MOCK && params.has("hosted")) session.mode = "hosted";  // ?mock&hosted previews what a hosted site shows
   if (setup) { showAuth("setup"); return; }

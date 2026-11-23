@@ -132,6 +132,8 @@ CODE_TTL = 10 * 60
 # Who may sign up: open (a sign-up page at all), invite (with an unused invite code), email (with a code mailed
 # to the address, which the account then keeps). The defaults are how the site worked before they could change.
 REGISTRATION = {"open": True, "invite": True, "email": False}
+# How fast the pages animate for everyone, as a multiple of the stylesheet's tempo (1.0); the admin nudges it in 0.1 steps.
+UI_SPEED = (0.5, 2.0)
 
 
 def smtp_open(config):
@@ -413,6 +415,7 @@ class Hub:
                 "registration": self.registration(),
                 "zhs_parallel_study": bool(self.accounts.setting("zhs_parallel_study", False)),
                 "answer_pace": self.answer_pace(),
+                "ui_speed": self.ui_speed(),
                 "smtp": smtp and dict({k: v for k, v in smtp.items() if k != "password"},
                                       password_hint="已保存" if smtp["password"] else ""),  # not even part of it
                 "builtin_available": default_config() is not None,
@@ -421,6 +424,10 @@ class Hub:
                     key_hint=key_hint(config.api_key), health=health.get("status", ""),
                     health_message=health.get("message", ""), checked_at=health.get("checked_at", ""),
                     source="site" if self.site_store.get("default_model") is not None else "builtin")}
+
+    def ui_speed(self):
+        speed = self.accounts.setting("ui_speed", 1.0)
+        return speed if isinstance(speed, (int, float)) and UI_SPEED[0] <= speed <= UI_SPEED[1] else 1.0
 
     def answer_pace(self):
         """Zhihuishu answer pace for everyone on the site; only an admin changes it (stored like zhs_parallel_study)."""
@@ -696,7 +703,7 @@ class HostedAccess:
     def public(self, request, method, path, query, body):
         hub = self.hub
         if method == "GET" and path == "/api/mode":
-            return {"mode": self.mode, "setup": not hub.accounts.has_admin(), "register": hub.registration()}
+            return {"mode": self.mode, "setup": not hub.accounts.has_admin(), "register": hub.registration(), "speed": hub.ui_speed()}
         if method == "POST" and path == "/api/auth/setup":
             ip = self._ip(request)
             key = "ip:" + ip
@@ -897,6 +904,9 @@ class HostedAccess:
             limit = _job_limit(body["max_jobs"]) if "max_jobs" in body else None
             if "answer_pace" in body and body["answer_pace"] not in ANSWER_PACES:
                 raise HttpError(400, "答题节奏只能是稳妥或快速")
+            speed = body.get("ui_speed")
+            if "ui_speed" in body and (isinstance(speed, bool) or not isinstance(speed, (int, float)) or not UI_SPEED[0] <= speed <= UI_SPEED[1]):
+                raise HttpError(400, "动画速度要在 %.1f× 到 %.1f× 之间" % UI_SPEED)
             if "default_model" in body:
                 hub.save_default_model(body["default_model"])
             if "smtp" in body:
@@ -909,6 +919,8 @@ class HostedAccess:
                 hub.accounts.set_setting("zhs_parallel_study", body.get("zhs_parallel_study") is True)
             if "answer_pace" in body:
                 hub.accounts.set_setting("answer_pace", body["answer_pace"])
+            if "ui_speed" in body:
+                hub.accounts.set_setting("ui_speed", round(float(speed), 1))
             return hub.site_settings()
         match = re.fullmatch(r"/api/admin/users/(\w+)/jobs/(\w+)/(stop|pause|continue|move)", path)
         if method == "POST" and match:
