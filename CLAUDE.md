@@ -1,2 +1,3 @@
+- 前端有全局点击委托（`document.addEventListener("click"` 那段）认 `data-filter`、`data-open`、`data-stop`、`data-go` 等属性名；新按钮换个名字，否则会被它一起处理。
 - 职教云（RuoYi 后端）偶尔对读接口回 `code 500`，稍后再读就好。列表读走 `AIMoocApi.read_list` / `ExamAPI.request(read=...)`（会重读）；读失败要报错，别当成空列表（网页会缓存 10 分钟）。
 - 网页缓存的列表（`Platform.cache`）：任务改了平台状态就调 `Studia._forget`；它会让正在进行的读不写回缓存（`platform.epoch`），否则交卷前读到的 0 分会被缓存 10 分钟。
