@@ -334,7 +334,13 @@ Object.values(bars).forEach((el) => barSizes.observe(el));
    repaint cannot restart them. The clips reach 24px past the edges so rings and shadows are not cut. */
 const STILL = matchMedia("(prefers-reduced-motion: reduce)");
 const EASE = "cubic-bezier(.16, 1, .3, 1)", EASE_IO = "cubic-bezier(.65, .05, 0, 1)";  // the stylesheet's --ease, --ease-io
-const moves = (el, frames, options) => (STILL.matches || !el.animate ? null : el.animate(frames, { duration: 420, easing: EASE, ...options }));
+// The stylesheet's --pace scales every length here too, so one number sets the tempo of the whole site.
+const PACE = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--pace")) || 1;
+const moves = (el, frames, options) => {
+  if (STILL.matches || !el.animate) return null;
+  const o = { duration: 420, easing: EASE, ...options };
+  return el.animate(frames, { ...o, duration: o.duration * PACE, delay: (o.delay || 0) * PACE });
+};
 // Swept in from the top edge down, settling `lift` pixels.
 const scanned = (lift = 10) => [{ clipPath: "inset(-24px -24px calc(100% + 24px) -24px)", transform: `translateY(${lift}px)` }, { clipPath: "inset(-24px)", transform: "none" }];
 // Filled in from one side: -1 from the left, 1 from the right.
@@ -443,6 +449,9 @@ function setPage(html) {
   const now = was && tabBar(), sameBar = now && now.links === was.links;
   if (sameBar && now.index !== was.index) {
     const side = now.index > was.index ? 1 : -1;
+    // The title above the tabs was drawn anew but is the same: its own entrance (corners locking on, digits rolling)
+    // is already over as far as the reader is concerned.
+    for (const el of [...page.children].slice(0, [...page.children].indexOf(now.bar))) el.getAnimations({ subtree: true }).forEach((a) => a.finish());
     const marker = now.bar.classList.contains("seg") ? "::before" : "::after";
     try {
       moves(now.on, [{ transform: `translateX(${was.rect.left - now.rect.left}px) scaleX(${was.rect.width / now.rect.width})` }, { transform: "none" }],
