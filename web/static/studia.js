@@ -179,10 +179,14 @@ const elapsed = (job) => (job.ended || Date.now() / 1000) - job.started;
 
 function toggleTheme() {
   const night = document.documentElement.dataset.theme !== "night";
-  document.documentElement.dataset.theme = night ? "night" : "";
+  const apply = () => {
+    document.documentElement.dataset.theme = night ? "night" : "";
+    renderSidebar();
+  };
+  // A view transition cross-fades the whole page at once, instead of each colour flipping on its own beat.
+  if (document.startViewTransition && !STILL.matches) document.startViewTransition(apply); else apply();
   store.set("studia-theme", night ? "night" : "day");
   toast(night ? "夜读模式" : "日间模式");
-  renderSidebar();
 }
 
 /* ---------------------------------------------------------------- sidebar */
@@ -237,14 +241,14 @@ function renderSidebar() {
   const view = state.view;
   const item = (hash, icon, label, extra = "", cls = "") =>
     `<button class="nav_item ${cls}" data-go="${hash}" aria-current="${view === hash || view.startsWith(`${hash}/`)}">${icon}<span class="label">${esc(label)}</span>${extra}</button>`;
-  const platforms = `<div class="plat_seg" role="tablist">${state.platforms.map((x, i) =>
+  const platforms = `<div class="plat_seg" role="tablist" style="--n:${state.platforms.length};--i:${Math.max(0, state.platforms.indexOf(p))}">${state.platforms.map((x, i) =>
     `<button role="tab" aria-selected="${x.id === p.id}" data-switch="${x.id}" title="${esc(platformStatus(x))} · ⌘${i + 1}">${esc(x.short)}${
       state.jobs.some((j) => j.platform === x.id) ? '<i class="busy"></i>' : ""}</button>`).join("")}</div>`;
   patch($(".switcher_wrap"), platforms);
 
   const courses = [];
   if (!p.logged_in) courses.push(item(`#/login/${p.id}`, ICON.login, `${p.lapsed ? "重新" : ""}登录${/^[A-Za-z]/.test(p.short) ? " " : ""}${p.short}`));
-  else if (!state.courses[p.id]) courses.push(`<div class="nav_item quiet"><span class="label">正在读取课程…</span></div>`);
+  else if (!state.courses[p.id]) courses.push(`<div class="nav_item quiet loading"><span class="label">正在读取课程…</span></div>`);
   else courses.push(...state.courses[p.id].map((c) => {
     const busy = state.jobs.some((j) => j.platform === p.id && j.course === c.id);
     return item(`#/course/${p.id}/${c.id}`, ring(c.progress, inkOf(c)), c.name,
@@ -292,40 +296,106 @@ const page = $(".page");
 const scroller = $(".scroll");
 // Live progress repaints several times a second. Patch the existing DOM instead of
 // replacing it, so buttons, running animations and a finger mid-tap survive the update.
-function patch(target, html) {
+/* ---------------------------------------------------------------- motion
+   Only transform and opacity move, so animations stay on the compositor while a job streams progress.
+   Web Animations (el.animate) rather than classes: nothing to clean up, and a later repaint cannot restart them. */
+const STILL = matchMedia("(prefers-reduced-motion: reduce)");
+const EASE = "cubic-bezier(.2, .8, .2, 1)";
+const moves = (el, frames, options) => (STILL.matches || !el.animate ? null : el.animate(frames, { duration: 260, easing: EASE, ...options }));
+let born = [];  // keyed rows a patch inserted, to fade in once it is done
+
+function patch(target, html, motion = true) {
   const fresh = document.createElement("template");
   fresh.innerHTML = html;
+  const before = motion && !STILL.matches ? keyedRects(target) : null;
+  born = [];
   patchChildren(target, fresh.content);
+  if (!before) return;
+  // A row that moved (a job leaving the queue for a slot, a list re-sorted) slides from where it was;
+  // one that is new fades in. A few at most, so a page of fresh rows does not ripple for long.
+  for (const el of target.querySelectorAll("[data-key]")) {
+    const was = before.get(el.dataset.key);
+    if (!was || born.includes(el)) continue;
+    const now = el.getBoundingClientRect(), dx = was.left - now.left, dy = was.top - now.top;
+    if (Math.abs(dx) + Math.abs(dy) > 1) moves(el, [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }], { duration: 320 });
+  }
+  born.slice(0, 24).forEach((el, i) => moves(el, [{ opacity: 0, transform: "translateY(6px)" }, { opacity: 1, transform: "none" }],
+    { duration: 280, delay: Math.min(i, 8) * 22, fill: "backwards" }));
 }
+// Where each keyed row sits now. A key seen twice is ambiguous and left out.
+function keyedRects(root) {
+  const els = root.querySelectorAll("[data-key]");
+  if (!els.length || els.length > 240) return null;
+  const rects = new Map(), twice = new Set();
+  for (const el of els) {
+    const k = el.dataset.key;
+    if (rects.has(k)) twice.add(k); else rects.set(k, el.getBoundingClientRect());
+  }
+  twice.forEach((k) => rects.delete(k));
+  return rects;
+}
+// Rows with a data-key (a job, a paper, a course, a person) are matched by it, not by position: a row inserted above
+// them no longer rewrites every row below, and the one that moved keeps its element (and its animation).
 function patchChildren(from, to) {
-  const old = [...from.childNodes], next = [...to.childNodes];
+  const next = [...to.childNodes], keyed = new Map();
+  for (const n of from.childNodes) if (n.nodeType === 1 && n.dataset.key) keyed.set(n.dataset.key, n);
   next.forEach((node, i) => {
-    const have = old[i];
-    if (!have) from.appendChild(node);
-    else if (have.nodeType !== node.nodeType || have.nodeName !== node.nodeName) from.replaceChild(node, have);
-    else if (node.nodeType === 1) {
-      // An armed button keeps its confirm label through live repaints.
-      if (have.classList.contains("armed") && have.dataset.confirm === node.getAttribute("data-confirm")) return;
-      // A reused element may now mean something else; views rebind their handlers after each paint.
-      have.onclick = null;
-      for (const { name } of [...have.attributes]) if (!node.hasAttribute(name)) have.removeAttribute(name);
-      for (const { name, value } of [...node.attributes]) if (have.getAttribute(name) !== value) have.setAttribute(name, value);
-      patchChildren(have, node);
-    } else if (have.nodeValue !== node.nodeValue) have.nodeValue = node.nodeValue;
+    const at = from.childNodes[i] || null, k = node.nodeType === 1 ? node.dataset.key : undefined;
+    if (k) {
+      const have = keyed.get(k);
+      keyed.delete(k);
+      if (!have || have.nodeName !== node.nodeName) { from.insertBefore(node, at); born.push(node); return; }
+      if (have !== at) from.insertBefore(have, at);
+      patchElement(have, node);
+    } else if (!at || (at.nodeType === 1 && at.dataset.key)) from.insertBefore(node, at);
+    else if (at.nodeType !== node.nodeType || at.nodeName !== node.nodeName) from.replaceChild(node, at);
+    else if (node.nodeType === 1) patchElement(at, node);
+    else if (at.nodeValue !== node.nodeValue) at.nodeValue = node.nodeValue;
   });
-  for (let i = old.length - 1; i >= next.length; i -= 1) from.removeChild(old[i]);
+  while (from.childNodes.length > next.length) from.lastChild.remove();
+}
+function patchElement(have, node) {
+  // An armed button keeps its confirm label through live repaints.
+  if (have.classList.contains("armed") && have.dataset.confirm === node.getAttribute("data-confirm")) return;
+  // A reused element may now mean something else; views rebind their handlers after each paint.
+  have.onclick = null;
+  for (const { name } of [...have.attributes]) if (!node.hasAttribute(name)) have.removeAttribute(name);
+  for (const { name, value } of [...node.attributes]) if (have.getAttribute(name) !== value) have.setAttribute(name, value);
+  patchChildren(have, node);
 }
 
-// Entrance animation only when the user navigates; background repaints patch in place.
+// The page's tab bar: which bar (its links), which tab, and where its marker sits.
+function tabBar() {
+  const bar = page.querySelector(":scope > .tabs"), on = bar?.querySelector('.tab[aria-selected="true"]');
+  if (!on) return null;
+  const tabs = [...bar.querySelectorAll(".tab")];
+  return { bar, on, links: tabs.map((t) => t.dataset.go).join(" "), index: tabs.indexOf(on), rect: on.getBoundingClientRect() };
+}
+// Everything below the tab bar (or the whole page without one): what changes when the tab or the data does.
+const pageBody = (bar) => (bar ? [...page.children].slice([...page.children].indexOf(bar.bar) + 1) : [...page.children]);
+// Blocks rise into place one after another. fill "backwards": a block waiting for its turn is not shown early.
+const rise = (els, lift = 10) => els.slice(0, 10).forEach((el, i) =>
+  moves(el, [{ opacity: 0, transform: `translateY(${lift}px)` }, { opacity: 1, transform: "none" }], { duration: 320, delay: Math.min(i, 5) * 30, fill: "backwards" }));
+
+// Navigating fades the new page in, its blocks one after another. Another tab of the same bar keeps the title and
+// tabs still: the marker glides over and the content slides in from that tab's side. Data arriving in place of a
+// 正在读取… placeholder fades in. Background repaints patch quietly.
 let quiet = false;
 function setPage(html) {
-  if (quiet) patch(page, html);
-  else {
-    page.innerHTML = html;
-    page.classList.remove("enter");
-    void page.offsetWidth;
-    page.classList.add("enter");
-  }
+  const was = STILL.matches ? null : tabBar(), loading = Boolean(page.querySelector(".loading"));
+  if (quiet) patch(page, html, !loading);
+  else page.innerHTML = html;
+  const now = was && tabBar(), sameBar = now && now.links === was.links;
+  if (sameBar && now.index !== was.index) {
+    const side = now.index > was.index ? 1 : -1;
+    const marker = now.bar.classList.contains("seg") ? "::before" : "::after";
+    try {
+      moves(now.on, [{ transform: `translateX(${was.rect.left - now.rect.left}px) scaleX(${was.rect.width / now.rect.width})` }, { transform: "none" }],
+        { pseudoElement: marker, duration: 300 });
+    } catch { /* no pseudo-element animations: the marker just moves */ }
+    for (const el of pageBody(now)) moves(el, [{ opacity: 0, transform: `translateX(${side * 18}px)` }, { opacity: 1, transform: "none" }]);
+  } else if (!quiet) rise([...page.children]);
+  else if (loading && !page.querySelector(".loading")) rise(pageBody(tabBar()), 6);
   // Tab bars scroll sideways on narrow phones: keep the current tab in sight.
   const nav = page.querySelector(".tabs"), on = nav?.querySelector('[aria-selected="true"]');
   if (on && (on.offsetLeft < nav.scrollLeft || on.offsetLeft + on.offsetWidth > nav.scrollLeft + nav.clientWidth)) nav.scrollLeft = on.offsetLeft - 16;
@@ -498,16 +568,16 @@ function boardParts(jobs, limit) {
 const DOTS = (j) => `<button class="dots" data-job-menu="${esc(j.id)}" aria-label="更多操作">${ICON.dots}</button>`;
 function slotCard(j, owner) {
   const run = owner ? j.progress || {} : runOf(j.id), starting = j.state !== "running", { pct, label } = progressOf(run);
-  return `<div class="slot" data-slot="${esc(j.id)}" ${starting || !learns(j) ? "data-locked" : ""} style="--c:${inkOf({ id: j.course })}">
+  return `<div class="slot" data-key="${esc(j.id)}" data-slot="${esc(j.id)}" ${starting || !learns(j) ? "data-locked" : ""} style="--c:${inkOf({ id: j.course })}">
     <span class="slot_head"><b>${esc(j.course_name)}</b>${DOTS(j)}</span>
     <small>${esc(j.title)} · ${esc(starting ? "准备中…" : nowText(j, run))}</small>
     <span class="slot_foot"><span class="bar"><i style="width:${pct ?? 0}%"></i></span><span class="mono">${esc(label || duration(Date.now() / 1000 - (j.running_since || j.started)))}</span></span>
   </div>`;
 }
-const queueRow = (j, i) => `<div class="qrow" data-drag="${esc(j.id)}">
+const queueRow = (j, i) => `<div class="qrow" data-key="${esc(j.id)}" data-drag="${esc(j.id)}">
     ${j.hold ? '<span class="grip off"></span>' : `<span class="grip" data-grip aria-hidden="true">${ICON.grip}</span>`}<span class="place mono">${i + 1}</span>
     <span class="t1">${esc(j.course_name)}<small>${esc(j.title)}${j.hold ? " · 正在让位" : ""}</small></span>${DOTS(j)}</div>`;
-const pausedRow = (j) => `<div class="qrow"><span class="grip off"></span><span class="place"></span>
+const pausedRow = (j) => `<div class="qrow" data-key="${esc(j.id)}"><span class="grip off"></span><span class="place"></span>
     <span class="t1">${esc(j.course_name)}<small>${esc(j.title)}${j.hold ? " · 正在暂停" : ""}</small></span>
     ${j.hold ? "" : `<button class="btn small" data-job-act="continue" data-id="${esc(j.id)}">继续</button>`}${DOTS(j)}</div>`;
 function board(jobs, limit, owner = "") {
@@ -548,12 +618,18 @@ function openJobMenu(button) {
     j.state === "paused" ? row("continue", "继续") : "",
     row("stop", "停止", 'data-confirm="确认停止"'),
   ].join("");
+  jobMenu.getAnimations().filter((a) => a.id === "out").forEach((a) => a.cancel());  // reopened while fading out
   jobMenu.hidden = false;
   const at = button.getBoundingClientRect(), h = jobMenu.offsetHeight, w = jobMenu.offsetWidth;
   jobMenu.style.left = `${Math.max(8, Math.min(at.right - w, innerWidth - w - 8))}px`;
   jobMenu.style.top = `${at.bottom + 4 + h > innerHeight - 8 ? at.top - h - 4 : at.bottom + 4}px`;
 }
-const closeJobMenu = () => { jobMenu.hidden = true; };
+const closeJobMenu = () => {
+  if (jobMenu.hidden || jobMenu.getAnimations().some((a) => a.id === "out")) return;
+  const out = moves(jobMenu, [{ opacity: 1 }, { opacity: 0, transform: "translateY(4px) scale(.98)" }], { duration: 140, id: "out" });
+  if (out) out.onfinish = () => { jobMenu.hidden = true; out.cancel(); };
+  else jobMenu.hidden = true;
+};
 
 // Dragging a queued job by its grip (mouse or finger): a ghost follows the pointer; the slot under it, or the gap
 // between queue rows, is marked; dropping sends the move. Repaints wait until the drop (see repaint).
@@ -630,7 +706,7 @@ const VIEWS = {
       for (const list of Object.values(state.adminLists)) list.open = null;  // arriving: no filter menu left open
       // Switching tabs inside the console swaps the content in place; arriving from elsewhere animates.
       quiet = state.view === "#/admin" && Boolean(page.querySelector('[data-go^="#/admin/"]'));
-      setPage(`${head}<div class="empty">正在读取…</div>`);
+      setPage(`${head}<div class="empty loading">正在读取…</div>`);
       quiet = false;
     }
     const need = { people: ["users"], invites: ["invites", "users"], site: ["settings", "memory"], logs: [] }[tab];
@@ -665,7 +741,7 @@ const VIEWS = {
       const found = users.filter((u) => !q || `${u.username} ${u.email || ""}`.toLowerCase().includes(q))
         .sort((a, b) => rank(a) - rank(b) || seen(b) - seen(a));
       const { rows, counts } = facetFilter("people", found, FACETS);
-      const userRow = (u) => `<div class="model user_row ${state.adminOpen === u.id || state.adminEdit?.uid === u.id ? "open" : ""}" data-user-row="${esc(u.id)}">
+      const userRow = (u) => `<div class="model user_row ${state.adminOpen === u.id || state.adminEdit?.uid === u.id ? "open" : ""}" data-key="${esc(u.id)}" data-user-row="${esc(u.id)}">
             <span class="avatar big">${esc(u.username.slice(0, 1).toUpperCase())}</span>
             <span class="m1"><b>${esc(u.username)}</b>${u.role === "admin" ? '<span class="pill blue">管理员</span>' : ""}${u.disabled ? '<span class="pill red">已停用</span>' : ""}${u.max_jobs ? `<span class="pill">同时 ${u.max_jobs} 个</span>` : ""}
             <small class="sans">${u.jobs?.some((j) => j.state === "running") ? "学习中" : u.jobs?.some((j) => j.state === "queued") ? "排队中" : u.jobs?.length ? "已暂停" : u.last_login ? `上次在线 ${ago(u.last_login)}` : "还没登录过"}${u.email ? ` · ${esc(u.email)}` : ""}</small></span>
@@ -696,7 +772,7 @@ const VIEWS = {
         ["state", "状态", [["open", "可用"], ["used", "已使用"], ["expired", "已过期"]].map(([k, name]) => [k, name, (i) => i.state === k])],
       ];
       const { rows, counts } = facetFilter("invites", found, FACETS);
-      const inviteRow = (i) => `<div class="model plain invite_row"><span class="m1"><b><code>${esc(i.code)}</code></b><span class="pill ${inviteState[i.state][0]}">${inviteState[i.state][1]}</span>
+      const inviteRow = (i) => `<div class="model plain invite_row" data-key="${esc(i.code)}"><span class="m1"><b><code>${esc(i.code)}</code></b><span class="pill ${inviteState[i.state][0]}">${inviteState[i.state][1]}</span>
             <small class="sans">${i.used_by ? `${esc(nameOf(i.used_by))} 已注册` : `创建于 ${ago(i.created)} · ${new Date(i.expires * 1000).toLocaleDateString()} 过期`}</small></span>
           <span class="row_btns">${i.state === "open" ? `<button class="btn small" data-copy="${esc(i.code)}">复制</button><button class="btn small danger" data-revoke="${esc(i.code)}" data-confirm="确认作废">作废</button>` : ""}</span></div>`;
       const reg = data.invites.registration, idle = !reg ? "" : !reg.open ? "注册已关闭，邀请码用不上" : reg.invite ? "" : "注册不需要邀请码";
@@ -981,14 +1057,14 @@ const VIEWS = {
         <button class="tab" role="tab" aria-selected="${all}" data-go="#/jobs/all">全站${siteCount() ? `<span class="n">${siteCount()}</span>` : ""}</button></div>` : ""}`;
     if (all) {
       const people = state.sitePeople;
-      setPage(head + (!people ? `<div class="empty">正在读取…</div>` : !people.length ? `<div class="empty">现在没有任务在运行</div>`
+      setPage(head + (!people ? `<div class="empty loading">正在读取…</div>` : !people.length ? `<div class="empty">现在没有任务在运行</div>`
         : people.map((u) => `<div class="section"><h3>${esc(u.username)}</h3><span class="aside">${boardCount(u.jobs, u.limit)}</span></div>${board(u.jobs, u.limit, u.id)}`).join("")));
       return;
     }
     const open = new Set([...page.querySelectorAll(".run_lines:not([hidden])")].map((el) => el.dataset.lines));
     const live = state.jobs.length ? `<div class="section"><h3>进行中</h3><span class="aside">${boardCount(state.jobs, state.jobLimit)}</span></div>
       ${board(state.jobs, state.jobLimit)}` : "";
-    const rows = state.history.map((j, i) => { const past = retried(j, i); return `<div class="run ${open.has(String(i)) ? "open" : ""} ${past ? "past" : ""}" data-history="${i}">${ICON[j.state] || ICON.stopped}
+    const rows = state.history.map((j, i) => { const past = retried(j, i); return `<div class="run ${open.has(String(i)) ? "open" : ""} ${past ? "past" : ""}" data-key="${esc(j.id)}" data-history="${i}">${ICON[j.state] || ICON.stopped}
         <span class="t1">${esc(j.title)} · ${esc(j.course_name)}<small>${esc(platformOf(j.platform)?.short || "")} · ${esc(j.summary)}</small></span>
         <span class="fix">${past ? "" : fixButtons(j, i)}</span>
         <span class="state ${past ? "stopped" : j.state}">${past ? "已重试" : STATE_WORD[j.state] || ""}<span class="mono">${j.ended ? duration(j.ended - j.started) : ""}</span></span>
@@ -1018,7 +1094,7 @@ const VIEWS = {
     const list = state.courses[p.id];
     const busy = (list || []).filter((c) => state.jobs.some((j) => j.platform === p.id && j.course === c.id)).length;
     const head = `<h1 class="title">课程</h1><p class="sub">${esc(p.name)}${list ? ` · ${list.length} 门${busy ? ` · ${busy} 门进行中` : ""}` : ""}</p>`;
-    if (!list) return setPage(`${head}<div class="empty">正在读取课程…</div>`);
+    if (!list) return setPage(`${head}<div class="empty loading">正在读取课程…</div>`);
     const card = (c) => {
       const job = state.jobs.find((j) => j.platform === p.id && j.course === c.id);
       const last = state.history.find((j) => j.platform === p.id && j.course === c.id);
@@ -1030,7 +1106,7 @@ const VIEWS = {
       const ran = last ? last.ended || last.started : state.lastRun?.[key(p.id, c.id)];
       const papers = open ? `<span class="todo">${open} 份未作答</span>` : state.paperErrors[key(p.id, c.id)] ? "试卷没读到" : "";
       const line = [status, papers].filter(Boolean).join('<span class="sep">·</span>') || (ran ? `上次 ${ago(ran)}` : learnt(c));
-      return `<button class="course_card" style="--c:${inkOf(c)}" data-go="#/course/${p.id}/${c.id}">${coverHtml(p, c)}
+      return `<button class="course_card" style="--c:${inkOf(c)}" data-key="${esc(c.id)}" data-go="#/course/${p.id}/${c.id}">${coverHtml(p, c)}
         <span class="cc_body"><b>${esc(c.name)}</b><small>${esc(c.type || p.short)}</small>
           <span class="cc_bar"><span class="bar"><i style="width:${Number(c.progress) || 0}%"></i></span><span class="mono">${c.progress == null ? "—" : `${esc(c.progress)}%`}</span></span>
           <span class="cc_line">${line}</span></span></button>`;
@@ -1081,7 +1157,7 @@ const VIEWS = {
     const p = platformOf(pid);
     if (!p || !p.logged_in) return go(p ? `#/login/${pid}` : homeOf(currentPlatform()));
     const c = courseOf(pid, cid);
-    if (!c) return setPage(`<div class="empty">${state.courses[pid] ? "没有找到这门课程" : "正在读取课程…"}</div>`);
+    if (!c) return setPage(`<div class="empty ${state.courses[pid] ? "" : "loading"}">${state.courses[pid] ? "没有找到这门课程" : "正在读取课程…"}</div>`);
     renderCourse(p, c, courseTab(c, tab), true);
   },
 
@@ -1170,7 +1246,7 @@ const VIEWS = {
     // Draw from the last copy at once; repaint only if the server's copy differs.
     const cached = state.settings;
     if (cached) paintSettings(tab, head, cached, false);
-    else setPage(`${head}<div class="empty">正在读取…</div>`);
+    else setPage(`${head}<div class="empty loading">正在读取…</div>`);
     try { state.settings = await api("/api/settings"); } catch (error) { if (!cached) toast(error.message); return; }
     if (location.hash.startsWith(`#/settings/${tab}`)) {
       if (!cached || JSON.stringify(cached) !== JSON.stringify(state.settings)) paintSettings(tab, head, state.settings, true);
@@ -1452,11 +1528,11 @@ function qaBody(p, c) {
   const peers = session.mode === "hosted" ? `<div class="model plain qa_row qa_switch"><span class="m1"><b>站内互答</b><small class="sans">${
       state.qaPeers ? "先答同学的提问" : "和同班同学互相回答"}</small></span>
     <span class="row_btns"><button class="switch ${state.qaPeers ? "on" : ""}" role="switch" aria-checked="${!!state.qaPeers}" aria-label="站内互答" data-qa-peers></button></span></div>` : "";
-  const list = !posts ? '<div class="empty">正在读取…</div>' : !posts.length ? '<div class="empty">还没在这门课发过</div>'
+  const list = !posts ? '<div class="empty loading">正在读取…</div>' : !posts.length ? '<div class="empty">还没在这门课发过</div>'
     : `<div class="runs">${posts.map((x) => {
       // Keyed by the post itself, so a new post on top does not move which one is open.
       const open = state.qaOpen.has(`${k}:${x.kind}:${x.at}`);
-      return `<div class="run qa_post ${open ? "open" : ""}" data-qa-post="${esc(`${x.kind}:${x.at}`)}"><span class="stamp ${x.kind === "ask" ? "k" : ""}">${x.kind === "ask" ? "问" : "答"}</span>
+      return `<div class="run qa_post ${open ? "open" : ""}" data-key="${esc(`${x.kind}:${x.at}`)}" data-qa-post="${esc(`${x.kind}:${x.at}`)}"><span class="stamp ${x.kind === "ask" ? "k" : ""}">${x.kind === "ask" ? "问" : "答"}</span>
         <span class="t1">${esc(x.question)}<small>${ago(x.at)}</small></span><span></span><span></span>
         <span class="when"></span></div>
         ${x.kind === "answer" && open ? `<div class="qa_text">${esc(x.text)}</div>` : ""}`;
@@ -1578,7 +1654,7 @@ function renderCourse(p, c, tab, full = false) {
     body = `<div class="notice">${esc(p.name)} 的网页版答题还在接入中。现在可以在终端里运行 <code>python StartWork.py</code>，选这门课后进入「AI 答题」。</div>`;
   } else if (!papers) {
     const failed = state.paperErrors[k];
-    body = failed ? `<div class="empty">${esc(failed)} · <button class="link" data-papers-retry="${esc(k)}">重试</button></div>` : `<div class="empty">正在读取试卷…</div>`;
+    body = failed ? `<div class="empty">${esc(failed)} · <button class="link" data-papers-retry="${esc(k)}">重试</button></div>` : `<div class="empty loading">正在读取试卷…</div>`;
   } else {
     const selected = selectedOf(k);
     for (const id of selected) if (!papers.some((x) => x.id === id && x.available)) selected.delete(id);
@@ -1595,7 +1671,7 @@ function renderCourse(p, c, tab, full = false) {
         : x.redo ? '<span class="pill blue">可重做</span>'
         : x.done ? `<span class="pill">已提交</span>` : "";
       const note = x.reason || (x.available ? x.status : "");
-      return `<button class="paper ${on ? "on" : ""} ${r?.state === "running" ? "now" : ""} ${x.available && !(sheet && !r) ? "" : "off"}" data-paper="${esc(x.id)}">
+      return `<button class="paper ${on ? "on" : ""} ${r?.state === "running" ? "now" : ""} ${x.available && !(sheet && !r) ? "" : "off"}" data-key="${esc(x.id)}" data-paper="${esc(x.id)}">
         <span class="box">${on ? ICON.tick : ""}</span><span class="stamp ${STAMP[x.category] || ""}">${esc((x.category || "作")[0])}</span>
         <span class="pname"><b>${esc(x.name)}</b><small title="${esc(x.hint || note)}">${esc(note)}</small></span>
         <span>${pill}</span>
@@ -2391,6 +2467,7 @@ const AUTH = {
 function showAuth(mode = "login") {
   document.body.classList.add("signed-out");
   let box = $(".auth");
+  const switching = Boolean(box);  // 登录 ↔ 注册 ↔ 找回密码: the form changes, the page around it does not
   if (!box) { box = document.createElement("div"); box.className = "auth"; document.body.appendChild(box); }
   const rules = session.register || { open: false };
   if (mode === "register" && !rules.open) mode = "login";  // sign-ups closed since this page was opened
@@ -2426,6 +2503,7 @@ function showAuth(mode = "login") {
       </form>
     </section>`;
   animateAuthGrid(box);
+  if (switching) rise([...$(".auth_card", box).children], 6);
   box.querySelectorAll("[data-auth-mode]").forEach((el) => (el.onclick = () => showAuth(el.dataset.authMode)));
   box.querySelectorAll("[data-reveal]").forEach((el) => (el.onclick = () => {
     const input = el.previousElementSibling, show = input.type === "password";
