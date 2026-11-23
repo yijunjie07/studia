@@ -33,6 +33,8 @@ const inkOf = (c) => INKS[[...String(c.id)].reduce((h, ch) => (h * 31 + ch.charC
 const svg = (body, size = 16) =>
   `<svg width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
 const ICON = {
+  find: svg('<circle cx="7" cy="7" r="5"/><path d="m11 11 3.5 3.5"/>', 15),
+  plusCircle: svg('<circle cx="8" cy="8" r="6.2"/><path d="M8 5.3v5.4M5.3 8h5.4"/>', 15),
   // Four study cells: the course tab on phones.
   cells: svg('<rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1.2"/><rect x="9" y="2.5" width="4.5" height="4.5" rx="1.2"/><rect x="2.5" y="9" width="4.5" height="4.5" rx="1.2"/><rect x="9" y="9" width="4.5" height="4.5" rx="1.2"/>', 18),
   pulse: svg('<path d="M2 8h2.4l1.7-4.5 3.4 9 1.7-4.5H14"/>', 15),
@@ -91,6 +93,7 @@ const state = {
   platforms: [], courses: {}, papers: {}, paperErrors: {}, units: {}, selected: {}, earned: {}, qaDraft: {}, qaPosts: {}, qaRoom: {}, qaPeers: null, qaOpen: new Set(),
   jobs: [], runs: {}, focus: null, jobLimit: 4, zhsParallel: false, history: [], view: "", loginToken: { cancelled: true }, returnTo: "", lastDone: null,
   current: store.get("studia-platform", ""), meOpen: false, adminTab: "people", logFilter: "all", accountEdit: null, passwordSent: null, adminEdit: null, pausedOpen: new Set(),
+  adminLists: {}, adminOpen: null,
 };
 function freshRun() { return { detail: "", overall: null, sub: null, lines: [], unit: null }; }
 const runOf = (id) => (state.runs[id] = state.runs[id] || freshRun());
@@ -405,7 +408,69 @@ document.addEventListener("mouseover", (event) => {
 
 /* ---------------------------------------------------------------- views */
 
-const ADMIN_TABS = [["people", "用户"], ["site", "站点"], ["logs", "日志"]];
+const ADMIN_TABS = [["people", "用户"], ["invites", "邀请码"], ["site", "站点"], ["logs", "日志"]];
+/* 用户 and 邀请码 grow with the site, so each is a list that pages, filters and searches. What a list is
+   showing stays while the console is open; the page size is remembered in the browser. */
+const PAGE_SIZES = [10, 20, 50, 100];
+let adminData = null;  // the lists last read, so searching, filtering and paging redraw without asking again
+// facets: the options picked per filter; open: the filter whose menu shows, with facetQ typed in its box.
+const adminList = (kind) => (state.adminLists[kind] ||= { q: "", page: 1, facets: {}, open: null, facetQ: "" });
+const pageSize = (kind) => { const n = store.get("studia-admin-size", {})[kind]; return PAGE_SIZES.includes(n) ? n : PAGE_SIZES[0]; };
+function pageOf(kind, rows) {
+  const list = adminList(kind), size = pageSize(kind);
+  list.page = Math.min(Math.max(1, list.page), Math.max(1, Math.ceil(rows.length / size)));
+  return rows.slice((list.page - 1) * size, list.page * size);
+}
+/* Filters as in a data table: each is a ⊕ button whose menu ticks any of its options (any of them matches; every
+   filter must). facets: [key, label, [[value, label, test(row)]]]. Each option counts the rows it would leave,
+   given the search and the other filters. */
+function facetFilter(kind, rows, facets) {
+  const chosen = adminList(kind).facets;
+  const pass = (row, skip) => facets.every(([key, , options]) => key === skip || !chosen[key]?.length
+    || options.some(([value, , test]) => chosen[key].includes(value) && test(row)));
+  const counts = Object.fromEntries(facets.map(([key, , options]) =>
+    [key, Object.fromEntries(options.map(([value, , test]) => [value, rows.filter((row) => pass(row, key) && test(row)).length]))]));
+  return { rows: rows.filter((row) => pass(row)), counts };
+}
+function listTools(kind, placeholder, facets, counts, extra = "") {
+  const list = adminList(kind);
+  const buttons = facets.map(([key, label, options]) => {
+    const picked = options.filter(([value]) => list.facets[key]?.includes(value)), open = list.open === key;
+    const q = open ? list.facetQ.trim().toLowerCase() : "";
+    const shown = options.filter(([, name]) => !q || name.toLowerCase().includes(q));
+    return `<div class="facet"><button class="facet_btn" data-facet="${key}" aria-haspopup="listbox" aria-expanded="${open}">${ICON.plusCircle}${label}${picked.length
+        ? `<span class="facet_sep"></span>${picked.length > 2 ? `<span class="pill">已选 ${picked.length} 项</span>` : picked.map(([, name]) => `<span class="pill">${name}</span>`).join("")}` : ""}</button>
+      ${open ? `<div class="facet_pop"><label class="facet_find">${ICON.find}<input data-facet-search value="${esc(list.facetQ)}" placeholder="${label}" autocomplete="off" spellcheck="false"></label>
+        <div class="facet_opts" role="listbox" aria-multiselectable="true" aria-label="${label}">${shown.map(([value, name]) =>
+          `<button class="facet_opt" role="option" data-facet-opt="${value}" aria-selected="${picked.some(([v]) => v === value)}"><span class="facet_tick"></span><span class="grow">${name}</span><span class="n">${counts[key][value]}</span></button>`).join("")
+          || '<div class="facet_none">没有匹配的选项</div>'}</div>
+        ${picked.length ? '<button class="facet_clear" data-facet-clear>清除筛选</button>' : ""}</div>` : ""}</div>`;
+  }).join("");
+  const any = facets.some(([key]) => list.facets[key]?.length);
+  return `<div class="list_tools"><input class="row_input" type="search" data-list-search value="${esc(list.q)}" placeholder="${placeholder}" autocomplete="off" autocapitalize="off" spellcheck="false">
+    ${buttons}${any ? '<button class="facet_reset" data-facet-reset>重置<span aria-hidden="true">×</span></button>' : ""}${extra}</div>`;
+}
+// A filter menu closes on a click outside it, or on Esc.
+function closeFacet(event) {
+  const list = state.view === "#/admin" ? state.adminLists[state.adminTab] : null;
+  if (!list?.open || (event.type === "click" ? event.target.closest?.(".facet") : event.key !== "Escape")) return;
+  const key = list.open;
+  list.open = null;
+  VIEWS.admin("local", state.adminTab);
+  if (event.type === "keydown") $(`[data-facet="${key}"]`, page)?.focus();
+}
+document.addEventListener("click", closeFacet, true);  // before the click's own handler repaints the page
+document.addEventListener("keydown", closeFacet);
+// Lists that fit the smallest page need no bar.
+function pagerHtml(kind, total, unit) {
+  if (total <= PAGE_SIZES[0]) return "";
+  const list = adminList(kind), size = pageSize(kind), pages = Math.ceil(total / size), from = (list.page - 1) * size;
+  return `<div class="pager"><span>${from + 1}–${Math.min(from + size, total)}，共 ${total} ${unit}</span>
+    <label class="pager_size">每页<select data-list-size>${PAGE_SIZES.map((n) => `<option value="${n}" ${n === size ? "selected" : ""}>${n}</option>`).join("")}</select></label>
+    <span class="pager_nav"><button class="btn small" data-list-page="${list.page - 1}" ${list.page <= 1 ? "disabled" : ""}>上一页</button>
+      <span class="mono">${list.page} / ${pages}</span>
+      <button class="btn small" data-list-page="${list.page + 1}" ${list.page >= pages ? "disabled" : ""}>下一页</button></span></div>`;
+}
 const SETTINGS_TABS = [["account", "账号"], ["models", "AI 模型"], ["study", "偏好"]];
 function pageHead(title, sub, base, tabs, active) {
   return `<h1 class="title">${title}</h1>${sub ? `<p class="sub">${sub}</p>` : ""}
@@ -561,15 +626,21 @@ const VIEWS = {
     const head = pageHead("管理后台", "", "#/admin", ADMIN_TABS, tab);
     // Show the tab at once; its lists fill it in when they arrive.
     if (!refresh) {
+      for (const list of Object.values(state.adminLists)) list.open = null;  // arriving: no filter menu left open
       // Switching tabs inside the console swaps the content in place; arriving from elsewhere animates.
       quiet = state.view === "#/admin" && Boolean(page.querySelector('[data-go^="#/admin/"]'));
       setPage(`${head}<div class="empty">正在读取…</div>`);
       quiet = false;
     }
-    const need = { people: ["users", "invites"], site: ["settings", "memory"], logs: [] }[tab];
+    const need = { people: ["users"], invites: ["invites", "users"], site: ["settings", "memory"], logs: [] }[tab];
     let data;
-    try { data = Object.fromEntries(await Promise.all(need.map(async (x) => [x, await api(`/api/admin/${x}`)]))); }
-    catch (error) { if (!refresh) setPage(`${head}<div class="empty">${esc(error.message)}</div>`); return; }
+    // "local": the same lists drawn again (a search, a filter, another page), without reading them again.
+    if (refresh === "local" && adminData?.tab === tab) data = adminData.data;
+    else {
+      try { data = Object.fromEntries(await Promise.all(need.map(async (x) => [x, await api(`/api/admin/${x}`)]))); }
+      catch (error) { if (!refresh) setPage(`${head}<div class="empty">${esc(error.message)}</div>`); return; }
+      adminData = { tab, data };
+    }
     if (state.view !== "#/admin" || state.adminTab !== tab) return;
     const users = data.users?.users || [];
     const modelForm = $("[data-default-model]", page);
@@ -578,14 +649,26 @@ const VIEWS = {
     const smtpDraft = smtpForm ? Object.fromEntries(new FormData(smtpForm)) : null;
     let body = "";
     if (tab === "people") {
-      const invites = data.invites.invites;
-      const nameOf = (uid) => users.find((u) => u.id === uid)?.username || "—";
-      const inviteState = { open: ["blue", "可用"], used: ["", "已使用"], expired: ["", "已过期"] };
+      const list = adminList("people"), q = list.q.trim().toLowerCase();
       const edit = (u, kind) => state.adminEdit?.uid === u.id && state.adminEdit.kind === kind;
-      body = `<div class="section"><h3>用户</h3><span class="aside">${users.length} 人</span></div>
-        <div class="models">${users.map((u) => `<div class="model"><span class="avatar big">${esc(u.username.slice(0, 1).toUpperCase())}</span>
-            <span class="m1"><b>${esc(u.username)}</b>${u.role === "admin" ? '<span class="pill blue">管理员</span>' : ""}${u.disabled ? '<span class="pill red">已停用</span>' : ""}<span class="pill">同时 ${u.job_limit} 个${u.max_jobs ? "（单独设置）" : ""}</span>
-            <small class="sans">${u.jobs?.some((j) => j.state === "running") ? "学习中" : u.jobs?.some((j) => j.state === "queued") ? "排队中" : u.jobs?.length ? "已暂停" : u.last_login ? `上次在线 ${ago(u.last_login)}` : "还没登录过"}</small></span><span></span>
+      // Busy people first, then whoever was around last; stopped accounts at the end.
+      const rank = (u) => (u.disabled ? 2 : u.jobs?.length ? 0 : 1);
+      const seen = (u) => u.last_login || u.created || 0;
+      const running = (u) => u.jobs?.some((j) => j.state === "running"), queued = (u) => !running(u) && u.jobs?.some((j) => j.state === "queued");
+      const FACETS = [
+        ["status", "状态", [["on", "已启用", (u) => !u.disabled], ["off", "已停用", (u) => u.disabled]]],
+        ["role", "角色", [["admin", "管理员", (u) => u.role === "admin"], ["user", "普通用户", (u) => u.role !== "admin"]]],
+        ["jobs", "任务", [["running", "学习中", running], ["queued", "排队中", queued],
+          ["paused", "已暂停", (u) => u.jobs?.length > 0 && !running(u) && !queued(u)], ["none", "没有任务", (u) => !u.jobs?.length]]],
+      ];
+      const found = users.filter((u) => !q || `${u.username} ${u.email || ""}`.toLowerCase().includes(q))
+        .sort((a, b) => rank(a) - rank(b) || seen(b) - seen(a));
+      const { rows, counts } = facetFilter("people", found, FACETS);
+      const userRow = (u) => `<div class="model user_row ${state.adminOpen === u.id || state.adminEdit?.uid === u.id ? "open" : ""}" data-user-row="${esc(u.id)}">
+            <span class="avatar big">${esc(u.username.slice(0, 1).toUpperCase())}</span>
+            <span class="m1"><b>${esc(u.username)}</b>${u.role === "admin" ? '<span class="pill blue">管理员</span>' : ""}${u.disabled ? '<span class="pill red">已停用</span>' : ""}${u.max_jobs ? `<span class="pill">同时 ${u.max_jobs} 个</span>` : ""}
+            <small class="sans">${u.jobs?.some((j) => j.state === "running") ? "学习中" : u.jobs?.some((j) => j.state === "queued") ? "排队中" : u.jobs?.length ? "已暂停" : u.last_login ? `上次在线 ${ago(u.last_login)}` : "还没登录过"}${u.email ? ` · ${esc(u.email)}` : ""}</small></span>
+            <button class="btn small row_more" data-user-more="${esc(u.id)}" aria-expanded="${state.adminOpen === u.id || state.adminEdit?.uid === u.id}">管理</button>
             <span class="row_btns">${u.jobs?.length ? `<button class="btn small danger" data-stop-user="${u.id}" data-confirm="确认全部停止">停止全部任务</button>` : ""}
               <button class="btn small" data-row-edit="limit" data-uid="${u.id}" aria-pressed="${edit(u, "limit")}">任务上限</button>
               <button class="btn small" data-row-edit="password" data-uid="${u.id}" aria-pressed="${edit(u, "password")}">重置密码</button>
@@ -596,12 +679,29 @@ const VIEWS = {
                 <button type="button" class="btn small" data-row-cancel>取消</button><button class="btn small primary">保存</button></form>`
             : edit(u, "password") ? `<form class="row_form" data-row-form="password" data-uid="${u.id}" novalidate>
                 <input class="row_input" type="password" name="value" minlength="8" required autocomplete="new-password" placeholder="新密码，至少 8 位"><span class="grow"></span>
-                <button type="button" class="btn small" data-row-cancel>取消</button><button class="btn small primary">重置密码</button></form>` : ""}</div>`).join("")}</div>
-        <div class="section"><h3>邀请码</h3><button class="link" data-invite>＋ 生成邀请码</button></div>
-        <div class="models">${invites.map((i) => `<div class="model plain"><span class="m1"><b><code>${esc(i.code)}</code></b><span class="pill ${inviteState[i.state][0]}">${inviteState[i.state][1]}</span>
+                <button type="button" class="btn small" data-row-cancel>取消</button><button class="btn small primary">重置密码</button></form>` : ""}</div>`;
+      body = `${listTools("people", "搜索用户名或邮箱", FACETS, counts)}
+        <div class="models">${pageOf("people", rows).map(userRow).join("")
+          || `<div class="model plain"><span class="m1"><small class="sans">${users.length ? "没有符合条件的用户" : "还没有用户"}</small></span></div>`}</div>
+        ${pagerHtml("people", rows.length, "人")}`;
+    } else if (tab === "invites") {
+      const list = adminList("invites"), q = list.q.trim().toLowerCase();
+      const invites = data.invites.invites;
+      const nameOf = (uid) => users.find((u) => u.id === uid)?.username || "—";
+      const inviteState = { open: ["blue", "可用"], used: ["", "已使用"], expired: ["", "已过期"] };
+      // A code is found with or without its dashes, or by the person who signed up with it.
+      const found = invites.filter((i) => !q || `${i.code} ${i.code.replace(/-/g, "")} ${i.used_by ? nameOf(i.used_by) : ""}`.toLowerCase().includes(q));
+      const FACETS = [
+        ["state", "状态", [["open", "可用"], ["used", "已使用"], ["expired", "已过期"]].map(([k, name]) => [k, name, (i) => i.state === k])],
+      ];
+      const { rows, counts } = facetFilter("invites", found, FACETS);
+      const inviteRow = (i) => `<div class="model plain invite_row"><span class="m1"><b><code>${esc(i.code)}</code></b><span class="pill ${inviteState[i.state][0]}">${inviteState[i.state][1]}</span>
             <small class="sans">${i.used_by ? `${esc(nameOf(i.used_by))} 已注册` : `创建于 ${ago(i.created)} · ${new Date(i.expires * 1000).toLocaleDateString()} 过期`}</small></span>
-          <span class="row_btns">${i.state === "open" ? `<button class="btn small" data-copy="${esc(i.code)}">复制</button><button class="btn small danger" data-revoke="${esc(i.code)}" data-confirm="确认作废">作废</button>` : ""}</span></div>`).join("")
-          || `<div class="model plain"><span class="m1"><small class="sans">还没有邀请码</small></span></div>`}</div>`;
+          <span class="row_btns">${i.state === "open" ? `<button class="btn small" data-copy="${esc(i.code)}">复制</button><button class="btn small danger" data-revoke="${esc(i.code)}" data-confirm="确认作废">作废</button>` : ""}</span></div>`;
+      body = `${listTools("invites", "搜索邀请码或注册的用户", FACETS, counts, '<button class="btn small primary" data-invite>生成邀请码</button>')}
+        <div class="models">${pageOf("invites", rows).map(inviteRow).join("")
+          || `<div class="model plain"><span class="m1"><small class="sans">${invites.length ? "没有符合条件的邀请码" : "还没有邀请码"}</small></span></div>`}</div>
+        ${pagerHtml("invites", rows.length, "个")}`;
     } else if (tab === "site") {
       const settings = data.settings;
       const current = settings.default_model;
@@ -751,7 +851,15 @@ const VIEWS = {
     });
     on("[data-default-reset]", () => { state.adminEdit = null; state.settings = null; act("/api/admin/settings", { default_model: null }, "已恢复内置默认模型"); });
     on("[data-invite]", async () => {
-      try { const { code } = await api("/api/admin/invites", { method: "POST", body: { days: 7 } }); navigator.clipboard?.writeText(code).catch(() => {}); toast(`邀请码 ${code} 已复制`); VIEWS.admin(true, tab); }
+      try {
+        const { code } = await api("/api/admin/invites", { method: "POST", body: { days: 7 } });
+        navigator.clipboard?.writeText(code).catch(() => {});
+        toast(`邀请码 ${code} 已复制`);
+        const list = adminList("invites");  // the new code heads the list: make sure it is on the page shown
+        const keep = (list.facets.state || []).includes("open") ? { state: ["open"] } : {};
+        Object.assign(list, { q: "", page: 1, facets: keep, open: null });
+        VIEWS.admin(true, tab);
+      }
       catch (e) { toast(e.message); }
     });
     on("[data-save-limit]", () => act("/api/admin/settings", { max_jobs: Number($('[name="max_jobs"]', page).value) }, "已保存"));
@@ -774,9 +882,9 @@ const VIEWS = {
     on("[data-row-edit]", (el) => {
       const same = state.adminEdit?.uid === el.dataset.uid && state.adminEdit.kind === el.dataset.rowEdit;
       state.adminEdit = same ? null : { uid: el.dataset.uid, kind: el.dataset.rowEdit };
-      VIEWS.admin(true, tab).then(() => $(".row_form input", page)?.focus());
+      VIEWS.admin("local", tab).then(() => $(".row_form input", page)?.focus());
     });
-    on("[data-row-cancel]", () => { state.adminEdit = null; VIEWS.admin(true, tab); });
+    on("[data-row-cancel]", () => { state.adminEdit = null; VIEWS.admin("local", tab); });
     page.querySelectorAll("[data-row-form]").forEach((form) => (form.onsubmit = (event) => {
       event.preventDefault();
       const { uid, rowForm } = form.dataset, value = form.elements.value.value.trim();
@@ -790,6 +898,61 @@ const VIEWS = {
     on("[data-stop-user]", (el) => act(`/api/admin/users/${el.dataset.stopUser}/stop`, null, "已发出停止指令"));
     on("[data-enable]", (el) => act(`/api/admin/users/${el.dataset.enable}/enable`, null, "已启用"));
     on("[data-disable]", (el) => act(`/api/admin/users/${el.dataset.disable}/disable`, null, "已停用"));
+    // Searching, filtering and paging redraw from the lists in hand; the patch keeps the search box and its focus.
+    const redraw = () => VIEWS.admin("local", tab);
+    const search = $("[data-list-search]", page);
+    if (search) {
+      const find = () => { Object.assign(adminList(tab), { q: search.value, page: 1 }); redraw(); };
+      search.oninput = (event) => { if (!event.isComposing) find(); };  // pinyin: wait for the characters
+      // No oncompositionend property exists; the patch keeps this element, so listen once and swap the target.
+      if (!search.findOnEnd) search.addEventListener("compositionend", () => search.findOnEnd());
+      search.findOnEnd = find;
+    }
+    on("[data-facet]", (el) => {
+      const list = adminList(tab);
+      Object.assign(list, { open: list.open === el.dataset.facet ? null : el.dataset.facet, facetQ: "" });
+      redraw();
+      if (!TOUCH) $("[data-facet-search]", page)?.focus();  // a phone would pop its keyboard over a short menu
+    });
+    on("[data-facet-opt]", (el) => {
+      const list = adminList(tab), picked = new Set(list.facets[list.open]);
+      picked.has(el.dataset.facetOpt) ? picked.delete(el.dataset.facetOpt) : picked.add(el.dataset.facetOpt);
+      Object.assign(list, { facets: { ...list.facets, [list.open]: [...picked] }, page: 1 });
+      redraw();
+    });
+    on("[data-facet-clear]", () => { const list = adminList(tab); Object.assign(list, { facets: { ...list.facets, [list.open]: [] }, page: 1 }); redraw(); });
+    on("[data-facet-reset]", () => { Object.assign(adminList(tab), { facets: {}, open: null, page: 1 }); redraw(); });
+    const facetFind = $("[data-facet-search]", page);
+    if (facetFind) {
+      const narrow = () => { adminList(tab).facetQ = facetFind.value; redraw(); };
+      facetFind.oninput = (event) => { if (!event.isComposing) narrow(); };
+      if (!facetFind.findOnEnd) facetFind.addEventListener("compositionend", () => facetFind.findOnEnd());
+      facetFind.findOnEnd = narrow;
+      // Enter ticks the first option left, as in a command menu.
+      facetFind.onkeydown = (event) => { if (event.key === "Enter" && !event.isComposing) $("[data-facet-opt]", page)?.click(); };
+    }
+    // A menu near the right edge (phones) slides left to stay on screen.
+    const pop = $(".facet_pop", page);
+    if (pop) { const over = pop.getBoundingClientRect().right - (innerWidth - 12); if (over > 0) pop.style.left = `${-over}px`; }
+    on("[data-list-page]", (el) => {
+      adminList(tab).page = Number(el.dataset.listPage);
+      redraw().then(() => $(".list_tools", page)?.scrollIntoView({ block: "nearest" }));
+    });
+    const sizes = $("[data-list-size]", page);
+    if (sizes) sizes.onchange = () => {
+      const list = adminList(tab), first = (list.page - 1) * pageSize(tab), size = Number(sizes.value);
+      store.set("studia-admin-size", { ...store.get("studia-admin-size", {}), [tab]: size });
+      list.page = Math.floor(first / size) + 1;  // keep the first row in view
+      redraw();
+    };
+    on("[data-user-more]", (el) => {
+      state.adminOpen = state.adminOpen === el.dataset.userMore ? null : el.dataset.userMore;
+      page.querySelectorAll("[data-user-row]").forEach((row) => {
+        const open = row.dataset.userRow === state.adminOpen || row.dataset.userRow === state.adminEdit?.uid;
+        row.classList.toggle("open", open);
+        $("[data-user-more]", row).setAttribute("aria-expanded", open);
+      });
+    });
   },
 
   jobs(scope) {

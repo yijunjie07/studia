@@ -506,6 +506,38 @@ body.dragging, body.dragging * { cursor: grabbing !important; user-select: none;
 .m1 small { display: block; font: 11.5px var(--mono); color: var(--text-3); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .m1 small.sans { font-family: var(--sans); font-size: 12px; white-space: normal; }
 .row_btns { display: flex; align-items: center; gap: 6px; }
+/* 管理后台's 用户 and 邀请码: search, filter chips and a page bar around one list. */
+.model.user_row { grid-template-columns: auto minmax(0, 1fr) auto; }
+.user_row .row_more { display: none; }
+/* Above the list: the page's entry animation gives each block its own layer, which would cover a filter menu. */
+.list_tools { position: relative; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 26px 0 12px; }
+.list_tools .row_input { flex: 0 1 240px; height: 32px; }
+.list_tools > .btn { order: 1; margin-left: auto; }
+.facet { position: relative; }
+.facet_btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 11px; border: 1px dashed var(--line-2); border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--text); }
+.facet_btn svg { flex: none; color: var(--text-2); }
+.facet_btn[aria-expanded="true"] { background: var(--hover); }
+@media (hover: hover) { .facet_btn:hover, .facet_reset:hover, .facet_opt:hover, .facet_clear:hover { background: var(--hover); } }
+.facet_sep { width: 1px; height: 16px; margin: 0 2px; background: var(--line-2); }
+.facet_btn .pill { margin: 0; font-weight: 500; }
+.facet_pop { position: absolute; z-index: 30; top: calc(100% + 6px); left: 0; width: 230px; padding: 6px; border-radius: 12px; background: var(--card);
+  box-shadow: 0 0 0 1px var(--line), 0 14px 36px rgb(20 24 30 / .14); animation: rise .15s var(--ease) both; }
+.facet_find { display: flex; align-items: center; gap: 8px; height: 38px; margin-bottom: 4px; padding: 0 10px; border-radius: 8px; background: var(--well); color: var(--text-3); }
+.facet_find input { flex: 1; min-width: 0; border: 0; background: none; outline: none; font-size: 14px; color: var(--text); }
+.facet_opt { display: flex; align-items: center; gap: 10px; width: 100%; height: 36px; padding: 0 10px; border-radius: 8px; font-size: 14px; text-align: left; color: var(--text); }
+.facet_tick { display: grid; place-items: center; flex: none; width: 18px; height: 18px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--indigo) 45%, transparent); }
+.facet_opt[aria-selected="true"] .facet_tick { background: var(--indigo); box-shadow: none; }
+.facet_opt[aria-selected="true"] .facet_tick::after { content: ""; width: 7px; height: 4px; margin-top: -2px; border: solid var(--card); border-width: 0 0 2px 2px; transform: rotate(-45deg); }
+.facet_opt .n { font: 12px var(--mono); color: var(--text-3); }
+.facet_none { padding: 10px; font-size: 13px; color: var(--text-3); }
+.facet_clear { display: block; width: 100%; height: 34px; text-align: center; margin-top: 4px; border-radius: 8px; font-size: 13px; color: var(--text-2); box-shadow: 0 -1px 0 var(--line); }
+.facet_reset { display: inline-flex; align-items: center; gap: 5px; height: 32px; padding: 0 10px; border-radius: 8px; font-size: 13px; color: var(--text-2); }
+.facet_reset span { font-size: 15px; line-height: 1; }
+.pager { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 12px; font-size: 12.5px; color: var(--text-3); }
+.pager_size { display: flex; align-items: center; gap: 6px; }
+.pager_size select { height: 28px; padding: 0 6px; border: 0; border-radius: 5px; background: var(--card); box-shadow: inset 0 0 0 1px var(--line-2); font: 12.5px var(--mono); color: var(--text); }
+.pager_nav { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.pager_nav .mono { min-width: 48px; text-align: center; color: var(--text-2); }
 .health { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-3); white-space: nowrap; }
 .health::before { content: ""; width: 7px; height: 7px; border-radius: 1.5px; background: var(--text-4); }
 .health.ok { color: var(--celadon); } .health.ok::before { background: var(--celadon); }
@@ -755,6 +787,16 @@ button.switch { border: 0; padding: 0; cursor: pointer; }
   .model.plain.qa_switch .row_btns, .model.plain.stepper_row .row_btns { grid-column: 2; }
   .stepper .btn { width: 40px; height: 36px; }
   .row_btns { flex-wrap: wrap; }
+  /* A person's buttons wait behind 管理: three or four of them wrapped every row onto two or three lines. */
+  .model.user_row { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .user_row .row_more { display: inline-flex; grid-column: 3; grid-row: 1; }
+  .user_row .row_btns { display: none; grid-column: 2 / -1; }
+  .user_row.open .row_btns { display: flex; }
+  .list_tools .row_input { flex: 1 1 100%; height: 40px; }
+  .facet_btn, .facet_reset { height: 36px; }
+  .facet_find input { font-size: 16px; }
+  .pager_nav { flex: 1 1 100%; } .pager_nav .btn { flex: 1; }
+  .model.plain.invite_row { grid-template-columns: minmax(0, 1fr) auto; } .model.plain.invite_row .row_btns { grid-column: 2; }
   .field { grid-template-columns: 1fr; gap: 4px; }
   .form_btns { flex-wrap: wrap; }
   .row_form { grid-column: 1 / -1; } .row_form .grow { display: none; } .row_form .btn { flex: 1; } .row_input { flex: 1 1 100%; height: 40px; font-size: 16px; }
