@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -12,6 +13,7 @@ import queue
 import random
 import re
 import secrets
+import socket
 import threading
 import time
 import webbrowser
@@ -181,6 +183,7 @@ class Studia:
         self.mooc_memory = mooc_memory
         # The account name in hosted mode, shown in runtime-log lines; None locally.
         self.owner = None
+        self.public_endpoints_only = False  # hosted mode: members' model URLs may not point inside the server's network
         self.jobs = {}
         saved = self._saved()
         self.history = saved.get("history", [])[:HISTORY]
@@ -1385,11 +1388,14 @@ class Studia:
     def _config(self, body, previous=None):
         key = str(body.get("api_key", "")).strip() or (previous.api_key if previous else "")
         try:
-            return AIConfig(str(body.get("base_url", "")), str(body.get("model", "")), key,
-                            provider_name=str(body.get("provider_name", "")),
-                            api_format=previous.api_format if previous else "auto")
+            config = AIConfig(str(body.get("base_url", "")), str(body.get("model", "")), key,
+                              provider_name=str(body.get("provider_name", "")),
+                              api_format=previous.api_format if previous else "auto")
         except ValueError as exc:
             raise HttpError(400, str(exc))
+        if self.public_endpoints_only:
+            public_endpoint(config.base_url)
+        return config
 
     def add_model(self, body):
         try:
@@ -1418,6 +1424,8 @@ class Studia:
 
     def test_model(self, profile_id):
         config = self._profile(profile_id).config
+        if self.public_endpoints_only and profile_id != DEFAULT_PROFILE_ID:  # the site's own model is the admin's choice
+            public_endpoint(config.base_url)
         client = AIClient(replace(config))
         try:
             client.check_connection()
@@ -1767,9 +1775,50 @@ def static_build():
     return hashlib.sha1(stamp.encode()).hexdigest()[:12]
 
 
+# Open event streams one person may hold (tabs, devices); a new one beyond this ends their oldest.
+STREAMS_PER_PERSON = 6
+STREAMS_LOCK = threading.Lock()
+STREAM_PING = 15  # seconds between pings, and between checks that the session behind a stream still holds
+
+
+def resolve_host(host):
+    return {info[4][0] for info in socket.getaddrinfo(host, None)}
+
+
+def public_endpoint(base_url):
+    """On a shared server a member's model URL must name a public service: not this machine, its LAN or the
+    cloud metadata address, which members could otherwise probe through connection tests and read the answers."""
+    try:
+        addresses = resolve_host(urlsplit(base_url).hostname or "")
+    except (OSError, UnicodeError):
+        raise HttpError(400, "找不到这个 API 地址，请检查域名")
+    for address in addresses:
+        ip = ipaddress.ip_address(address.split("%")[0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+            raise HttpError(400, "API 地址必须是公网上的服务，不能指向服务器本机或内网")
+
+
+# Files the page names with "?v=<build>": that URL never changes content, so browsers may keep it for good.
+VERSIONED = ("studia.js", "studia.css", "theme.js")
+_gzipped = {}  # (path, etag) -> compressed body; the bundle is a handful of files, so this stays small
+
+
+def gzipped(key, body):
+    """The gzip form of a static file, compressed once per version (the script alone shrinks from ~190 KB to ~60 KB)."""
+    if key not in _gzipped:
+        if len(_gzipped) > 64:
+            _gzipped.clear()
+        packer = zlib.compressobj(9, zlib.DEFLATED, 31)  # wbits 31: a gzip header, which every browser accepts
+        _gzipped[key] = packer.compress(body) + packer.flush()
+    return _gzipped[key]
+
+
 def make_handler(access):
     class Handler(BaseHTTPRequestHandler):
         server_version = "Studia"
+
+        def version_string(self):
+            return self.server_version  # not "Studia Python/3.x.y": the interpreter version is nobody's business
         # Keep-alive: behind a proxy every request otherwise pays a fresh TCP + TLS handshake.
         protocol_version = "HTTP/1.1"
         timeout = 30  # a stalled client cannot pin a worker thread forever
@@ -1798,12 +1847,23 @@ def make_handler(access):
             return self._send(200, result)
 
         def _body(self):
-            length = int(self.headers.get("Content-Length") or 0)
+            raw = (self.headers.get("Content-Length") or "0").strip()
+            # "-1" would read to the end of the stream (past every size limit); chunked bodies are not read at all.
+            # Either way the rest of the connection can't be trusted, so it closes after the answer.
+            if not raw.isdigit() or self.headers.get("Transfer-Encoding"):
+                self.close_connection = True
+                raise HttpError(400, "请求格式不正确")
+            length = int(raw)
             if length > 64 * 1024:
                 self.close_connection = True  # the unread body would be parsed as the next request
                 raise HttpError(413, "请求过大")
             if not length:
                 return {}
+            # JSON only. A form or text/plain post is one any other site can make a browser send without asking
+            # (no CORS preflight), e.g. to sign a visitor into the attacker's account.
+            if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
+                self.close_connection = True
+                raise HttpError(415, "请求格式不正确")
             try:
                 body = json.loads(self.rfile.read(length))
             except ValueError:
@@ -1812,7 +1872,7 @@ def make_handler(access):
                 raise HttpError(400, "请求格式不正确")
             return body
 
-        def _static(self, path):
+        def _static(self, path, query=None):
             target = (STATIC / (path.lstrip("/") or "index.html")).resolve()
             if STATIC not in target.parents or not target.is_file() or target.name == "mock.js":
                 raise HttpError(404, "not found")
@@ -1823,29 +1883,60 @@ def make_handler(access):
             build = static_build() if target.name == "index.html" else None
             if build:
                 etag = '"%s"' % build
+            content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+            text = content_type.startswith("text/") or target.suffix in (".js", ".json", ".svg")
+            packed = text and stat.st_size > 1024 and "gzip" in (self.headers.get("Accept-Encoding") or "")
+            if packed:  # each encoding is its own representation, with its own tag
+                etag = etag[:-1] + '-gz"'
+            # "?v=<build>" names this exact version (the page put it there), so it can be cached without asking again;
+            # a stale or missing version is revalidated as before.
+            cache = "no-cache"
+            if target.name in VERSIONED and (query or {}).get("v", [""])[0] == static_build():
+                cache = "public, max-age=31536000, immutable"
             if self.headers.get("If-None-Match") == etag:
                 self.send_response(304)
                 self.send_header("ETag", etag)
-                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Cache-Control", cache)
+                if text:
+                    self.send_header("Vary", "Accept-Encoding")
                 self.end_headers()
                 return
             body = target.read_bytes()
             if build:  # the script reads its build from its own URL; the new URL also skips any stale cache
-                for name in (b"studia.js", b"studia.css"):
+                for name in (n.encode() for n in VERSIONED):
                     body = body.replace(b'"%s"' % name, b'"%s?v=%s"' % (name, build.encode()))
-            content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
             if content_type.startswith("text/") or target.suffix == ".js":
                 content_type = ("text/javascript" if target.suffix == ".js" else content_type) + "; charset=utf-8"
-            self._send(200, body, content_type, {
+            headers = {
                 "Content-Security-Policy": "default-src 'self'; script-src 'self'; "
                                            "img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; "
                                            "connect-src 'self'; frame-ancestors 'none'",
-                "ETag": etag, "Cache-Control": "no-cache",
-            })
+                "ETag": etag, "Cache-Control": cache,
+            }
+            if text:
+                headers["Vary"] = "Accept-Encoding"
+            if packed:
+                body = gzipped((str(target), etag), body)
+                headers["Content-Encoding"] = "gzip"
+            self._send(200, body, content_type, headers)
 
-        def _events(self, app):
+        def _events(self, ctx):
+            app, alive = ctx["app"], ctx.get("alive") or (lambda: True)
             subscriber = queue.Queue(maxsize=500)
-            app.subscribers.add(subscriber)
+            subscriber.opened, subscriber.evicted = time.monotonic(), False
+            with STREAMS_LOCK:
+                # A few tabs per person; opening more ends the oldest instead of holding threads without limit.
+                # That tab is told why, so it waits until it is looked at again instead of reconnecting at once
+                # (and ending the next oldest, round and round).
+                streams = sorted((q for q in list(app.subscribers) if not getattr(q, "evicted", False)),
+                                 key=lambda q: getattr(q, "opened", 0))
+                for stale in streams[:max(0, len(streams) - (STREAMS_PER_PERSON - 1))]:
+                    stale.evicted = True
+                    try:
+                        stale.put_nowait({"type": "evicted"})
+                    except queue.Full:
+                        pass
+                app.subscribers.add(subscriber)
             try:
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -1854,9 +1945,15 @@ def make_handler(access):
                 self.send_header("X-Accel-Buffering", "no")
                 self.send_header("Connection", "close")  # no length: the stream ends when the socket does
                 self.end_headers()
-                while True:
+                checked = time.monotonic()
+                while not subscriber.evicted:
+                    # Signed out, reset or disabled since the stream opened: stop sending this person's events.
+                    if time.monotonic() - checked >= STREAM_PING:
+                        checked = time.monotonic()
+                        if not alive():
+                            break
                     try:
-                        event = subscriber.get(timeout=15)
+                        event = subscriber.get(timeout=STREAM_PING)
                         chunk = "data: %s\n\n" % json.dumps(event, ensure_ascii=False)
                     except queue.Empty:
                         # A real message, not an SSE comment, so the page can tell a live stream from a dead one.
@@ -1875,6 +1972,8 @@ def make_handler(access):
                 if not access.host_ok(self.headers.get("Host")):
                     raise HttpError(403, "不允许用这个地址访问。服务器模式请把 STUDIA_PUBLIC_URL 设成浏览器地址栏里的地址"
                                          "（协议、域名或 IP、端口都要一致），然后重启。")
+                if method == "POST" and self.headers.get("Sec-Fetch-Site") == "cross-site":
+                    raise HttpError(403, "不接受来自其他网站的请求")
                 body = self._body() if method == "POST" else {}
                 result = access.public(self, method, url.path, query, body)
                 if result is not NOT_HANDLED:
@@ -1882,10 +1981,10 @@ def make_handler(access):
                 if not url.path.startswith("/api/"):
                     if method != "GET":
                         raise HttpError(405, "method not allowed")
-                    return self._static(url.path)
+                    return self._static(url.path, query)
                 ctx = access.authorize(self, method, query)
                 if method == "GET" and url.path == "/api/events":
-                    return self._events(ctx["app"])
+                    return self._events(ctx)
                 result = access.private(self, method, url.path, query, body, ctx)
                 if result is not NOT_HANDLED:
                     return self._reply(result)
