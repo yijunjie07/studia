@@ -97,6 +97,57 @@ class WebServerTest(unittest.TestCase):
             conn.request("GET", "/", headers={"If-None-Match": '"%s"' % build})
             self.assertIn('src="studia.js?v=newer"', conn.getresponse().read().decode())
 
+    def test_static_files_are_gzipped_for_browsers_that_ask(self):
+        import gzip
+        from web.server import STATIC
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        self.addCleanup(conn.close)
+        conn.request("GET", "/studia.js", headers={"Accept-Encoding": "gzip, deflate, br"})
+        response = conn.getresponse()
+        packed = response.read()
+        self.assertEqual(response.getheader("Content-Encoding"), "gzip")
+        self.assertEqual(response.getheader("Vary"), "Accept-Encoding")
+        self.assertEqual(gzip.decompress(packed), (STATIC / "studia.js").read_bytes())
+        self.assertLess(len(packed), len(gzip.decompress(packed)) // 2)
+        etag = response.getheader("ETag")
+        self.assertTrue(etag.endswith('-gz"'))
+        conn.request("GET", "/studia.js", headers={"Accept-Encoding": "gzip", "If-None-Match": etag})
+        response = conn.getresponse()
+        response.read()
+        self.assertEqual(response.status, 304)
+        conn.request("GET", "/studia.js")  # no gzip asked: the plain file, under its own tag
+        response = conn.getresponse()
+        self.assertEqual((response.getheader("Content-Encoding"), response.read()), (None, (STATIC / "studia.js").read_bytes()))
+        self.assertNotEqual(response.getheader("ETag"), etag)
+
+    def test_versioned_assets_are_cached_for_good_and_stale_ones_revalidate(self):
+        build = json.loads(self.request("GET", "/api/state")[1])["build"]
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        self.addCleanup(conn.close)
+        conn.request("GET", "/")
+        self.assertIn('src="theme.js?v=%s"' % build, conn.getresponse().read().decode())
+        for name in ("studia.js", "studia.css", "theme.js"):
+            conn.request("GET", "/%s?v=%s" % (name, build))
+            response = conn.getresponse()
+            response.read()
+            self.assertEqual(response.getheader("Cache-Control"), "public, max-age=31536000, immutable", name)
+        conn.request("GET", "/studia.js?v=000000000000")
+        response = conn.getresponse()
+        response.read()
+        self.assertEqual(response.getheader("Cache-Control"), "no-cache")
+        conn.request("GET", "/")
+        response = conn.getresponse()
+        response.read()
+        self.assertEqual(response.getheader("Cache-Control"), "no-cache")  # the page itself always revalidates
+
+    def test_server_header_does_not_name_the_python_version(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        self.addCleanup(conn.close)
+        conn.request("GET", "/")
+        response = conn.getresponse()
+        response.read()
+        self.assertEqual(response.getheader("Server"), "Studia")
+
     def test_answer_pace_is_the_persons_own_choice_locally(self):
         self.assertEqual(json.loads(self.request("GET", "/api/settings")[1])["pace_locked"], False)
         self.assertEqual(self.request("POST", "/api/settings/pace", body={"pace": "fast"})[0], 200)

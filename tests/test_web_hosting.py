@@ -41,6 +41,10 @@ class HostedServerTest(unittest.TestCase):
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), None)
         self.port = self.server.server_address[1]
         self.hub = Hub(directory.name, "http://127.0.0.1:%d" % self.port, key=os.urandom(32))
+        self.hub.later = lambda fn, *args: fn(*args)  # mail the request doesn't wait for: inline, so tests can read it
+        resolve = patch("web.server.resolve_host", return_value={"93.184.216.34"})  # model hosts: public, without DNS
+        self.resolved = resolve.start()
+        self.addCleanup(resolve.stop)
         self.server.RequestHandlerClass = make_handler(HostedAccess(self.hub, self.port))
         threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
         self.addCleanup(self.server.server_close)
@@ -184,6 +188,131 @@ class HostedServerTest(unittest.TestCase):
         self.assertEqual(forgot("alice")[0], 200)
         self.assertEqual(len(sent), 1)  # a disabled account gets no link
         self.assertEqual([forgot("alice")[0] for _ in range(2)], [200, 429])  # five an hour from one address
+
+    def raw(self, request_bytes):
+        """Send bytes as they are (headers http.client would fix up) and read the status line."""
+        import socket
+        with socket.create_connection(("127.0.0.1", self.port), timeout=5) as sock:
+            sock.sendall(request_bytes)
+            return sock.recv(4096).split(b"\r\n", 1)[0]
+
+    def test_bodies_must_be_honest_json(self):
+        head = "POST /api/auth/login HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nContent-Type: application/json\r\n" % self.port
+        body = b'{"username": "admin", "password": "nope"}'
+        # A negative length used to read until the client hung up, past the 64 KB limit; now it is refused at once.
+        self.assertIn(b"400", self.raw(head.encode() + b"Content-Length: -1\r\n\r\n" + body))
+        self.assertIn(b"400", self.raw(head.encode() + b"Content-Length: abc\r\n\r\n" + body))
+        self.assertIn(b"400", self.raw(head.encode() + b"Transfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n"))
+        # Another site can post text/plain or a form without asking first: such a post can't sign anyone in.
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        self.addCleanup(conn.close)
+        conn.request("POST", "/api/auth/login", body=b'{"username": "admin", "password": "admin-password"}',
+                     headers={"Host": "127.0.0.1:%d" % self.port, "Content-Type": "text/plain"})
+        response = conn.getresponse()
+        response.read()
+        self.assertEqual((response.status, response.getheader("Set-Cookie")), (415, None))
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        self.addCleanup(conn.close)
+        conn.request("POST", "/api/auth/login", body=json.dumps({"username": "admin", "password": "admin-password"}),
+                     headers={"Host": "127.0.0.1:%d" % self.port, "Content-Type": "application/json", "Sec-Fetch-Site": "cross-site"})
+        response = conn.getresponse()
+        response.read()
+        self.assertEqual((response.status, response.getheader("Set-Cookie")), (403, None))
+        self.assertEqual(self.request("POST", "/api/auth/login", {"username": "admin", "password": "admin-password"})[0], 200)
+
+    def login_from(self, ip, username, password):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        self.addCleanup(conn.close)
+        conn.request("POST", "/api/auth/login", body=json.dumps({"username": username, "password": password}),
+                     headers={"Host": "127.0.0.1:%d" % self.port, "Content-Type": "application/json", "X-Forwarded-For": ip})
+        response = conn.getresponse()
+        response.read()
+        return response.status
+
+    def test_parallel_guesses_are_counted_before_they_are_checked(self):
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(20) as pool:
+            statuses = list(pool.map(lambda _: self.login_from("", "admin", "nope"), range(20)))
+        self.assertEqual(statuses.count(401), 5)
+        self.assertEqual(statuses.count(429), 15)
+
+    def test_strangers_cannot_lock_someone_out_from_their_own_address(self):
+        self.hub.trust_proxy = True
+        for ip in ("203.0.113.1", "203.0.113.2"):
+            for _ in range(5):
+                self.assertEqual(self.login_from(ip, "admin", "nope"), 401)
+            self.assertEqual(self.login_from(ip, "admin", "admin-password"), 429)  # that address waits
+        self.assertEqual(self.login_from("198.51.100.7", "admin", "admin-password"), 200)  # the admin's own does not
+        # The admin's success cleared the account's count; a guesser rotating addresses still runs out at 30.
+        hopping = [self.login_from("192.0.2.%d" % n, "admin", "nope") for n in range(35)]
+        self.assertEqual((hopping.count(401), hopping.count(429)), (30, 5))
+
+    def test_replacing_a_bound_email_takes_the_password_and_tells_the_old_address(self):
+        alice = self.hub.accounts.create_user("alice", "alice-password")
+        self.hub.accounts.set_email(alice, "alice@example.com")
+        token, csrf = self.login("alice", "alice-password")
+        post = lambda path, body: self.request("POST", path, body, cookie=token, csrf=csrf)
+        sent = self.mail_ready()
+        self.assertEqual(post("/api/auth/email/code", {"email": "thief@example.org"})[1]["error"], "当前密码不正确")
+        self.assertEqual(post("/api/auth/email/code", {"email": "thief@example.org", "password": "guess"})[0], 403)
+        self.assertEqual(sent, [])
+        self.assertEqual(post("/api/auth/email/code", {"email": "new@example.org", "password": "alice-password"})[0], 200)
+        code = re.search(r"\d{6}", sent[0].get_body(("plain",)).get_content())[0]
+        self.assertEqual(post("/api/auth/email", {"code": code})[1]["user"]["email"], "new@example.org")
+        self.assertEqual([m["To"] for m in sent], ["new@example.org", "alice@example.com"])
+        notice = sent[1].get_body(("plain",)).get_content()
+        self.assertIn("n*w@example.org", notice)
+        self.assertNotIn("new@example.org", notice)
+        self.assertEqual(post("/api/auth/email/code", {"email": "a,b@example.org", "password": "alice-password"})[0], 400)
+
+    def test_an_event_stream_ends_when_its_session_does(self):
+        import socket
+        token, csrf = self.login("admin", "admin-password")
+        with patch("web.server.STREAM_PING", 0.2):
+            sock = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+            self.addCleanup(sock.close)
+            sock.sendall(("GET /api/events HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nCookie: %s=%s\r\n\r\n" % (self.port, COOKIE, token)).encode())
+            self.assertIn(b"200", sock.recv(4096))
+            self.assertEqual(self.request("POST", "/api/auth/logout", {}, cookie=token, csrf=csrf)[0], 200)
+            deadline, closed = time.time() + 4, False
+            while time.time() < deadline and not closed:
+                closed = sock.recv(4096) == b""
+            self.assertTrue(closed)
+
+    def test_a_person_holds_only_a_few_event_streams(self):
+        import socket
+        from web.server import STREAMS_PER_PERSON
+        token, _ = self.login("admin", "admin-password")
+        with patch("web.server.STREAM_PING", 0.2):
+            socks = []
+            for _ in range(STREAMS_PER_PERSON + 1):
+                sock = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+                self.addCleanup(sock.close)
+                sock.sendall(("GET /api/events HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nCookie: %s=%s\r\n\r\n" % (self.port, COOKIE, token)).encode())
+                sock.recv(4096)
+                socks.append(sock)
+            deadline, closed, said = time.time() + 4, False, b""
+            while time.time() < deadline and not closed:
+                chunk = socks[0].recv(4096)
+                said, closed = said + chunk, chunk == b""
+            self.assertTrue(closed)  # the oldest made room
+            self.assertIn(b'"evicted"', said)  # and was told so, so that tab waits instead of reconnecting at once
+            socks[-1].settimeout(1)
+            self.assertIn(b"ping", socks[-1].recv(4096))
+
+    def test_members_cannot_point_models_at_the_servers_own_network(self):
+        self.hub.accounts.create_user("alice", "alice-password")
+        token, csrf = self.login("alice", "alice-password")
+        model = lambda url: self.request("POST", "/api/settings/models", {"provider_name": "x", "base_url": url, "model": "m",
+                                                                         "api_key": "sk-probe-0001"}, cookie=token, csrf=csrf)
+        for address in ("127.0.0.1", "10.0.0.5", "192.168.1.1", "169.254.169.254", "::1", "fd00::1"):
+            self.resolved.return_value = {address}
+            status, reply = model("https://inside.example/v1")[:2]
+            self.assertEqual((status, reply["error"]), (400, "API 地址必须是公网上的服务，不能指向服务器本机或内网"), address)
+        self.resolved.side_effect = OSError("no such host")
+        self.assertIn("找不到", model("https://nowhere.example/v1")[1]["error"])
+        self.resolved.side_effect, self.resolved.return_value = None, {"93.184.216.34"}
+        self.assertEqual(model("https://api.example.com/v1")[0], 200)
 
     def test_username_can_change_but_stays_unique(self):
         alice = self.hub.accounts.create_user("alice", "alice-password")

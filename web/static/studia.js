@@ -80,13 +80,18 @@ async function api(path, { method = "GET", body } = {}) {
   const headers = body ? { "Content-Type": "application/json" } : {};
   if (session.mode === "hosted") { if (method !== "GET") headers["X-Studia-CSRF"] = session.csrf; }
   else headers["X-Studia-Token"] = TOKEN;
-  const response = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined, credentials: "same-origin" });
+  let response;
+  // fetch() rejects with the browser's own English ("Failed to fetch", Safari's "Load failed"): say it in Chinese.
+  try { response = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined, credentials: "same-origin" }); }
+  catch { conn.lost(); throw new Error(navigator.onLine === false ? "网络已断开，连上后再试" : "连不上 Studia，请检查网络后再试"); }
   const data = await response.json().catch(() => ({}));
   if (response.status === 401 && !path.startsWith("/api/auth/") && path !== "/api/mode") {
     if (session.mode === "hosted") loadMe().then((ok) => { if (!ok) showAuth(); else refreshState(); });
     else if (path !== "/api/state") refreshState();
   }
-  if (!response.ok) throw new Error(data.error || `请求失败（${response.status}）`);
+  // A proxy's own error page (no JSON) while the server restarts or is down.
+  if (!response.ok) throw new Error(data.error || ([502, 503, 504].includes(response.status)
+    ? `Studia 暂时连不上，可能正在重启，稍后再试（${response.status}）` : `请求失败（${response.status}）`));
   return data;
 }
 
@@ -134,6 +139,46 @@ function toast(text) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove("show"), 2600);
 }
+// Says so when the live connection is down (the server restarting, a phone off the network), so progress that has
+// stopped moving isn't mistaken for a stuck task. Blips under a few seconds stay silent; coming back is said once.
+const conn = (() => {
+  const el = document.createElement("div");
+  Object.assign(el, { className: "conn", hidden: true });
+  el.setAttribute("role", "status");
+  document.body.appendChild(el);
+  let lostAt = 0, wait = 0, fade = 0;
+  const say = (text, back) => {
+    clearTimeout(fade);
+    el.getAnimations?.().forEach((a) => a.cancel());  // a fade-out still running would hide it again
+    const fresh = el.hidden;
+    el.innerHTML = `<span>${esc(text)}</span>${back ? "" : '<i aria-hidden="true"></i>'}`;
+    el.classList.toggle("back", back);
+    el.hidden = false;
+    if (fresh) moves(el, filled(), { duration: 380 });
+  };
+  const hide = () => {
+    const out = moves(el, filled().reverse(), { duration: 300, easing: EASE_IO });
+    if (out) out.onfinish = () => { el.hidden = true; }; else el.hidden = true;
+  };
+  const down = () => (navigator.onLine === false ? "网络已断开 · 恢复后自动重连" : "连接中断 · 正在重连…");
+  addEventListener("offline", () => { if (lostAt && !el.hidden) say(down(), false); });
+  return {
+    lost(now = false) {
+      if (document.body.classList.contains("signed-out")) return;
+      if (!lostAt) lostAt = Date.now();
+      clearTimeout(wait);
+      wait = setTimeout(() => { if (lostAt) say(down(), false); }, now ? 0 : 4000);
+    },
+    back() {
+      if (!lostAt) return;
+      lostAt = 0;
+      clearTimeout(wait);
+      if (el.hidden || el.classList.contains("back")) return;
+      say("已重新连接", true);
+      fade = setTimeout(hide, 1600);
+    },
+  };
+})();
 // Risky buttons (data-confirm="…") take two presses: the first turns them red with the
 // confirm label for 3 seconds; only the second reaches the button's own handler.
 const armTimers = new WeakMap();
@@ -922,35 +967,35 @@ const VIEWS = {
           <span class="row_btns">${choice("invite", true, "需要")}${choice("invite", false, "不需要", reg.invite ? 'data-confirm="确认不需要"' : "")}</span></div>
         <div class="model plain stepper_row"><span class="m1"><b>验证邮箱</b>${smtp ? "" : '<small class="sans">先配置邮件服务</small>'}</span>
           <span class="row_btns">${choice("email", true, "需要", smtp ? "" : "disabled")}${choice("email", false, "不需要")}</span></div>` : ""}`;
-      body = `<div class="section"><h3>全站默认 AI 模型</h3></div>
+      body = `<div class="section"><h2>全站默认 AI 模型</h2></div>
         <div class="models">${modelRow}${modelEdit}</div>
-        <div class="section"><h3>邮件服务</h3></div>
+        <div class="section"><h2>邮件服务</h2></div>
         <div class="models">${smtpRow}${smtpEdit}</div>
-        <div class="section"><h3>注册</h3></div>
+        <div class="section"><h2>注册</h2></div>
         <div class="models">${registrationRows}</div>
-        <div class="section"><h3>界面</h3><span class="aside">0.5–2.0×</span></div>
+        <div class="section"><h2>界面</h2><span class="aside">0.5–2.0×</span></div>
         <div class="models"><div class="model plain stepper_row"><span class="m1"><b>动画速度</b><small class="sans">越大越快</small></span>
           <span class="row_btns"><span class="pace_demo" aria-hidden="true">${'<i class="cell done"></i>'.repeat(6)}</span>
             <span class="stepper"><button class="btn small" data-ui-speed="-1" aria-label="慢一点" ${settings.ui_speed <= 0.5 ? "disabled" : ""}>−</button>
               <output>${(settings.ui_speed ?? 1).toFixed(1)}×</output><button class="btn small" data-ui-speed="1" aria-label="快一点" ${settings.ui_speed >= 2 ? "disabled" : ""}>＋</button></span></span></div></div>
-        <div class="section"><h3>任务上限</h3></div>
+        <div class="section"><h2>任务上限</h2></div>
         <div class="models"><div class="model plain"><span class="m1"><b>默认每人同时 <input class="inline_num" type="number" min="1" max="20" name="max_jobs" value="${esc(kept("max_jobs", settings.max_jobs))}"> 个任务</b></span>
           <span class="row_btns"><button class="btn small primary" data-save-limit>保存</button></span></div></div>
-        <div class="section"><h3>智慧树</h3></div>
+        <div class="section"><h2>智慧树</h2></div>
         <div class="models"><div class="model plain"><span class="m1"><b>多并发学习</b><span class="pill ${settings.zhs_parallel_study ? "wait" : ""}">${settings.zhs_parallel_study ? "已开启" : "已关闭"}</span></span>
           <span class="row_btns"><button class="btn small ${settings.zhs_parallel_study ? "" : "danger"}" data-zhs-parallel="${settings.zhs_parallel_study ? "off" : "on"}" ${settings.zhs_parallel_study ? "" : 'data-confirm="确认开启"'}>${settings.zhs_parallel_study ? "关闭" : "开启"}</button></span></div>
           <div class="model plain stepper_row"><span class="m1"><b>答题节奏 · ${fast ? "快速" : "稳妥"}</b><small class="sans">${fast
             ? "每步间隔 0.1–0.5 秒"
             : "每步间隔 0.5–2 秒"}</small></span>
             <span class="row_btns"><button class="btn small" data-site-pace="steady" aria-pressed="${!fast}">稳妥</button><button class="btn small" data-site-pace="fast" aria-pressed="${fast}" ${fast ? "" : 'data-confirm="确认用快速"'}>快速</button></span></div></div>
-        <div class="section"><h3>答案记忆</h3></div>
+        <div class="section"><h2>答案记忆</h2></div>
         <div class="models"><div class="model plain"><span class="m1"><b>智慧树 ${data.memory.questions} 题</b><small class="sans">${data.memory.confirmed} 题已确认正确</small></span></div>
           <div class="model plain"><span class="m1"><b>MOOC ${data.memory.mooc.questions} 题</b><small class="sans">平台公布的标准答案</small></span></div></div>`;
     } else {
       const pad2 = (n) => String(n).padStart(2, "0");
       const local = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
       const today = new Date(); today.setHours(0, 0, 0, 0);
-      body = `<div class="section"><h3>日志导出</h3><span class="aside">最长 92 天</span></div>
+      body = `<div class="section"><h2>日志导出</h2><span class="aside">最长 92 天</span></div>
         <div class="models"><div class="model plain log_export"><span class="log_range">
             <label>从 <input type="datetime-local" name="log_from" value="${esc(local(today))}"></label>
             <label>到 <input type="datetime-local" name="log_to" value="${esc(local(new Date()))}"></label>
@@ -1159,11 +1204,11 @@ const VIEWS = {
     if (all) {
       const people = state.sitePeople;
       setPage(head + (!people ? `<div class="empty loading">正在读取…</div>` : !people.length ? `<div class="empty">现在没有任务在运行</div>`
-        : people.map((u) => `<div class="section"><h3>${esc(u.username)}</h3><span class="aside">${boardCount(u.jobs, u.limit)}</span></div>${board(u.jobs, u.limit, u.id)}`).join("")));
+        : people.map((u) => `<div class="section"><h2>${esc(u.username)}</h2><span class="aside">${boardCount(u.jobs, u.limit)}</span></div>${board(u.jobs, u.limit, u.id)}`).join("")));
       return;
     }
     const open = new Set([...page.querySelectorAll(".run_lines:not([hidden])")].map((el) => el.dataset.lines));
-    const live = state.jobs.length ? `<div class="section"><h3>进行中</h3><span class="aside">${boardCount(state.jobs, state.jobLimit)}</span></div>
+    const live = state.jobs.length ? `<div class="section"><h2>进行中</h2><span class="aside">${boardCount(state.jobs, state.jobLimit)}</span></div>
       ${board(state.jobs, state.jobLimit)}` : "";
     const rows = state.history.map((j, i) => { const past = retried(j, i); return `<div class="run ${open.has(String(i)) ? "open" : ""} ${past ? "past" : ""}" data-key="${esc(j.id)}" data-history="${i}">${ICON[j.state] || ICON.stopped}
         <span class="t1">${esc(j.title)} · ${esc(j.course_name)}<small>${esc(platformOf(j.platform)?.short || "")} · ${esc(j.summary)}</small></span>
@@ -1173,7 +1218,7 @@ const VIEWS = {
       <div class="run_lines" data-lines="${i}" ${open.has(String(i)) ? "" : "hidden"}>${open.has(String(i)) ? logHtml(j.lines || [], "all", j.course_name) : ""}</div>`; }).join("");
     setPage(`${head}
       ${live}
-      <div class="section"><h3>历史</h3></div>
+      <div class="section"><h2>历史</h2></div>
       ${rows ? `<div class="runs">${rows}</div>` : `<div class="empty">还没有运行过任务</div>`}`);
     page.querySelectorAll("[data-history]").forEach((el) => (el.onclick = (event) => {
       if (event.target.closest("button, a")) return;
@@ -1221,12 +1266,12 @@ const VIEWS = {
     const row = (attrs, icon, label, sub = "", end = ICON.chev) =>
       `<button class="lrow" ${attrs}>${icon}<span class="lrow_t"><b>${esc(label)}</b>${sub ? `<small>${esc(sub)}</small>` : ""}</span>${end}</button>`;
     setPage(`<div class="me_card"><span class="avatar big">${esc(me ? me.username.slice(0, 1).toUpperCase() : "本")}</span>
-        <span class="who"><b>${esc(me ? me.username : "本机")}</b><small>${me ? (me.role === "admin" ? "管理员" : "成员") : "只有这台电脑能访问"}</small></span></div>
-      <div class="section"><h3>平台账号</h3></div>
+        <span class="who"><h1>${esc(me ? me.username : "本机")}</h1><small>${me ? (me.role === "admin" ? "管理员" : "成员") : "只有这台电脑能访问"}</small></span></div>
+      <div class="section"><h2>平台账号</h2></div>
       <div class="lrows">${state.platforms.map((p) => row(`data-go="${p.rescan || qaSoon(p) ? rescanLink(p) : p.logged_in ? "#/settings/account" : `#/login/${p.id}`}"`,
         `<span class="plat ${p.id}">${INITIAL[p.id]}</span>`, p.name, platformStatus(p),
         p.rescan || qaSoon(p) ? '<span class="lrow_go">扫码</span>' : p.logged_in ? ICON.chev : '<span class="lrow_go">登录</span>')).join("")}</div>
-      <div class="section"><h3>设置</h3></div>
+      <div class="section"><h2>设置</h2></div>
       <div class="lrows">${row('data-go="#/settings/account"', ICON.key, "账号")}${row('data-go="#/settings/models"', ICON.spark, "AI 模型")}
         ${row('data-go="#/settings/study"', ICON.gear, "偏好")}${me?.role === "admin" ? row('data-go="#/admin"', ICON.shield, "管理后台") : ""}</div>
       <div class="lrows" style="margin-top:14px">${row("data-toggle-theme", ICON.moon, "夜读模式", "", '<span class="switch" aria-hidden="true"></span>')}</div>
@@ -1295,9 +1340,9 @@ const VIEWS = {
               <button type="button" class="btn ${sent ? "" : "primary"}" data-password-send>${sent ? "重新发送" : "发送邮件"}</button></span></span></div>`
         : `<div class="model plain"><span class="m1"><b>密码</b></span>
             <span class="row_btns"><button class="btn small" data-account-edit="password" ${me?.email && session.mail ? "" : "disabled"}>修改密码</button></span></div>`;
-      const studia = me ? `<div class="section"><h3>Studia 账号</h3></div>
+      const studia = me ? `<div class="section"><h2>Studia 账号</h2></div>
         <div class="models">${nameRow}${emailRow}${passwordRow}</div>` : "";
-      setPage(`${head}${studia}<div class="section"><h3>平台账号</h3></div>
+      setPage(`${head}${studia}<div class="section"><h2>平台账号</h2></div>
         <div class="models">${state.platforms.map((p) => `<div class="model"><span class="plat ${p.id}">${INITIAL[p.id]}</span>
           <span class="m1"><b>${esc(p.name)}</b><small class="sans">${esc(platformStatus(p))} · ${p.login === "qr" ? "App 扫码登录" : "职教云浏览器授权"}</small></span><span></span>
           <span class="row_btns">${p.rescan || qaSoon(p) ? `<button class="btn small primary" data-go="${rescanLink(p)}">重新扫码</button>` : ""}${p.logged_in ? `<button class="btn small danger" data-logout="${p.id}" data-confirm="确认退出">退出</button>` : `<button class="btn small primary" data-go="#/login/${p.id}">登录</button>`}</span></div>`).join("")}</div>`);
@@ -1366,21 +1411,24 @@ function resendAfter(button, sentAt) {
 }
 
 // Binding an email: a code mailed to the address. In 设置 → 账号 and in the prompt when the page opens.
-const emailFields = () => `<label class="auth_field"><span>邮箱</span><span class="code_row">
+// Replacing a bound address asks for the password (a stolen session alone can't redirect reset links).
+const emailFields = () => `${session.user?.email ? `<label class="auth_field"><span>当前密码</span><input name="password" type="password" autocomplete="current-password" required></label>` : ""}
+  <label class="auth_field"><span>${session.user?.email ? "新邮箱" : "邮箱"}</span><span class="code_row">
     <input name="email" type="email" autocomplete="email" autocapitalize="off" placeholder="name@example.com" required>
     <button type="button" class="btn" data-send-code>发送验证码</button></span></label>
   <label class="auth_field"><span>验证码</span><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="邮件里的 6 位数字" required></label>
   <p class="form_msg" role="alert"></p>`;
 function wireEmailForm(form, done) {
-  const msg = $(".form_msg", form), send = $("[data-send-code]", form), { email, code } = form.elements;
+  const msg = $(".form_msg", form), send = $("[data-send-code]", form), { email, code, password } = form.elements;
   const say = (text, ok = false) => { msg.textContent = text; msg.classList.toggle("ok", ok); };
   form.oninput = () => { if (!msg.classList.contains("ok")) say(""); };
   send.onclick = async () => {
+    if (password && !password.value) { say("请先填写当前密码"); password.focus(); return; }
     if (!email.value.trim() || !email.checkValidity()) { say("请填写正确的邮箱"); email.focus(); return; }
     send.disabled = true;
     send.textContent = "发送中…";
     try {
-      await api("/api/auth/email/code", { method: "POST", body: { email: email.value.trim() } });
+      await api("/api/auth/email/code", { method: "POST", body: { email: email.value.trim(), ...(password ? { password: password.value } : {}) } });
       say(`验证码已发到 ${email.value.trim()}`, true);
       code.focus();
       for (let left = 60; left > 0 && form.isConnected; left -= 1) { send.textContent = `${left} 秒后重发`; await sleep(1000); }
@@ -1436,9 +1484,9 @@ function paintSettings(tab, head, data, again) {
       <span class="stepper"><button class="btn small" data-step="${k}" data-d="-1" aria-label="减少" ${data.concurrency[k] <= 1 ? "disabled" : ""}>−</button>
         <output>${data.concurrency[k]}</output><button class="btn small" data-step="${k}" data-d="1" aria-label="增加" ${data.concurrency[k] >= 8 ? "disabled" : ""}>＋</button></span></div>`;
     quiet = again;
-    setPage(`${head}<div class="section"><h3>并发数量</h3><span class="aside">1–8</span></div>
+    setPage(`${head}<div class="section"><h2>并发数量</h2><span class="aside">1–8</span></div>
       <div class="models">${row("ai", "AI 答题", "同时作答的题数")}${row("study", "自动学习", "同时学的资源数")}</div>
-      ${data.pace_locked ? "" : `<div class="section"><h3>答题节奏</h3><span class="aside">只影响智慧树</span></div>
+      ${data.pace_locked ? "" : `<div class="section"><h2>答题节奏</h2><span class="aside">只影响智慧树</span></div>
       <div class="models"><div class="model plain stepper_row"><span class="m1"><b>${fast ? "快速" : "稳妥"}</b><small class="sans">${fast
         ? "每步间隔 0.1–0.5 秒"
         : "每步间隔 0.5–2 秒"}</small></span>
@@ -1521,7 +1569,7 @@ function renderModels(head, models, editing = null, again = true) {
         <button class="btn small" data-test>测试</button>${m.deletable ? '<button class="btn small" data-edit>编辑</button>' : ""}</span></div>`;
   };
   quiet = again;
-  setPage(`${head}<div class="section"><h3>${PHONE.matches ? "" : "AI 模型"}</h3><button class="link" data-add>＋ 添加模型</button></div>
+  setPage(`${head}<div class="section">${PHONE.matches ? '<span class="grow"></span>' : "<h2>AI 模型</h2>"}<button class="link" data-add>＋ 添加模型</button></div>
     ${editing === "new" ? form(null) : ""}<div class="models">${models.map(row).join("") || (editing === "new" ? "" : '<div class="model plain"><span class="m1"><small class="sans">还没有可用的模型</small></span></div>')}</div>`);
   quiet = false;
   const reload = async (edit = null) => {
@@ -1653,7 +1701,7 @@ function qaBody(p, c) {
     <span class="row_btns"><button class="btn small" data-go="${rescanLink(p)}">现在扫码</button></span></div>` : "";
   return `<div class="models qa_board">${head}${rescan}<div class="qa_lanes">${ask}${answer}</div>
     <div class="qa_rule"><header><b>获得至少 5 个有效回答的提问</b><span class="qa_num">${esc(q?.qualified ?? "—")}<span class="of"> 条</span></span></header></div>${drafts}${peers}</div>
-    <div class="section"><h3>已发布</h3></div>${list}`;
+    <div class="section"><h2>已发布</h2></div>${list}`;
 }
 const loadingPosts = new Set();
 async function loadQaPosts(p, c) {
@@ -1755,7 +1803,7 @@ function renderCourse(p, c, tab, full = false) {
       return `<button class="act" data-start="${type}" ${block ? "disabled" : ""}><span class="act_head"><span class="glyph">${icon}</span>${label}</span>
         <p>${text}</p><span class="foot"><span>${esc(foot)}</span>${i === 0 ? '<span class="kbd">S</span>' : ""}</span></button>`;
     }).join("")}</div>
-      <div class="section"><h3>学习单元</h3></div>
+      <div class="section"><h2>学习单元</h2></div>
       ${gridHtml(k)}`;
   } else if (tab === "qa") {
     body = qaBody(p, c);
@@ -1793,7 +1841,7 @@ function renderCourse(p, c, tab, full = false) {
     body = categories.map((label) => {
       const list = papers.filter((x) => x.category === label), open = list.filter((x) => x.available);
       const all = open.length && open.every((x) => selected.has(x.id));
-      return `<div class="section"><h3>${esc(label)}</h3><span class="aside">${open.length} / ${list.length} 份可选</span>
+      return `<div class="section"><h2>${esc(label)}</h2><span class="aside">${open.length} / ${list.length} 份可选</span>
           ${open.length > 1 && !sheet ? `<button class="link" data-pick-all="${esc(label)}">${all ? "取消全选" : "全选"}</button>` : ""}</div>
         <div class="papers">${list.map(row).join("")}</div>`;
     }).join("") || `<div class="empty">这门课没有作业、测验或考试</div>`;
@@ -1974,7 +2022,7 @@ const questionStates = (r) => Array.from({ length: r.total }, (_, q) => (q < r.d
 function answerSheetHtml(rows) {
   if (!rows.length) return "";
   const handed = rows.filter((r) => PAPER_TONE[r.state] === "done").length;
-  return `<div class="section"><h3>答题卡</h3><span class="aside">${handed}/${rows.length} 份</span></div>
+  return `<div class="section"><h2>答题卡</h2><span class="aside">${handed}/${rows.length} 份</span></div>
     <div class="grid answers"><div class="chapters">${rows.map((r) => `<div class="chapter ${r.state === "running" ? "current" : ""}">
       <span class="name" title="${esc(r.name)}">${esc(r.name)}</span><span class="cells">${cellsHtml(questionStates(r))}</span>
       <span class="tally">${r.total ? `${r.done}/${r.total}` : ""}</span><span class="state ${PAPER_TONE[r.state] || "stopped"}">${esc(paperWord(r.state))}</span></div>`).join("")}</div></div>`;
@@ -2038,7 +2086,7 @@ function renderFocus() {
   const units = learns(job) && unitsOf(k), t = units && tally(units);
   const rows = isAnswer(job) ? answerRows(run) : [], paper = live && rows.find((r) => r.state === "running");
   const grid = units
-    ? `<div class="section"><h3>整门课</h3><span class="aside mono">${t.done}/${t.all} · ${Math.round((t.done / (t.all || 1)) * 100)}%</span></div>${gridHtml(k)}`
+    ? `<div class="section"><h2>整门课</h2><span class="aside mono">${t.done}/${t.all} · ${Math.round((t.done / (t.all || 1)) * 100)}%</span></div>${gridHtml(k)}`
     : answerSheetHtml(rows);
   const spot = live && learns(job) && spotOf(job, run);
   const chapter = run.unit && (units || []).find((ch) => ch.units.some((u) => u.id === run.unit.key));
@@ -2220,19 +2268,45 @@ function repaint() {
 
 function connectEvents() {
   if (MOCK) { import("./mock.js").then((m) => m.subscribe(handleEvent)); return; }
-  let source = null, heard = 0, opened = false;
+  // parked: the server ended this stream because the person opened too many; it reconnects when looked at again.
+  let source = null, heard = 0, opened = false, tries = 0, again = 0, parked = false;
   const open = () => {
+    clearTimeout(again);
+    parked = false;
     heard = Date.now();  // a stream that never opens is retried too
     source?.close();
     source = new EventSource(session.mode === "hosted" ? "/api/events" : `/api/events?t=${encodeURIComponent(TOKEN)}`);
-    source.onmessage = (message) => { heard = Date.now(); const event = JSON.parse(message.data); if (event.type !== "ping") handleEvent(event); };
+    source.onmessage = (message) => {
+      heard = Date.now();
+      const event = JSON.parse(message.data);
+      if (event.type === "evicted") { parked = true; source.close(); return; }
+      if (event.type !== "ping") handleEvent(event);
+    };
     // Events sent while the stream was down (or the tab was frozen) are lost; catch up from the server.
-    source.onopen = () => { heard = Date.now(); if (opened) refreshState(true).then(repaint); opened = true; };
+    source.onopen = () => { heard = Date.now(); tries = 0; conn.back(); if (opened) refreshState(true).then(repaint); opened = true; };
+    // A dropped stream is retried by the browser itself, but an error page (a proxy's 502 while the server restarts,
+    // a 401) closes it for good: then try again soon, backing off, rather than wait for the 40-second watchdog.
+    // The state read on the way tells a signed-out page to show the sign-in form.
+    source.onerror = () => {
+      conn.lost();
+      if (source.readyState !== EventSource.CLOSED || document.body.classList.contains("signed-out")) return;
+      again = setTimeout(() => refreshState().finally(() => { if (!document.body.classList.contains("signed-out")) open(); }),
+        Math.min(15000, 1000 * 2 ** tries++));
+    };
   };
   open();
   // The server pings every 15 s. A stream silent for 40 s is dead even if the browser hasn't noticed.
-  setInterval(() => { if (Date.now() - heard > 40000) open(); }, 10000);
-  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refreshState().then(repaint); });
+  const away = () => parked || document.body.classList.contains("signed-out");
+  setInterval(() => { if (Date.now() - heard > 40000 && !away()) { conn.lost(); open(); } }, 10000);
+  // Off the network: say so at once (the stream may take a while to notice). Back on: reconnect now, not on the
+  // browser's next retry.
+  addEventListener("offline", () => conn.lost(true));
+  addEventListener("online", () => { if (!away()) open(); });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    if (parked) open();  // its onopen catches up
+    else refreshState().then(repaint);
+  });
 }
 
 /* ---------------------------------------------------------------- login */

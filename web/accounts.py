@@ -17,7 +17,8 @@ from pathlib import Path
 ITERATIONS = 600_000  # PBKDF2-SHA256, OWASP 2023; scrypt is missing from LibreSSL builds
 USERNAME = re.compile(r"^[\w.\-]{2,32}$")
 USERNAME_RULE = "用户名需 2–32 位，只能包含字母、数字、汉字、下划线、点或减号"
-EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+# No list separators or quoting: "a,b@x.com" would reach several mailboxes from one To header.
+EMAIL = re.compile(r"^[^@\s,;<>\"()\[\]\\]+@[^@\s,;<>\"()\[\]\\]+\.[^@\s,;<>\"()\[\]\\]+$")
 MIN_PASSWORD = 8
 SESSION_TTL = 7 * 86400
 INVITE_TTL = 7 * 86400
@@ -196,6 +197,10 @@ class Accounts:
             self.db.execute("UPDATE users SET last_login = ? WHERE id = ?", (time.time(), row["id"]))
         return self.user(row["id"])
 
+    def password_ok(self, uid, password):
+        row = self._one("SELECT password FROM users WHERE id = ?", uid)
+        return check_password(password or "", row["password"] if row else _DUMMY) and row is not None
+
     def touch(self, uid, every=60):
         """Record activity: last_login is shown as "last seen", so a 7-day cookie or a fresh
         registration counts too, not only typing the password. Written at most once a minute."""
@@ -292,6 +297,7 @@ class Accounts:
         _validate(username, password)
         code = (code or "").strip().upper()
         uid = secrets.token_hex(8)
+        hashed = hash_password(password)  # slow on purpose: not while holding the database lock
         with self.transaction():
             if invite:
                 row = self.db.execute("SELECT * FROM invites WHERE code = ?", (code,)).fetchone()
@@ -299,7 +305,7 @@ class Accounts:
                     raise AccountError("邀请码无效或已过期")
             try:
                 self.db.execute("INSERT INTO users (id, username, password, role, created, email) VALUES (?,?,?,'user',?,?)",
-                                (uid, username, hash_password(password), time.time(), email))
+                                (uid, username, hashed, time.time(), email))
             except sqlite3.IntegrityError as exc:
                 raise AccountError("这个邮箱已经注册过了" if "email" in str(exc) else "用户名已被使用") from None
             if invite:
@@ -360,6 +366,20 @@ class Throttle:
                 self.failures[key] = recent
                 if len(recent) >= self.limit:
                     return int(self.window - (now - recent[0])) + 1
+        return 0
+
+    def take(self, *keys):
+        """Check and count one attempt in one step: concurrent guesses can't all slip in before any is counted.
+        Returns the seconds to wait (nothing counted) or 0; a success should clear() the keys afterwards."""
+        now = time.time()
+        with self.lock:
+            for key in keys:
+                recent = [t for t in self.failures.get(key, []) if now - t < self.window]
+                self.failures[key] = recent
+                if len(recent) >= self.limit:
+                    return int(self.window - (now - recent[0])) + 1
+            for key in keys:
+                self.failures[key].append(now)
         return 0
 
     def fail(self, *keys):

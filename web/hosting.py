@@ -221,6 +221,11 @@ class Hub:
         self.throttle = Throttle()
         # Mail costs the site's sender reputation: at most 5 an hour per person, per account and per address.
         self.mail_throttle = Throttle(limit=5, window=3600)
+        # Per account across all addresses: high enough that a few strangers can't lock someone out,
+        # low enough to stop a guesser that rotates addresses (each address still gets 5).
+        self.user_throttle = Throttle(limit=30)
+        # Mail that a request should not wait for (its timing would tell whether an account exists).
+        self.later = lambda fn, *args: threading.Thread(target=fn, args=args, daemon=True, name="studia-mail").start()
         # ponytail: binding codes live in memory, so a restart asks for a new one; a table if that ever matters.
         self.email_codes = {}
         self.signup_codes = {}  # address (lowercase) -> the code mailed for signing up with it
@@ -248,6 +253,7 @@ class Hub:
                              answer_pace=self.answer_pace,
                              peers=lambda course_id, recruit_id, uid=uid: self.peer_questions(uid, course_id, recruit_id))
                 app.owner = (self.accounts.user(uid) or {}).get("username", uid)
+                app.public_endpoints_only = True  # a member's model URL must not reach this server's own network
                 self.apps[uid] = app
             return app
 
@@ -284,8 +290,8 @@ class Hub:
 
     def audit(self, action, *, actor="", target="", ip="", ok=True):
         """Append-only record of sign-ins and admin actions; never passwords or tokens."""
-        line = json.dumps({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "action": action, "ok": ok,
-                           "actor": actor, "target": target, "ip": ip}, ensure_ascii=False)
+        line = json.dumps({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "action": action, "ok": ok,  # names are typed by anyone
+                           "actor": str(actor)[:64], "target": str(target)[:64], "ip": str(ip)[:64]}, ensure_ascii=False)
         path = self.data / "audit.log"
         with self.lock:
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
@@ -494,10 +500,18 @@ class Hub:
             logger.warning("发送邮件失败：%s", mail_error(exc))
             raise HttpError(400, "邮件发送失败：%s" % mail_error(exc)) from None
 
-    def send_email_code(self, uid, email):
+    def send_email_code(self, uid, email, password=None):
         email = str(email or "").strip()
         if len(email) > 254 or not EMAIL.fullmatch(email):
             raise HttpError(400, "邮箱格式不正确")
+        # Replacing a bound address takes the password: whoever holds only a stolen session could otherwise move
+        # the account's reset links to their own mailbox. A first binding stays one step.
+        if (self.accounts.user(uid) or {}).get("email"):
+            if self.throttle.take("pw:" + uid):
+                raise HttpError(429, "尝试次数太多，请稍后再试")
+            if not self.accounts.password_ok(uid, str(password or "")):
+                raise HttpError(403, "当前密码不正确")
+            self.throttle.clear("pw:" + uid)
         if self.accounts.email_taken(email, uid):
             raise HttpError(400, "这个邮箱已经绑定了其他账号")
         with self.lock:
@@ -581,10 +595,29 @@ class Hub:
             if not hmac.compare_digest(str(code or "").strip().encode(), pending["code"].encode()):
                 raise HttpError(400, "验证码不正确")
             self.email_codes.pop(uid, None)
+        before = (self.accounts.user(uid) or {}).get("email")
         try:
             self.accounts.set_email(uid, pending["email"])
         except AccountError as exc:
             raise HttpError(400, str(exc)) from None
+        if before and before.lower() != pending["email"].lower():
+            self.later(self.mail_moved, before, (self.accounts.user(uid) or {}).get("username", ""), pending["email"])
+
+    def mail_moved(self, old, username, new):
+        """Tell the address an account just left, so a change nobody asked for doesn't go unnoticed."""
+        hidden = re.sub(r"(?<=^.).*(?=.@)", lambda m: "*" * len(m.group()), new)
+        try:
+            self.mail(old, "Studia 账号的邮箱已更换",
+                      "%s，你好：\n\n你的 Studia 账号刚把绑定邮箱换成了 %s，以后改密码和找回密码的邮件都会发到那里。\n\n"
+                      "如果不是你本人操作，请马上联系管理员。" % (username, hidden))
+        except HttpError:
+            pass
+
+    def send_quietly(self, user):
+        try:
+            self.send_reset(user)
+        except HttpError:
+            pass  # already logged by mail(); the person asking sees the same answer either way
 
     def send_reset(self, user):
         """Mail a one-time link that sets a new password (修改密码 and 忘记密码 alike)."""
@@ -724,12 +757,13 @@ class HostedAccess:
             hub.audit("setup", actor=hub.accounts.user(uid)["username"], ip=ip)
             return self._signed_in(uid)
         if method == "POST" and path == "/api/auth/login":
-            username = str(body.get("username", "")).strip()
-            keys = ("ip:" + self._ip(request), "user:" + username.lower())
-            ip = self._ip(request)
-            wait = hub.throttle.blocked(*keys)
-            if wait:
-                hub.audit("login", actor=username, ip=ip, ok=False)
+            username, ip = str(body.get("username", "")).strip(), self._ip(request)
+            name = username.lower()[:64]
+            # Five tries per address (and per account from one address), counted before the slow password check
+            # so parallel guesses don't all get through; the account-wide count only stops address-hopping guessers.
+            keys = ("ip:" + ip, "user:%s|%s" % (name, ip))
+            wait = hub.throttle.take(*keys) or hub.user_throttle.take("user:" + name)
+            if wait:  # not written to the audit log: a locked-out flood would only fill the disk
                 raise HttpError(429, "尝试次数太多，请 %d 分钟后再试" % max(1, wait // 60))
             try:
                 user = hub.accounts.authenticate(username, str(body.get("password", "")))
@@ -737,10 +771,10 @@ class HostedAccess:
                 hub.audit("login", actor=username, ip=ip, ok=False)
                 raise HttpError(403, str(exc))
             if user is None:
-                hub.throttle.fail(*keys)
                 hub.audit("login", actor=username, ip=ip, ok=False)
                 raise HttpError(401, "用户名或密码不正确")
             hub.throttle.clear(*keys)
+            hub.user_throttle.clear("user:" + name)
             hub.audit("login", actor=user["username"], ip=ip)
             return self._signed_in(user["id"])
         if method == "POST" and path == "/api/auth/register/code":
@@ -778,8 +812,8 @@ class HostedAccess:
                 raise HttpError(429, "发送太频繁，请过一会儿再试")
             hub.mail_throttle.fail(*keys)
             sent = bool(user and user["email"] and not user["disabled"])
-            if sent:
-                hub.send_reset(user)
+            if sent:  # mailed in the background: waiting for the mail server would show which accounts exist
+                hub.later(hub.send_quietly, user)
             hub.audit("forgot", actor=login[:64], ip=ip, ok=sent)
             return {}  # the same answer whether or not the account exists
         if method == "POST" and path == "/api/auth/reset":
@@ -821,7 +855,11 @@ class HostedAccess:
         if method == "POST" and not hmac.compare_digest(request.headers.get("X-Studia-CSRF", ""), session["csrf"]):
             raise HttpError(403, "请求校验失败，请刷新页面后重试")
         self.hub.accounts.touch(user["id"])
-        return {"app": self.hub.app(user["id"]), "user": user, "session": session, "token": token}
+
+        def alive():  # an event stream outlives its request: signing out, a reset or being disabled must end it too
+            fresh = self.hub.accounts.user(user["id"])
+            return self.hub.sessions.get(token) is not None and fresh is not None and not fresh["disabled"]
+        return {"app": self.hub.app(user["id"]), "user": user, "session": session, "token": token, "alive": alive}
 
     def private(self, request, method, path, query, body, ctx):
         hub, user = self.hub, ctx["user"]
@@ -851,7 +889,7 @@ class HostedAccess:
             hub.audit("username", actor=fresh["username"], target=user["username"], ip=self._ip(request))
             return {"user": fresh}
         if method == "POST" and path == "/api/auth/email/code":
-            hub.send_email_code(user["id"], body.get("email"))
+            hub.send_email_code(user["id"], body.get("email"), body.get("password"))
             return {}
         if method == "POST" and path == "/api/auth/email":
             hub.bind_email(user["id"], body.get("code"))

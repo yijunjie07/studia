@@ -63,7 +63,7 @@ docker compose logs studia   # 找到「设置码」
 - **主密钥丢了，加密的数据就解不开**，所有人都要重新登录平台、重填 API Key。把 `secret.key` 另外存一份，或者用 `python StartWork.py --serve --gen-key` 生成一个写进 `.env`。
 - 智慧树不接受境外网络访问，服务器要放在国内，或者让 `zhihuishu.com` 走国内线路。
 - 国内拉 `ghcr.io` 可能很慢，可以给 Docker 配镜像加速。
-- 开放到公网时，前面加一层 HTTPS 反向代理，`STUDIA_PUBLIC_URL` 改成 `https://你的域名`，再设 `STUDIA_TRUST_PROXY=1`。
+- 开放到公网时，前面加一层 HTTPS 反向代理，`STUDIA_PUBLIC_URL` 改成 `https://你的域名`，再设 `STUDIA_TRUST_PROXY=1`，并把 compose 里的端口改成 `"127.0.0.1:8080:8080"`，只让反向代理连进来（否则有人可以绕过代理直连，伪造来源 IP 躲开登录限流）。
 
 ### 不用 Docker
 
