@@ -2,7 +2,7 @@
 - 职教云（RuoYi 后端）偶尔对读接口回 `code 500`，稍后再读就好。列表读走 `AIMoocApi.read_list` / `ExamAPI.request(read=...)`（会重读）；读失败要报错，别当成空列表（网页会缓存 10 分钟）。
 - 网页缓存的列表（`Platform.cache`）：任务改了平台状态就调 `Studia._forget`；它会让正在进行的读不写回缓存（`platform.epoch`），否则交卷前读到的 0 分会被缓存 10 分钟。
 - `?mock` 的 `/api/state` 返回的是 mock.js 里同一份 platforms 对象（不是新 JSON），登录、刷新这类流程的时序和真服务器不同；测这类流程时在注入的 mock 里把它深拷贝一份。
-- 前端动效：列表行带 `data-key` 时，重画会按 key 匹配（行会滑到新位置，新行会淡入），同一列表里 key 不能重复；动画都走 `moves()`（Web Animations，会照顾“减少动态效果”设置），不要再给 `.page` 加 CSS 动画类。风格是“扫描与涂卡”：区块用 `scanned()` 从上往下扫出，行用 `filled()` 从左涂出，移动用 `EASE_IO`；不要改回淡入上浮（那是 runyard 的风格）。
+- 前端动效：列表行带 `data-key` 时，重画会按 key 匹配（行会滑到新位置，新行会淡入），同一列表里 key 不能重复；动画都走 `moves()`（Web Animations，会照顾“减少动态效果”设置），不要再给 `.page` 加 CSS 动画类。风格是“扫描与涂卡”：页面里的区块和行用 `sweep(el, "down" | -1 | 1)` 扫出 / 涂出（盖一层背景色的遮罩、用 transform 移开，GPU 跑；别直接对大区块动画 `clip-path`，手机每帧都要重画，换页会卡），`scanned()` / `filled()` 的 clip 只留给固定面板和小元素；移动用 `EASE_IO`；不要改回淡入上浮（那是 runyard 的风格）。动画只动 transform / opacity，改完用性能追踪数一下换页的 Paint 次数。
 - 网页是整页滚动（不是内层容器）：侧栏、手机顶栏 / 底栏、底部任务栏都是 sticky，它们的实际高度由脚本写进 `--mbar-h` / `--mtabs-h` / `--player-h`；新加浮在页面上的东西要用这几个变量避让。手机布局是 flex 列（网格里的元素没法 sticky）。
 - 接口的 POST 请求体只收 `Content-Type: application/json`（否则 415），带 `Sec-Fetch-Site: cross-site` 的 POST 一律 403，这是防登录 CSRF 的；新写的客户端或测试要带上 JSON 头。
 - 灰色文字用 `--text-3`（浅色、夜读都 ≥ 4.5:1）；`--text-4` 只给不承载信息的东西（分隔符、箭头、占位符）。改颜色后用 axe-core 把浅色和夜读都扫一遍。`.link` 已经是文字链接按钮的类名，别拿来起别的名字。
