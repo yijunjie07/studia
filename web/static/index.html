@@ -11,9 +11,36 @@
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
   <link rel="manifest" href="manifest.json">
   <script src="theme.js"></script>
+  <style>
+    /* The loading sheet: painted from here before the script and styles arrive; studia.js sweeps it away once the
+       first page is drawn. Hidden for the first moment, so a quick load never flashes it. */
+    .boot { position: fixed; inset: 0; z-index: 100; display: grid; place-content: center; justify-items: center; gap: 20px; background: #fff; }
+    :root[data-theme="night"] .boot { background: #15171a; }
+    .boot > * { animation: boot-in .5s cubic-bezier(.16, 1, .3, 1) .2s both; }
+    .boot > svg { width: 44px; height: 44px; }
+    .boot_cells { display: flex; gap: 5px; }
+    /* Answer-sheet cells filling in a wave: each fills from the left, holds, flows out to the right, round and round. */
+    .boot_cells i { position: relative; width: 20px; height: 12px; border-radius: 2px; overflow: hidden; box-shadow: inset 0 0 0 1px rgb(45 95 166 / .42); }
+    .boot_cells i::after { content: ""; position: absolute; inset: 0; background: #2d5fa6; transform: translateX(-101%); animation: boot-fill 1.8s cubic-bezier(.65, 0, .35, 1) infinite; }
+    .boot_cells i:nth-child(2)::after { animation-delay: .14s; }
+    .boot_cells i:nth-child(3)::after { animation-delay: .28s; }
+    .boot_cells i:nth-child(4)::after { animation-delay: .42s; }
+    .boot_cells i:nth-child(5)::after { animation-delay: .56s; }
+    :root[data-theme="night"] .boot_cells i { box-shadow: inset 0 0 0 1px rgb(134 169 234 / .4); }
+    :root[data-theme="night"] .boot_cells i::after { background: #86a9ea; }
+    .boot_sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    @keyframes boot-in { from { opacity: 0; } }
+    @keyframes boot-fill { 0% { transform: translateX(-101%); } 45%, 62% { transform: translateX(0); } 100% { transform: translateX(101%); } }
+    @media (prefers-reduced-motion: reduce) { .boot > *, .boot_cells i::after { animation: none; } .boot_cells i::after { transform: none; opacity: .35; } }
+  </style>
   <link rel="stylesheet" href="studia.css">
 </head>
 <body>
+  <div class="boot" role="status">
+    <svg viewBox="0 0 512 512" aria-hidden="true"><rect x="8" y="8" width="496" height="496" rx="116" fill="#f4f4f0" stroke="#212429" stroke-opacity=".14" stroke-width="10"/><rect x="57" y="57" width="130" height="130" rx="22" fill="#212429"/><rect x="217" y="57" width="130" height="130" rx="22" fill="#212429"/><rect x="57" y="217" width="130" height="130" rx="22" fill="#2d5fa6"/><rect x="223" y="223" width="118" height="118" rx="18" fill="none" stroke="#2d5fa6" stroke-opacity=".45" stroke-width="12"/><g transform="rotate(-6 335 335)"><rect x="215" y="215" width="240" height="240" rx="44" fill="#d03b2e" stroke="#f4f4f0" stroke-width="14"/><text x="335" y="400" font-family="Palatino, 'Palatino Linotype', Georgia, serif" font-style="italic" font-weight="600" font-size="182" text-anchor="middle" fill="#fff">S</text></g></svg>
+    <span class="boot_cells" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+    <span class="boot_sr">正在打开 Studia…</span>
+  </div>
   <div class="app">
     <header class="mbar"></header>
     <aside class="side" aria-label="导航">
