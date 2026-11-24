@@ -402,6 +402,68 @@ const scanned = (lift = 10) => [{ clipPath: "inset(-24px -24px calc(100% + 24px)
 // Filled in from one side: -1 from the left, 1 from the right.
 const filled = (side = -1) => [{ clipPath: side < 0 ? "inset(-24px calc(100% + 24px) -24px -24px)" : "inset(-24px -24px -24px calc(100% + 24px))",
   transform: `translateX(${side * 14}px)` }, { clipPath: "inset(-24px)", transform: "none" }];
+// The same sweep without repainting: a cover in the colour behind the block slides off it (transform only, so the
+// GPU runs it) while the block moves into place. Clipping the block instead looks identical, but phones repaint a
+// clipped block on every frame (Safari always, Chrome too), which is what made page changes stutter there.
+// dir: "down" (scanned: top edge first) or -1 / 1 (filled from the left / right). Blocks in fixed panels or in a
+// box that scrolls on its own keep the clip: a cover placed on the page would not follow them.
+const wipes = document.body.appendChild(Object.assign(document.createElement("div"), { className: "wipes" }));
+let wipeSize = "";
+const pageExtent = () => `${page.offsetWidth}x${page.offsetHeight}`;
+function behind(el) {
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    const color = getComputedStyle(p).backgroundColor;
+    if (!/^(transparent|rgba\(.*,\s*0\))$/.test(color)) return color;
+  }
+  return getComputedStyle(document.body).backgroundColor;
+}
+function ownScroll(el) {
+  for (let p = el.parentElement; p && p !== page; p = p.parentElement) {
+    const style = getComputedStyle(p);
+    if (/auto|scroll/.test(style.overflowY + style.overflowX) || style.position === "fixed" || style.position === "sticky") return true;
+  }
+  return false;
+}
+// A cover over where its block sits (less the slide the block is doing), plus the strip it slides in from; never past
+// the page's edges, so it can't make the page scroll sideways.
+// A few pixels round it too: shadows, outlines and glyphs reach a little past a block's box (the gaps between blocks
+// are wider than that).
+function place(box) {
+  const { el, way, lift, from } = box.sweep, down = way === "down", r = el.getBoundingClientRect();
+  const m = new DOMMatrixReadOnly(getComputedStyle(el).transform);
+  let x = r.left - (m.m41 - from.m41) + scrollX - 4, y = r.top - (m.m42 - from.m42) + scrollY - 3, w = r.width + 8, h = r.height + 9;
+  if (down) { y += Math.min(lift, 0); h += Math.abs(lift); } else { w += 14; if (way < 0) x -= 14; }
+  const docW = document.documentElement.clientWidth, docH = document.documentElement.scrollHeight;
+  const left = Math.max(0, x), top = Math.max(0, y);
+  Object.assign(box.style, { left: `${left}px`, top: `${top}px`, width: `${Math.max(0, Math.min(x + w, docW) - left)}px`,
+    height: `${Math.max(0, Math.min(y + h, docH) - top)}px` });
+}
+function sweep(el, dir, { lift = 10, ...options } = {}) {
+  if (STILL.matches || !el.animate) return null;
+  const down = dir === "down", r = el.getBoundingClientRect();
+  if (!r.width || !r.height || !page.contains(el) || ownScroll(el)) return moves(el, down ? scanned(lift) : filled(dir), options);
+  const box = document.createElement("div");
+  box.sweep = { el, way: dir, lift, from: new DOMMatrixReadOnly(getComputedStyle(el).transform) };
+  const cover = box.appendChild(document.createElement("i"));
+  cover.style.background = behind(el);
+  place(box);
+  wipes.appendChild(box);
+  wipeSize = pageExtent();
+  const a = moves(cover, [{ transform: "none" }, { transform: down ? "translateY(101%)" : `translateX(${dir < 0 ? 101 : -101}%)` }], { ...options, fill: "both" });
+  moves(el, [{ transform: down ? `translateY(${lift}px)` : `translateX(${dir * 14}px)` }, { transform: "none" }], options);
+  const done = () => box.remove();
+  a.finished.then(done, done);
+  return a;
+}
+// A new page ends the covers still running; data arriving mid-sweep (the page changing size) moves each cover along
+// with its block, before that frame is painted.
+function clearWipes() { for (const box of [...wipes.children]) box.firstChild.getAnimations().forEach((a) => a.finish()); }
+new ResizeObserver(() => {
+  if (!wipes.firstChild || pageExtent() === wipeSize) return;
+  wipeSize = pageExtent();
+  for (const box of [...wipes.children]) box.sweep.el.isConnected ? place(box) : box.firstChild.getAnimations().forEach((a) => a.finish());
+}).observe(page);
+
 // The loading sheet index.html paints before anything else (while the script, the styles and the first reads arrive):
 // swept off top to bottom, like a scanner pass, once a real page (not a placeholder) or the sign-in form is drawn.
 const bootSheet = document.querySelector(".boot");
@@ -434,7 +496,7 @@ function patch(target, html, motion = true) {
     const now = el.getBoundingClientRect(), dx = was.left - now.left, dy = was.top - now.top;
     if (Math.abs(dx) + Math.abs(dy) > 1) moves(el, [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }], { duration: 560, easing: EASE_IO });
   }
-  born.slice(0, 24).forEach((el, i) => moves(el, filled(-1), { duration: 520, easing: EASE_IO, delay: Math.min(i, 8) * 40, fill: "backwards" }));
+  born.slice(0, 24).forEach((el, i) => sweep(el, -1, { duration: 520, easing: EASE_IO, delay: Math.min(i, 8) * 40, fill: "backwards" }));
 }
 // Where each keyed row sits now. A key seen twice is ambiguous and left out.
 function keyedRects(root) {
@@ -497,11 +559,15 @@ const revealer = "IntersectionObserver" in window ? new IntersectionObserver((en
 }, { rootMargin: "0px 0px -6% 0px" }) : null;
 function rise(els, lift = 14) {
   revealer?.disconnect();
+  clearWipes();
   let turn = 0;
   for (const el of els.flatMap((x) => (x.matches(".course_cards, .acts") ? [...x.children] : [x]))) {
     const below = revealer && el.getBoundingClientRect().top > innerHeight;
-    const a = moves(el, scanned(below ? lift + 6 : lift), { duration: below ? 760 : 680, easing: EASE_IO, delay: below ? 0 : Math.min(turn++, 6) * 55, fill: "backwards" });
-    if (a && below) { a.pause(); el.reveal = a; revealer.observe(el); }
+    if (!below) { sweep(el, "down", { lift, duration: 680, easing: EASE_IO, delay: Math.min(turn++, 6) * 55, fill: "backwards" }); continue; }
+    const hold = moves(el, [{ opacity: 0 }, { opacity: 0 }], { duration: 1, fill: "forwards" });
+    if (!hold) continue;
+    el.reveal = { play: () => { hold.cancel(); sweep(el, "down", { lift: lift + 6, duration: 760, easing: EASE_IO }); } };
+    revealer.observe(el);
   }
 }
 
@@ -524,7 +590,8 @@ function setPage(html) {
       moves(now.on, [{ transform: `translateX(${was.rect.left - now.rect.left}px) scaleX(${was.rect.width / now.rect.width})` }, { transform: "none" }],
         { pseudoElement: marker, duration: 520, easing: EASE_IO });
     } catch { /* no pseudo-element animations: the marker just moves */ }
-    pageBody(now).forEach((el, i) => moves(el, filled(side), { duration: 560, easing: EASE_IO, delay: Math.min(i, 4) * 40, fill: "backwards" }));
+    clearWipes();
+    pageBody(now).forEach((el, i) => sweep(el, side, { duration: 560, easing: EASE_IO, delay: Math.min(i, 4) * 40, fill: "backwards" }));
   } else if (!quiet) rise([...page.children]);
   else if (loading && !page.querySelector(".loading")) rise(pageBody(tabBar()), 10);
   if (!page.querySelector(".loading")) unboot();
