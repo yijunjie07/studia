@@ -402,6 +402,17 @@ const scanned = (lift = 10) => [{ clipPath: "inset(-24px -24px calc(100% + 24px)
 // Filled in from one side: -1 from the left, 1 from the right.
 const filled = (side = -1) => [{ clipPath: side < 0 ? "inset(-24px calc(100% + 24px) -24px -24px)" : "inset(-24px -24px -24px calc(100% + 24px))",
   transform: `translateX(${side * 14}px)` }, { clipPath: "inset(-24px)", transform: "none" }];
+// The loading sheet index.html paints before anything else (while the script, the styles and the first reads arrive):
+// swept off top to bottom, like a scanner pass, once a real page (not a placeholder) or the sign-in form is drawn.
+const bootSheet = document.querySelector(".boot");
+function unboot() {
+  if (!bootSheet?.isConnected || bootSheet.dataset.out) return;
+  bootSheet.dataset.out = "1";
+  bootSheet.style.pointerEvents = "none";
+  const out = moves(bootSheet, [{ clipPath: "inset(0 0 0 0)" }, { clipPath: "inset(100% 0 0 0)" }], { duration: 560, easing: EASE_IO, fill: "forwards" });
+  if (out) out.onfinish = () => bootSheet.remove(); else bootSheet.remove();
+}
+setTimeout(unboot, 8000);  // whatever went wrong, the page behind is never held back for long
 let born = [], rolled = new Set();  // what a patch inserted (to fade in) and the numbers it changed (to roll)
 
 function patch(target, html, motion = true) {
@@ -516,6 +527,7 @@ function setPage(html) {
     pageBody(now).forEach((el, i) => moves(el, filled(side), { duration: 560, easing: EASE_IO, delay: Math.min(i, 4) * 40, fill: "backwards" }));
   } else if (!quiet) rise([...page.children]);
   else if (loading && !page.querySelector(".loading")) rise(pageBody(tabBar()), 10);
+  if (!page.querySelector(".loading")) unboot();
   // Tab bars scroll sideways on narrow phones: keep the current tab in sight.
   const nav = page.querySelector(".tabs"), on = nav?.querySelector('[aria-selected="true"]');
   if (on && (on.offsetLeft < nav.scrollLeft || on.offsetLeft + on.offsetWidth > nav.scrollLeft + nav.clientWidth)) nav.scrollLeft = on.offsetLeft - 16;
@@ -2661,6 +2673,7 @@ const AUTH = {
   reset: { title: "设置新密码", lead: "", button: "保存并登录" },
 };
 function showAuth(mode = "login") {
+  unboot();
   document.body.classList.add("signed-out");
   let box = $(".auth");
   const switching = Boolean(box);  // 登录 ↔ 注册 ↔ 找回密码: the form changes, the page around it does not
