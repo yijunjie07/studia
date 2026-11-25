@@ -385,6 +385,39 @@ class HostedServerTest(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/admin/settings", {"max_jobs": 20},
                                       cookie=user_token, csrf=user_csrf)[0], 403)
 
+    def test_admin_state_and_events_report_site_job_count(self):
+        import socket
+        token, _ = self.login("admin", "admin-password")
+        alice = self.hub.accounts.create_user("alice", "alice-password")
+        alice_token, _ = self.login("alice", "alice-password")
+        self.assertEqual(self.request("GET", "/api/state", cookie=token)[1]["site_jobs"], 0)
+        self.assertNotIn("site_jobs", self.request("GET", "/api/state", cookie=alice_token)[1])
+
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        self.addCleanup(sock.close)
+        sock.sendall(("GET /api/events HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nCookie: %s=%s\r\n\r\n" % (self.port, COOKIE, token)).encode())
+        self.assertIn(b"200", sock.recv(4096))
+
+        alice_app = self.hub.app(alice)
+        admin_app = self.hub.app(self.admin_id)
+        job = {"id": "j1", "kind": "study", "title": "自动学习", "course": "c", "course_name": "课",
+               "platform": "zhs", "state": "running", "summary": "", "started": 1, "ended": None,
+               "lines": [], "cancel": threading.Event()}
+        alice_app.jobs["j1"] = job
+        alice_app.publish({"type": "job", "id": "j1", "state": "running"})
+        self.assertEqual(self.request("GET", "/api/state", cookie=token)[1]["site_jobs"], 1)
+        self.assertIn(b'"type": "site_jobs", "count": 1', sock.recv(4096))
+
+        # The admin's own jobs live in jobs, not site_jobs (no double-counting).
+        admin_app.jobs["mine"] = dict(job, id="mine", cancel=threading.Event())
+        admin_app.publish({"type": "job", "id": "mine", "state": "running"})
+        self.assertEqual(self.request("GET", "/api/state", cookie=token)[1]["site_jobs"], 1)
+
+        alice_app.jobs.pop("j1", None)
+        alice_app.publish({"type": "job", "id": "j1", "state": "done"})
+        self.assertEqual(self.request("GET", "/api/state", cookie=token)[1]["site_jobs"], 0)
+        self.assertIn(b'"type": "site_jobs", "count": 0', sock.recv(4096))
+
     def test_admin_default_model_is_live_private_and_survives_restart(self):
         from ai.client import AIConfig
         from ai.defaults import DEFAULT_PROFILE_ID, default_config
