@@ -1991,9 +1991,9 @@ async function draftQuestions(p, c) {
 }
 
 // The course's fingerprint: where its points come from, one box per share sized by its weight.
-// Boxes Studia can fill are inked; the rest (exams, meet sessions) stay outlined.
+// Boxes Studia can fill are inked; the rest (mastery, meet sessions) stay outlined.
 const SHARES = [["progress", "学习", 1], ["habit", "习惯", 1], ["interactive", "互动", 1], ["knowledge", "掌握度", 0],
-  ["test", "测试", 1], ["meet", "见面课", 0], ["final", "期末", 0]];
+  ["test", "测试", 1], ["meet", "见面课", 0], ["final", "期末", 1]];
 // Each box is exactly as wide as its share and fills as far as the points earned; a ruler underneath
 // reads the 0–100 scale, with a long tick and its number where one share ends and the next begins.
 const pts = (n) => (Number.isInteger(n) ? String(n) : n.toFixed(1));
