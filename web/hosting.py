@@ -757,24 +757,25 @@ class HostedAccess:
             hub.audit("setup", actor=hub.accounts.user(uid)["username"], ip=ip)
             return self._signed_in(uid)
         if method == "POST" and path == "/api/auth/login":
-            username, ip = str(body.get("username", "")).strip(), self._ip(request)
-            name = username.lower()[:64]
+            login, ip = str(body.get("username") or body.get("login") or "").strip(), self._ip(request)
+            target = hub.accounts.find(login) if login else None
+            account = "uid:" + target["id"] if target else "user:" + login.lower()[:64]
             # Five tries per address (and per account from one address), counted before the slow password check
             # so parallel guesses don't all get through; the account-wide count only stops address-hopping guessers.
-            keys = ("ip:" + ip, "user:%s|%s" % (name, ip))
-            wait = hub.throttle.take(*keys) or hub.user_throttle.take("user:" + name)
+            keys = ("ip:" + ip, "%s|%s" % (account, ip))
+            wait = hub.throttle.take(*keys) or hub.user_throttle.take(account)
             if wait:  # not written to the audit log: a locked-out flood would only fill the disk
                 raise HttpError(429, "尝试次数太多，请 %d 分钟后再试" % max(1, wait // 60))
             try:
-                user = hub.accounts.authenticate(username, str(body.get("password", "")))
+                user = hub.accounts.authenticate(login, str(body.get("password", "")))
             except AccountError as exc:
-                hub.audit("login", actor=username, ip=ip, ok=False)
+                hub.audit("login", actor=login, ip=ip, ok=False)
                 raise HttpError(403, str(exc))
             if user is None:
-                hub.audit("login", actor=username, ip=ip, ok=False)
-                raise HttpError(401, "用户名或密码不正确")
+                hub.audit("login", actor=login, ip=ip, ok=False)
+                raise HttpError(401, "用户名、邮箱或密码不正确")
             hub.throttle.clear(*keys)
-            hub.user_throttle.clear("user:" + name)
+            hub.user_throttle.clear(account)
             hub.audit("login", actor=user["username"], ip=ip)
             return self._signed_in(user["id"])
         if method == "POST" and path == "/api/auth/register/code":
