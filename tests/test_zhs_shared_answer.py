@@ -591,6 +591,33 @@ class CatalogSharedTest(unittest.TestCase):
         by_id = {item["id"]: item for _, item, _ in catalog(client, COURSE)}
         self.assertEqual(by_id["sex-300-400"]["_unavailable"][0], "状态未知")
 
+    def test_submitted_final_exams_come_from_flag_two_with_scores(self):
+        client = self.make_client()
+        client.homework_rows = []
+        by_flag = {
+            1: [],
+            2: [
+                {"id": 10, "examId": 20, "examName": "期末考试", "state": 4, "score": 94},
+                {"id": 11, "examId": 21, "examName": "期末补考", "state": 4, "parentId": 20, "oneHundredPont": 60, "score": 82},
+                {"id": 12, "examId": 22, "examName": "待批阅考试", "state": 3, "score": ""},
+            ],
+        }
+        client.shared_exam_list = lambda r, c, flag: [dict(x) for x in by_flag.get(flag, [])]
+        by_id = {item["id"]: item for _, item, _ in catalog(client, COURSE)}
+        self.assertEqual(by_id["sex-10-20"]["score"], 94)
+        self.assertEqual(by_id["sex-10-20"]["_completion_status"], "submitted")
+        self.assertEqual(by_id["sex-11-21"]["score"], 60)
+        self.assertNotIn("score", by_id["sex-12-22"])
+        self.assertEqual(by_id["sex-12-22"]["_completion_status"], "submitted")
+        self.assertIn("等待平台公布成绩", by_id["sex-12-22"]["_unavailable"][1])
+
+    def test_exam_submit_reports_score_when_platform_returns_one(self):
+        client = FakeSharedClient([shared_question("e1")])
+        client.shared_submit_exam = lambda *args: {"statu": 0, "score": 96, "totalScore": 100}
+        result = runner(client, FakeAI(["B"])).run_paper(COURSE, exam_item(), 2)
+        self.assertEqual(result["status"], "submitted")
+        self.assertIn("96/100", result["message"])
+
     def test_exam_deduplicated(self):
         client = self.make_client()
         client.exam_rows = [{"id": 300, "examId": 400, "examName": "期末", "state": 2,

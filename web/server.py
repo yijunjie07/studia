@@ -665,6 +665,8 @@ class Studia:
             done = item.get("_completion_status") == "submitted"
             if pid == "zhs":
                 score = item.get("score")
+                if score == "":
+                    score = None
             else:
                 score = score_text(item)
                 score = None if score in ("?", "--") else score
