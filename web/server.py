@@ -162,7 +162,7 @@ class Studia:
     """All state behind the web UI; one running job at a time across platforms."""
 
     def __init__(self, store=None, oauth=oauth_login, *, reports_dir="ai_results", oauth_url=None, memory=None, mooc_memory=None,
-                 job_limit=None, zhs_parallel=None, answer_pace=None, peers=None):
+                 job_limit=None, zhs_parallel=None, answer_pace=None, peers=None, on_job=None):
         self.store = store or SettingsStore()
         self.token = secrets.token_urlsafe(24)
         self.lock = threading.RLock()
@@ -181,6 +181,7 @@ class Studia:
         self.pace_locked = answer_pace is not None
         # Hosted mode: questions other people on this site asked in the same class, answered first (Hub.peer_questions).
         self.peers = peers or (lambda course_id, recruit_id: [])
+        self.on_job = on_job
         self.oauth_url = oauth_url
         # Hosted mode passes the site-wide memory; locally it lives next to the settings file.
         self.memory = memory
@@ -218,6 +219,8 @@ class Studia:
                 subscriber.put_nowait(event)
             except queue.Full:
                 pass
+        if event.get("type") == "job" and self.on_job:
+            self.on_job()
 
     def _mark_unit(self, job, unit_id, unit_state):
         """Carry a finished unit into the cached grid. The cache holds the platform's answer from when the job

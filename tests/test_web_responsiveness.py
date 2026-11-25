@@ -1,5 +1,6 @@
 """Exercise the real browser UI with slow and failing platform responses."""
 import json
+import queue
 import threading
 import unittest
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -31,8 +32,23 @@ class Fixture(SimpleHTTPRequestHandler):
         if not path.startswith("/api/"):
             return super().do_GET()
         if path == "/api/events":
-            self.send_response(204)
+            if self.server.events is None:
+                self.send_response(204)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
+            try:
+                while True:
+                    event = self.server.events.get(timeout=5)
+                    if event is None:
+                        break
+                    self.wfile.write(("data: %s\n\n" % json.dumps(event)).encode())
+                    self.wfile.flush()
+            except (queue.Empty, BrokenPipeError, ConnectionResetError, OSError):
+                pass
             return
         if path == "/api/platforms/mooc/courses":
             self.server.course_requested.set()
@@ -45,8 +61,10 @@ class Fixture(SimpleHTTPRequestHandler):
             data = {"error": "成绩暂不可用"}
         else:
             self.send_response(200)
-            data = {"/api/mode": {"mode": "local"},
-                    "/api/state": {"platforms": PLATFORMS, "jobs": [], "history": []},
+            data = {"/api/mode": {"mode": "hosted" if self.server.admin else "local"},
+                    "/api/auth/me": {"user": {"id": "a1", "username": "admin", "role": "admin"}, "csrf": "c", "mail": False},
+                    "/api/state": {"platforms": PLATFORMS, "jobs": self.server.own_jobs, "history": [],
+                                   **({"site_jobs": self.server.site_jobs} if self.server.admin else {})},
                     "/api/platforms/mooc/courses": {"courses": []},
                     "/api/platforms/zhs/courses": {"courses": [COURSE]},
                     "/api/platforms/zhs/qa": {"posts": [], "room": {"ask": 1, "answer": 1, "posted": {}}, "peers": False},
@@ -83,6 +101,10 @@ class WebResponsivenessTests(unittest.TestCase):
         self.server.release_score = threading.Event()
         self.server.release_score.set()
         self.server.score_requests = 0
+        self.server.admin = False
+        self.server.own_jobs = []
+        self.server.site_jobs = 0
+        self.server.events = None
         threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
         self.page = self.browser.new_page()
         self.base = "http://127.0.0.1:%d/?t=test" % self.server.server_port
@@ -90,6 +112,8 @@ class WebResponsivenessTests(unittest.TestCase):
     def tearDown(self):
         self.server.release_courses.set()
         self.server.release_score.set()
+        if self.server.events is not None:
+            self.server.events.put(None)
         self.page.close()
         self.server.shutdown()
         self.server.server_close()
@@ -142,6 +166,38 @@ class WebResponsivenessTests(unittest.TestCase):
         self.server.release_score.set()
         self.page.wait_for_timeout(900)
         self.assertEqual(self.server.score_requests, 2)
+
+    def test_admin_nav_shows_site_wide_job_count_and_updates_from_events(self):
+        self.server.release_courses.set()
+        self.server.admin = True
+        self.server.site_jobs = 2
+        self.server.own_jobs = [{"id": "j1", "kind": "study", "title": "自动学习", "course": "shared-1",
+                                 "course_name": "课程", "platform": "zhs", "state": "running", "summary": "",
+                                 "started": 1, "ended": None, "lines": []}]
+        self.server.events = queue.Queue()
+        self.page.goto("http://127.0.0.1:%d/#/home" % self.server.server_port, wait_until="domcontentloaded")
+        nav_jobs = self.page.locator('.nav .nav_item[data-go="#/jobs"]')
+        mobile_badge = self.page.locator('.mtabs .mtab[data-go="#/jobs"] .badge')
+        nav_jobs.locator(".live", has_text="3 个进行中").wait_for(timeout=3000)
+        self.assertEqual(mobile_badge.text_content(), "3")
+
+        self.server.site_jobs = 4
+        self.server.events.put({"type": "site_jobs", "count": 4})
+        nav_jobs.locator(".live", has_text="5 个进行中").wait_for(timeout=3000)
+        self.assertEqual(mobile_badge.text_content(), "5")
+
+        nav_jobs.click()
+        self.page.locator('.tab[data-go="#/jobs/all"] .n', has_text="4").wait_for(timeout=3000)
+        self.page.locator('.tab[data-go="#/jobs"] .n', has_text="1").wait_for(timeout=3000)
+
+        self.server.own_jobs = []
+        self.server.site_jobs = 0
+        self.server.events.put({"type": "job", "id": "j1", "kind": "study", "title": "自动学习",
+                                "course": "shared-1", "course_name": "课程", "platform": "zhs",
+                                "state": "done", "summary": "完成", "started": 1, "ended": 2})
+        self.server.events.put({"type": "site_jobs", "count": 0})
+        self.page.wait_for_function('() => !document.querySelector(\'.nav .nav_item[data-go="#/jobs"] .live\')', timeout=3000)
+        self.assertEqual(mobile_badge.count(), 0)
 
 
 if __name__ == "__main__":

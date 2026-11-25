@@ -97,7 +97,7 @@ async function api(path, { method = "GET", body } = {}) {
 
 const state = {
   platforms: [], courses: {}, papers: {}, paperErrors: {}, units: {}, selected: {}, earned: {}, qaDraft: {}, qaPosts: {}, qaRoom: {}, qaPeers: null, qaOpen: new Set(),
-  jobs: [], runs: {}, focus: null, jobLimit: 4, zhsParallel: false, history: [], view: "", loginToken: { cancelled: true }, returnTo: "", lastDone: null,
+  jobs: [], siteJobs: 0, runs: {}, focus: null, jobLimit: 4, zhsParallel: false, history: [], view: "", loginToken: { cancelled: true }, returnTo: "", lastDone: null,
   current: store.get("studia-platform", ""), meOpen: false, adminTab: "people", logFilter: "all", accountEdit: null, passwordSent: null, adminEdit: null, pausedOpen: new Set(),
   adminLists: {}, adminOpen: null,
 };
@@ -274,6 +274,8 @@ function switchPlatform(pid, navigate = true) {
 }
 
 function jobPill() {
+  const site = session.user?.role === "admin" ? siteCount() : 0;
+  if (site) return `<span class="live">${state.jobs.length + site} 个进行中</span>`;
   if (state.jobs.length) return state.jobs.every((j) => j.state !== "running")
     ? `<span class="live">${state.jobs.some((j) => j.state === "queued") ? "排队中" : "已暂停"}</span>` : `<span class="live">${state.jobs.filter((j) => j.state !== "paused").length} 个进行中</span>`;
   // Only what is running gets a count; past runs are not a number to watch.
@@ -328,9 +330,10 @@ function renderSidebar() {
   const back = under("#/course") ? ["#/home", "课程"] : under("#/settings", "#/admin") ? ["#/me", "我的"] : null;
   patch($(".mbar"), back ? `<button class="mback" data-go="${back[0]}">${ICON.back}<span>${back[1]}</span></button><span class="grow"></span>`
     : `<img class="mark" src="icon.svg" alt=""><b>Studia</b><span class="grow"></span>${under("#/home", "#/login") ? platforms : ""}`);
+  const jobsBadge = state.jobs.length + (admin ? siteCount() : 0);
   patch($(".mtabs"), `
     <button class="mtab" data-go="#/home" aria-current="${under("#/home", "#/course", "#/login")}">${ICON.cells}<span>课程</span></button>
-    <button class="mtab" data-go="#/jobs" aria-current="${view === "#/jobs"}">${ICON.pulse}<span>任务</span>${state.jobs.length ? `<b class="badge">${state.jobs.length}</b>` : ""}</button>
+    <button class="mtab" data-go="#/jobs" aria-current="${view === "#/jobs"}">${ICON.pulse}<span>任务</span>${jobsBadge ? `<b class="badge">${jobsBadge}</b>` : ""}</button>
     <button class="mtab" data-go="#/me" aria-current="${under("#/me", "#/settings", "#/admin")}"><span class="avatar">${esc(initial)}</span><span>我的</span></button>`);
   placeInk();
 }
@@ -885,14 +888,18 @@ function endDrag() {
 }
 document.addEventListener("pointerup", endDrag);
 document.addEventListener("pointercancel", endDrag);
-const siteCount = () => (state.sitePeople || []).reduce((sum, u) => sum + u.jobs.length, 0);
+const siteCount = () => state.siteJobs || 0;
 let siteTimer = 0;
 async function loadSiteJobs() {
   clearTimeout(siteTimer);
   const here = () => location.hash === "#/jobs/all";
   // Refresh every 5 seconds while the list is open; paused while hidden or a stop button is armed.
   if (!document.hidden && !document.querySelector(".armed")) {
-    try { state.sitePeople = (await api("/api/admin/jobs")).people; } catch (error) { toast(error.message); state.sitePeople = state.sitePeople || []; }
+    try {
+      state.sitePeople = (await api("/api/admin/jobs")).people;
+      state.siteJobs = state.sitePeople.reduce((sum, u) => sum + u.jobs.length, 0);
+    } catch (error) { toast(error.message); state.sitePeople = state.sitePeople || []; }
+    renderSidebar();
     if (here()) repaint();
   }
   if (here()) siteTimer = setTimeout(loadSiteJobs, 5000);
@@ -1188,7 +1195,7 @@ const VIEWS = {
   jobs(scope) {
     const admin = session.user?.role === "admin", all = admin && scope === "all";
     const head = `<h1 class="title">任务</h1>
-            ${admin ? `<div class="tabs" role="tablist"><button class="tab" role="tab" aria-selected="${!all}" data-go="#/jobs">我的</button>
+            ${admin ? `<div class="tabs" role="tablist"><button class="tab" role="tab" aria-selected="${!all}" data-go="#/jobs">我的${state.jobs.length ? `<span class="n">${state.jobs.length}</span>` : ""}</button>
         <button class="tab" role="tab" aria-selected="${all}" data-go="#/jobs/all">全站${siteCount() ? `<span class="n">${siteCount()}</span>` : ""}</button></div>` : ""}`;
     if (all) {
       const people = state.sitePeople;
@@ -2673,6 +2680,9 @@ function handleEvent(event) {
       loadCourses(event.platform);
       setTimeout(repaint, 61000);
     }
+  } else if (event.type === "site_jobs") {
+    state.siteJobs = Number(event.count) || 0;
+    if (location.hash === "#/jobs/all") loadSiteJobs();
   } else if (event.type === "account") {
     refreshState().then(repaint);
   } else if (event.type === "progress" || event.type === "log") {
@@ -2936,6 +2946,7 @@ async function refreshState(catchUp = false) {
       stalePapers(gone.platform, gone.course);
     }
     state.jobs = live;
+    state.siteJobs = typeof data.site_jobs === "number" ? data.site_jobs : 0;
     for (const job of live) markLive(key(job.platform, job.course));
     for (const p of state.platforms) if (!p.logged_in) { delete state.courses[p.id]; forgetPlatform(p.id); }
     // Signed in from another tab or device: this tab has no course list for it yet. Not awaited: readCourses

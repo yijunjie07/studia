@@ -236,6 +236,7 @@ class Hub:
         self.lock = threading.RLock()
         self.apps = {}
         self.pending_oauth = {}
+        self._site_jobs_sent = 0
 
     def app(self, uid):
         with self.lock:
@@ -251,7 +252,8 @@ class Hub:
                              job_limit=lambda uid=uid: self.job_limit(uid),
                              zhs_parallel=lambda: bool(self.accounts.setting("zhs_parallel_study", False)),
                              answer_pace=self.answer_pace,
-                             peers=lambda course_id, recruit_id, uid=uid: self.peer_questions(uid, course_id, recruit_id))
+                             peers=lambda course_id, recruit_id, uid=uid: self.peer_questions(uid, course_id, recruit_id),
+                             on_job=self.notify_site_jobs)
                 app.owner = (self.accounts.user(uid) or {}).get("username", uid)
                 app.public_endpoints_only = True  # a member's model URL must not reach this server's own network
                 self.apps[uid] = app
@@ -664,6 +666,29 @@ class Hub:
                                "limit": user["max_jobs"] or self.default_job_limit(), "jobs": jobs})
         return people
 
+    def site_job_count(self):
+        """Active jobs of non-admin users (same scope as all_jobs() / the 全站 tab)."""
+        total = 0
+        for user in self.accounts.users():
+            if user["role"] == "admin":
+                continue
+            app = self.apps.get(user["id"])
+            if app:
+                total += len(app.jobs)
+        return total
+
+    def notify_site_jobs(self):
+        """Tell signed-in admins when the site-wide job count changes so the nav updates live."""
+        count = self.site_job_count()
+        with self.lock:
+            if count == self._site_jobs_sent:
+                return
+            self._site_jobs_sent = count
+            admins = [self.apps[u["id"]] for u in self.accounts.users()
+                      if u["role"] == "admin" and u["id"] in self.apps]
+        for app in admins:
+            app.publish({"type": "site_jobs", "count": count})
+
     def disable(self, uid):
         self.accounts.set_disabled(uid, True)
         self.sessions.drop_user(uid)
@@ -897,6 +922,8 @@ class HostedAccess:
             fresh = hub.accounts.user(user["id"])
             hub.audit("email", actor=user["username"], ip=self._ip(request))
             return {"user": fresh}
+        if method == "GET" and path == "/api/state" and user["role"] == "admin":
+            return dict(ctx["app"].state(), site_jobs=hub.site_job_count())
         if not path.startswith("/api/admin/"):
             return NOT_HANDLED
         if user["role"] != "admin":
