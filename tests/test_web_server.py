@@ -299,6 +299,47 @@ class WebServerTest(unittest.TestCase):
             self.assertEqual(self.app._answer(platform, selected, True, job), "处理完成 2/2 份试卷")
         self.assertEqual(cached, [False, False])
 
+    def test_a_list_with_an_exam_to_open_on_the_platform_is_kept_only_briefly(self):
+        # 智慧树's exams open on the platform: coming back after opening one must not find the old list for 10 min.
+        platform = self.app.platforms["mooc"]
+        row = {"courseName": "英语", "courseId": "c1"}
+        platform.rows, platform.client = [row], Mock()
+        waiting = {"id": "e1", "name": "期末考试", "_completion_status": "not_started",
+                   "_unavailable": ("未开考", "先在平台网页上开考，回到这里会自动刷新。"), "_waiting": True}
+        reads = []
+
+        def catalog(client, course):
+            reads.append(1)
+            return [(row, dict(waiting) if len(reads) == 1 else {"id": "e1", "name": "期末考试"}, 2)]
+
+        with unittest.mock.patch("web.server._mooc_catalog", side_effect=catalog):
+            first = json.loads(self.request("GET", "/api/platforms/mooc/tasks?course=c1")[1])["tasks"][0]
+            self.assertEqual((first["available"], first["waiting"]), (False, True))
+            self.request("GET", "/api/platforms/mooc/tasks?course=c1")
+            self.assertEqual(len(reads), 1)  # within the short wait the list is still reused
+            stamp, value = platform.cache[("tasks", "c1")]
+            platform.cache[("tasks", "c1")] = (stamp - 31, value)
+            again = json.loads(self.request("GET", "/api/platforms/mooc/tasks?course=c1")[1])["tasks"][0]
+        self.assertEqual(len(reads), 2)
+        self.assertEqual((again["available"], again["waiting"]), (True, False))
+
+    def test_fresh_reads_the_paper_list_past_the_cache(self):
+        platform = self.app.platforms["mooc"]
+        row = {"courseName": "英语", "courseId": "c1"}
+        platform.rows, platform.client = [row], Mock()
+        reads = []
+
+        def catalog(client, course):
+            reads.append(1)
+            return [(row, {"id": "e%d" % len(reads), "name": "作业"}, 1)]
+
+        with unittest.mock.patch("web.server._mooc_catalog", side_effect=catalog):
+            self.request("GET", "/api/platforms/mooc/tasks?course=c1")
+            self.request("GET", "/api/platforms/mooc/tasks?course=c1")
+            self.assertEqual(len(reads), 1)
+            self.request("GET", "/api/platforms/mooc/tasks?course=c1&fresh=1")
+        self.assertEqual(len(reads), 2)
+
     def test_a_list_read_under_way_when_a_paper_is_handed_in_is_not_kept(self):
         platform = self.app.platforms["mooc"]
         entered, release = threading.Event(), threading.Event()

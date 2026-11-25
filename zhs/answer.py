@@ -1190,6 +1190,15 @@ def _shared_homework_items(client, recruit_id, course_id):
     return items
 
 
+# getSaveAnswerLockResult's state, as the platform's own exam list reads it before letting a student in
+# (onlineexamh5new stuExamWeb, checked 2026-11-25): 1 go ahead, 2 picked for an identity check, 3 barred.
+ANSWER_LOCK = {
+    1: None,
+    2: ("需要验证", "智慧树抽中你做身份验证：到平台网页点开这场考试，验证通过后回到这里会自动刷新。"),
+    3: ("禁止考试", "智慧树显示你已被禁止考试，可到平台网页查看异常记录或申诉。"),
+}
+
+
 def _shared_exam_items(client, recruit_id, course_id, seen=()):
     rows = client.shared_exam_list(recruit_id, course_id, 1)
     rows += client.shared_exam_list(recruit_id, course_id, 0)
@@ -1224,20 +1233,23 @@ def _shared_exam_items(client, recruit_id, course_id, seen=()):
             items.append(item)
             continue
         if not row.get("studentStartTime") and state != 2:
-            item["_unavailable"] = ("未开考", "先在平台网页上开考。")
+            item["_unavailable"] = ("未开考", "先在平台网页上开考，回到这里会自动刷新。")
+            item["_waiting"] = True
         elif _positive_int(row.get("faStudentExamRemainCount")) <= 0:
             item["_unavailable"] = ("无剩余次数", "考试剩余次数不足或未知。")
         else:
             try:
-                locked = client.shared_answer_lock(exam_id, recruit_id) == 1
+                lock = client.shared_answer_lock(exam_id, recruit_id)
             except (CaptchaRequired, AuthenticationExpired):
                 raise
             except Exception as exc:
                 logger.warning("%s：查询答案锁失败：%s", item["name"], exc)
                 item["_unavailable"] = ("状态未知", "答案锁状态查询失败，请刷新重试。")
             else:
-                if locked:
-                    item["_unavailable"] = ("已锁定", "考试答案已锁定。")
+                blocked = ANSWER_LOCK.get(lock, ("状态未知", "平台的答题状态未知（%s），请到网页核对。" % lock))
+                if blocked:
+                    item["_unavailable"] = blocked
+                    item["_waiting"] = lock == 2
         items.append(item)
     return items
 

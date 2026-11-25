@@ -33,7 +33,7 @@ class FakeAI:
 
 
 class FakeSharedClient:
-    def __init__(self, questions, *, homework_rows=None, exam_rows=None, lock=0,
+    def __init__(self, questions, *, homework_rows=None, exam_rows=None, lock=1,
                  school="88", submit_score=None):
         self.questions = list(questions)
         self.homework_rows = homework_rows if homework_rows is not None else [
@@ -69,7 +69,7 @@ class FakeSharedClient:
 
     def shared_answer_lock(self, exam_id, recruit_id):
         self._record("shared_answer_lock", exam_id)
-        return self.lock
+        return self.lock.get(exam_id, 1) if isinstance(self.lock, dict) else self.lock
 
     def shared_do_homework(self, recruit_id, exam_id, stu_exam_id, school_id, course_id):
         self._record("shared_do_homework",
@@ -311,11 +311,18 @@ class SharedExamFlowTest(unittest.TestCase):
         self.assertEqual(saved["item"]["examType"], 1)
         self.assertEqual(client.call("shared_submit_exam"), [1])
 
-    def test_recheck_sees_locked_exam(self):
-        client = FakeSharedClient([shared_question("e1")], lock=1)
+    def test_recheck_sees_barred_exam(self):
+        client = FakeSharedClient([shared_question("e1")], lock=3)
         result = runner(client, FakeAI(["B"])).run_paper(COURSE, exam_item(), 2)
         self.assertEqual(result["status"], "error")
-        self.assertIn("已锁定", result["message"])
+        self.assertIn("禁止考试", result["message"])
+        self.assertNotIn("shared_do_exam", client.names())
+
+    def test_recheck_sends_identity_check_to_the_platform(self):
+        client = FakeSharedClient([shared_question("e1")], lock=2)
+        result = runner(client, FakeAI(["B"])).run_paper(COURSE, exam_item(), 2)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("身份验证", result["message"])
         self.assertNotIn("shared_do_exam", client.names())
 
 
@@ -414,14 +421,32 @@ class CatalogSharedTest(unittest.TestCase):
             {"id": 4, "examId": 14, "examName": "可考", "state": 2,
              "studentStartTime": "s", "faStudentExamRemainCount": 2},
         ]
-        client = self.make_client(exam_rows=rows, lock=1)
+        client = self.make_client(exam_rows=rows)
         client.homework_rows = []
         by_id = {item["id"]: item for _, item, _ in catalog(client, COURSE)}
         self.assertEqual(by_id["sex-1-11"]["_unavailable"][0], "已提交")
         self.assertEqual(by_id["sex-1-11"]["_completion_status"], "submitted")
         self.assertEqual(by_id["sex-2-12"]["_unavailable"][0], "未开考")
+        self.assertTrue(by_id["sex-2-12"]["_waiting"])
         self.assertEqual(by_id["sex-3-13"]["_unavailable"][0], "无剩余次数")
-        self.assertEqual(by_id["sex-4-14"]["_unavailable"][0], "已锁定")
+        self.assertNotIn("_unavailable", by_id["sex-4-14"])
+        self.assertTrue(task_availability(by_id["sex-4-14"], 2).available)
+
+    def test_answer_lock_reads_as_the_platform_does(self):
+        # What the platform's own exam list does with getSaveAnswerLockResult before letting a student in:
+        # 1 lets them in, 2 asks for an identity check, 3 says they are barred. The real exam came back 1.
+        rows = [{"id": n, "examId": 10 + n, "examName": "考试%d" % n, "state": 2,
+                 "studentStartTime": "2026-11-25 10:00:39", "faStudentExamRemainCount": 1} for n in (1, 2, 3, 4)]
+        client = self.make_client(exam_rows=rows, lock={11: 1, 12: 2, 13: 3, 14: 0})
+        client.homework_rows = []
+        by_id = {item["id"]: item for _, item, _ in catalog(client, COURSE)}
+        self.assertNotIn("_unavailable", by_id["sex-1-11"])
+        self.assertNotIn("_waiting", by_id["sex-1-11"])
+        self.assertEqual(by_id["sex-2-12"]["_unavailable"][0], "需要验证")
+        self.assertTrue(by_id["sex-2-12"]["_waiting"])
+        self.assertEqual(by_id["sex-3-13"]["_unavailable"][0], "禁止考试")
+        self.assertFalse(by_id["sex-3-13"]["_waiting"])
+        self.assertEqual(by_id["sex-4-14"]["_unavailable"][0], "状态未知")
 
     def test_answer_lock_failure_is_unknown(self):
         client = self.make_client()
