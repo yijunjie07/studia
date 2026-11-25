@@ -1029,10 +1029,12 @@ const VIEWS = {
         : `<div class="model plain"><span class="m1"><small class="sans">还没有默认模型</small></span>
           <span class="row_btns"><button class="btn small primary" data-default-edit aria-pressed="${editing}">配置</button></span></div>`;
       const modelEdit = editing ? `<form class="form_card" data-default-model>
-          <div class="field"><label>名称</label><input name="provider_name" value="${esc(model.provider_name)}" placeholder="默认供应商"></div>
-          <div class="field"><label>服务地址</label><input name="base_url" value="${esc(model.base_url)}" placeholder="https://api.example.com/v1" required></div>
-          <div class="field"><label>模型</label><input name="model" value="${esc(model.model)}" placeholder="例如 deepseek-chat" required></div>
-          <div class="field"><label>API Key</label><input name="api_key" type="password" autocomplete="off"></div>
+          <div class="form_grid">
+            <label class="auth_field"><span>名称</span><input name="provider_name" value="${esc(model.provider_name)}" placeholder="默认供应商"></label>
+            <label class="auth_field"><span>模型</span><input class="mono_in" name="model" value="${esc(model.model)}" placeholder="例如 deepseek-chat" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
+          </div>
+          <label class="auth_field"><span>服务地址</span><input class="mono_in" name="base_url" inputmode="url" value="${esc(model.base_url)}" placeholder="https://api.example.com/v1" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
+          <label class="auth_field"><span>API Key</span><span class="pw"><input class="mono_in" name="api_key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false"><button type="button" class="pw_eye" data-reveal aria-label="显示密钥">显示</button></span></label>
           <div class="form_btns"><span class="grow"></span>
             <button type="button" class="btn" data-default-cancel>取消</button><button class="btn primary">测试并保存</button></div>
         </form>` : "";
@@ -1099,6 +1101,7 @@ const VIEWS = {
         api_key.placeholder = !saved ? "必填" : sameHost() ? `留空不修改（${saved.key_hint}）` : "换了服务地址，请重新填写";
       };
       api_key.value = modelDraft?.api_key || "";
+      wireReveal(defaultForm);
       base_url.oninput = keyRule;
       keyRule();
       if (!modelDraft) defaultForm.querySelector("input").focus();
@@ -1527,6 +1530,8 @@ function wireEmailForm(form, done) {
 // Once each time the page opens, until the email is bound or the person picks 今天不显示.
 // A dialog sinks and fades (its backdrop with it) before it closes.
 function closeModal(dialog) {
+  if (dialog.dataset.closing) return;
+  dialog.dataset.closing = "1";
   // Folded back to its middle line, as it opened.
   const out = moves(dialog, [{ clipPath: "inset(-40px)" }, { clipPath: "inset(50% -40px 50% -40px)", transform: "scale(.985)" }], { duration: 360, easing: EASE_IO, fill: "forwards" });
   try { moves(dialog, [{ opacity: 1 }, { opacity: 0 }], { duration: 360, pseudoElement: "::backdrop", fill: "forwards" }); } catch { /* backdrop stays until close */ }
@@ -1544,6 +1549,7 @@ function promptEmail() {
       <div class="modal_btns"><button type="button" class="link" data-later>今天不再提醒</button><span class="grow"></span>
         <button type="button" class="btn" data-skip>暂时跳过</button><button class="btn primary">绑定</button></div></form>`;
   document.body.appendChild(dialog);
+  dialog.addEventListener("cancel", (event) => { event.preventDefault(); closeModal(dialog); });
   dialog.addEventListener("close", () => dialog.remove());
   $("[data-skip]", dialog).onclick = () => closeModal(dialog);
   $("[data-later]", dialog).onclick = () => { store.set(later, new Date().toDateString()); closeModal(dialog); };
@@ -1593,7 +1599,7 @@ function paintSettings(tab, head, data, again) {
     }));
     return;
   }
-  renderModels(head, data.models, null, again);
+  renderModels(head, data.models, again);
 }
 
 // A waiting or failed run the user has since started again (or that is running now) needs no button.
@@ -1626,19 +1632,88 @@ function fixButtons(j, i) {
 
 /* ---------------------------------------------------------------- settings: models */
 
-const HEALTH = { ok: ["ok", "可用"], error: ["error", "出错"] };
-function renderModels(head, models, editing = null, again = true) {
-  const host = (url) => { try { return new URL(url).host; } catch { return url; } };
-  const form = (m) => `<form class="form_card" data-form="${m ? esc(m.id) : "new"}">
-      <h3>${m ? "编辑模型" : "添加模型"}</h3>
-      <div class="field"><label>名称</label><input name="provider_name" value="${esc(m?.provider || "")}" placeholder="方便自己区分，例如 DeepSeek 官方"></div>
-      <div class="field"><label>服务地址</label><input name="base_url" value="${esc(m?.base_url || "")}" placeholder="https://api.example.com/v1" required></div>
-      <div class="field"><label>模型</label><input name="model" value="${esc(m?.model || "")}" placeholder="例如 deepseek-chat" required></div>
-      <div class="field"><label>API Key</label><input name="api_key" type="password" autocomplete="off" ${m ? `placeholder="留空则不修改（当前 ${esc(m.key_hint)}）"` : "required"}></div>
-      <div class="form_btns">${m?.deletable ? '<button type="button" class="btn danger" data-delete data-confirm="确认删除">删除这个模型</button><span class="grow"></span>' : ""}<button type="button" class="btn" data-cancel>取消</button><button class="btn primary">${m ? "保存" : "保存并测试"}</button></div>
+function wireReveal(root) {
+  root.querySelectorAll("[data-reveal]").forEach((el) => (el.onclick = () => {
+    const input = el.previousElementSibling, show = input.type === "password";
+    input.type = show ? "text" : "password";
+    el.textContent = show ? "隐藏" : "显示";
+    el.setAttribute("aria-label", show ? "隐藏内容" : "显示内容");
+  }));
+}
+
+function openModelModal(m, onDone) {
+  const dialog = document.createElement("dialog");
+  dialog.className = "modal model_modal";
+  dialog.setAttribute("aria-labelledby", "model-modal-title");
+  dialog.innerHTML = `<form data-form="${m ? esc(m.id) : "new"}">
+      <h3 id="model-modal-title" tabindex="-1" autofocus>${m ? "编辑模型" : "添加模型"}</h3>
+      <p class="sub">${m ? "修改后立即生效，API Key 留空则保持当前密钥不变。" : "填写 OpenAI 兼容接口信息，保存后会自动测试连接。"}</p>
+      <div class="form_grid">
+        <label class="auth_field"><span>名称</span>
+          <input name="provider_name" value="${esc(m?.provider || "")}" placeholder="如 DeepSeek 官方"></label>
+        <label class="auth_field"><span>模型</span>
+          <input class="mono_in" name="model" value="${esc(m?.model || "")}" placeholder="如 deepseek-chat" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
+      </div>
+      <label class="auth_field"><span>服务地址</span>
+        <input class="mono_in" name="base_url" inputmode="url" value="${esc(m?.base_url || "")}" placeholder="https://api.example.com/v1" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
+      <label class="auth_field"><span>API Key</span>
+        <span class="pw"><input class="mono_in" name="api_key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" ${m ? `placeholder="留空不修改（${esc(m.key_hint)}）"` : 'placeholder="sk-..." required'}>
+          <button type="button" class="pw_eye" data-reveal aria-label="显示密钥">显示</button></span></label>
+      <p class="form_msg" role="alert"></p>
+      <div class="modal_btns">
+        ${m?.deletable ? '<button type="button" class="btn danger" data-delete data-confirm="确认删除">删除</button>' : ""}
+        <span class="grow"></span>
+        <button type="button" class="btn" data-cancel>取消</button>
+        <button class="btn primary">${m ? "保存" : "保存并测试"}</button>
+      </div>
     </form>`;
+  document.body.appendChild(dialog);
+  const formEl = $("form", dialog), msg = $(".form_msg", dialog), ok = $("button.primary", dialog), del = $("[data-delete]", dialog);
+  wireReveal(dialog);
+  dialog.addEventListener("cancel", (event) => { event.preventDefault(); closeModal(dialog); });
+  dialog.addEventListener("close", () => dialog.remove());
+  $("[data-cancel]", dialog).onclick = () => closeModal(dialog);
+  if (del) del.onclick = async () => {
+    del.disabled = ok.disabled = true;
+    try {
+      await api(`/api/settings/models/${m.id}/delete`, { method: "POST" });
+      closeModal(dialog); toast("已删除"); onDone();
+    } catch (e) { msg.textContent = e.message; del.disabled = ok.disabled = false; }
+  };
+  formEl.onsubmit = async (event) => {
+    event.preventDefault();
+    msg.textContent = "";
+    const body = Object.fromEntries(new FormData(formEl));
+    const isNew = !m;
+    ok.disabled = true;
+    if (del) del.disabled = true;
+    ok.textContent = isNew ? "保存并测试中…" : "保存中…";
+    try {
+      const r = await api(isNew ? "/api/settings/models" : `/api/settings/models/${m.id}`, { method: "POST", body });
+      if (isNew) {
+        const t = await api(`/api/settings/models/${r.id}/test`, { method: "POST" });
+        closeModal(dialog);
+        toast(t.health === "ok" ? "模型可用，已设为使用中" : `已保存，但连接失败：${t.message}`);
+      } else {
+        closeModal(dialog);
+        toast("已保存");
+      }
+      onDone();
+    } catch (e) {
+      msg.textContent = e.message;
+      ok.disabled = false;
+      if (del) del.disabled = false;
+      ok.textContent = isNew ? "保存并测试" : "保存";
+    }
+  };
+  dialog.showModal();
+  if (!TOUCH) formEl.elements.provider_name.focus();
+}
+
+const HEALTH = { ok: ["ok", "可用"], error: ["error", "出错"] };
+function renderModels(head, models, again = true) {
+  const host = (url) => { try { return new URL(url).host; } catch { return url; } };
   const row = (m) => {
-    if (editing === m.id) return form(m);
     const [cls, label] = HEALTH[m.health] || ["", "未测试"];
     return `<div class="model ai ${m.active ? "on" : ""}" data-id="${esc(m.id)}">
       <span class="m1"><b>${esc(m.provider || "未命名服务")}</b>${m.deletable ? "" : `<span class="pill">${session.mode === "hosted" ? "管理员提供" : "内置"}</span>`}
@@ -1649,21 +1724,20 @@ function renderModels(head, models, editing = null, again = true) {
   };
   quiet = again;
   setPage(`${head}<div class="section">${PHONE.matches ? '<span class="grow"></span>' : "<h2>AI 模型</h2>"}<button class="link" data-add>＋ 添加模型</button></div>
-    ${editing === "new" ? form(null) : ""}<div class="models">${models.map(row).join("") || (editing === "new" ? "" : '<div class="model plain"><span class="m1"><small class="sans">还没有可用的模型</small></span></div>')}</div>`);
+    <div class="models">${models.map(row).join("") || '<div class="model plain"><span class="m1"><small class="sans">还没有可用的模型</small></span></div>'}</div>`);
   quiet = false;
-  const reload = async (edit = null) => {
-    try { state.settings = await api("/api/settings"); renderModels(head, state.settings.models, edit); } catch (e) { toast(e.message); }
+  const reload = async () => {
+    try { state.settings = await api("/api/settings"); renderModels(head, state.settings.models); } catch (e) { toast(e.message); }
   };
-  $("[data-add]", page).onclick = () => renderModels(head, models, "new");
-  page.querySelectorAll("[data-cancel]").forEach((el) => (el.onclick = () => renderModels(head, models)));
+  $("[data-add]", page).onclick = () => openModelModal(null, reload);
   page.querySelectorAll(".model[data-id]").forEach((rowEl) => {
-    const id = rowEl.dataset.id;
+    const id = rowEl.dataset.id, m = models.find((x) => x.id === id);
     const use = $("[data-activate]", rowEl);
     if (use) use.onclick = async () => {
       try { await api("/api/settings/models/activate", { method: "POST", body: { id } }); toast("已切换模型"); reload(); } catch (e) { toast(e.message); }
     };
     const edit = $("[data-edit]", rowEl);
-    if (edit) edit.onclick = () => renderModels(head, models, id);
+    if (edit) edit.onclick = () => openModelModal(m, reload);
     $("[data-test]", rowEl).onclick = async () => {
       const chip = $(".health", rowEl);
       chip.className = "health busy"; chip.textContent = "测试中";
@@ -1671,28 +1745,6 @@ function renderModels(head, models, editing = null, again = true) {
       reload();
     };
   });
-  const formEl = $("[data-form]", page);
-  const del = $("[data-delete]", page);
-  if (del) del.onclick = async () => {
-    try { await api(`/api/settings/models/${formEl.dataset.form}/delete`, { method: "POST" }); toast("已删除"); reload(); } catch (e) { toast(e.message); }
-  };
-  if (formEl) {
-    formEl.querySelector("input").focus();
-    formEl.onsubmit = async (event) => {
-      event.preventDefault();
-      const body = Object.fromEntries(new FormData(formEl));
-      const id = formEl.dataset.form;
-      try {
-        const r = await api(id === "new" ? "/api/settings/models" : `/api/settings/models/${id}`, { method: "POST", body });
-        if (id === "new") {
-          toast("已保存，正在测试连接…");
-          const t = await api(`/api/settings/models/${r.id}/test`, { method: "POST" });
-          toast(t.health === "ok" ? "模型可用，已设为使用中" : `已保存，但连接失败：${t.message}`);
-        } else toast("已保存");
-        reload();
-      } catch (e) { toast(e.message); }
-    };
-  }
 }
 
 /* ---------------------------------------------------------------- course page */
@@ -2260,23 +2312,24 @@ function examCode(p, c, paper) {
     const dialog = document.createElement("dialog");
     dialog.className = "modal exam_code checking";
     dialog.setAttribute("aria-labelledby", "exam-code-title");
-    const captchaSub = (remain) => `${esc(paper.name)}<br>${paper.start
+    const captchaSub = (remain) => paper.start
       ? `这场考试还没开考。<b>验证通过后会立即开考</b>：开始计时，并用掉一次考试机会${remain != null ? `（剩 ${remain} 次）` : ""}。`
-      : "智慧树每次进入考试都要输入验证码。图是用你的登录取的，通过后才能打开试卷。"}`;
-    const locSub = () => `${esc(paper.name)}<br>该考试需要开启定位，请使用「知到 App」扫码开启定位，成功后会自动继续。${
+      : "智慧树每次进入考试都要输入验证码。图是用你的登录取的，通过后才能打开试卷。";
+    const locSub = () => `该考试需要开启定位，请使用「知到 App」扫码开启定位，成功后会自动继续。${
       TOUCH ? "（长按保存二维码，在知到 App 里从相册扫码）" : ""}`;
-    dialog.innerHTML = `<form><h3 id="exam-code-title">${paper.start ? "开考验证" : "进入考试验证"}</h3>
-        <p class="sub">${esc(paper.name)}<br>正在检查进入条件…</p>
+    dialog.innerHTML = `<form><h3 id="exam-code-title" tabindex="-1" autofocus>${paper.start ? "开考验证" : "进入考试验证"}</h3>
+        <p class="modal_paper">${esc(paper.name)}</p>
+        <p class="sub"></p>
+        <div class="exam_checking">正在检查进入条件…</div>
         <p class="exam_warn" hidden></p>
         <div class="exam_loc">
           <div class="qr"><img alt="开启定位二维码"></div>
-          <button type="button" class="link" data-new-qr>刷新二维码</button>
+          <div class="exam_loc_foot"><span class="exam_loc_wait">等待扫码确认…</span><button type="button" class="link" data-new-qr>刷新二维码</button></div>
         </div>
-        <label class="auth_field"><span>验证码</span><span class="code_row">
-          <input name="code" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="8">
-          <img alt="验证码图片" width="100" height="38"></span></label>
-        <button type="button" class="link" data-new-code>看不清，换一张</button>
-        <label class="pledge"><input type="checkbox" name="pledge"> 我已阅读并同意《在线考试诚信承诺书》</label>
+        <div class="auth_field"><div class="field_head"><label for="exam-code-input">验证码</label><button type="button" class="link" data-new-code>看不清，换一张</button></div>
+          <span class="code_row"><input id="exam-code-input" name="code" placeholder="输入右侧字符" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="8">
+          <img alt="验证码图片" title="点击换一张" width="112" height="40"></span></div>
+        <div class="pledge"><label><input type="checkbox" name="pledge"> 我已阅读并同意</label><a class="link" href="https://www.zhihuishu.com/columnsapp/student/protocal/examPromise.html" target="_blank" rel="noopener noreferrer">《在线考试诚信承诺书》</a></div>
         <p class="form_msg" role="alert"></p>
         <div class="modal_btns"><span class="grow"></span><button type="button" class="btn" data-cancel>取消</button>
           <button class="btn primary" disabled>确定</button></div></form>`;
@@ -2285,11 +2338,16 @@ function examCode(p, c, paper) {
     const locImg = $(".exam_loc img", dialog), msg = $(".form_msg", dialog), ok = $("button.primary", dialog);
     const { code, pledge } = form.elements;
     let passed = false, ready = 0, busy = false, closed = false, checkingLoc = false;
-    let locPoll = 0, locRefresh = 0;
+    let locPoll = 0, locRefresh = 0, qrAt = 0;
     const stopLoc = () => {
       if (locPoll) { clearInterval(locPoll); locPoll = 0; }
       if (locRefresh) { clearInterval(locRefresh); locRefresh = 0; }
     };
+    const onReturn = () => {
+      if (document.visibilityState === "visible" && dialog.classList.contains("locating")) checkLocation(true);
+    };
+    document.addEventListener("visibilitychange", onReturn);
+    window.addEventListener("focus", onReturn);
     const tick = setInterval(() => paint(), 500);
     const paint = () => {
       if (dialog.classList.contains("locating")) {
@@ -2298,7 +2356,7 @@ function examCode(p, c, paper) {
         return;
       }
       const left = Math.ceil((ready - Date.now()) / 1000);
-      ok.textContent = left > 0 ? `确定（${left}）` : "确定";
+      ok.textContent = left > 0 ? `确定 (${left})` : "确定";
       ok.disabled = busy || !ready || left > 0;
     };
     const showWarning = (text) => {
@@ -2313,11 +2371,14 @@ function examCode(p, c, paper) {
       code.required = false;
       sub.innerHTML = locSub();
       locImg.src = qr;
+      qrAt = Date.now();
       ready = 0;
       paint();
       stopLoc();
-      locPoll = setInterval(() => checkLocation(true), 4000);
-      locRefresh = setInterval(() => refreshLocationQr(true), 90000);
+      locPoll = setInterval(() => { if (document.visibilityState === "visible") checkLocation(true); }, 4000);
+      locRefresh = setInterval(() => {
+        if (document.visibilityState === "visible" && !checkingLoc && Date.now() - qrAt >= 85000) refreshLocationQr(true);
+      }, 15000);
     };
     const showCode = (image, remain) => {
       stopLoc();
@@ -2336,6 +2397,7 @@ function examCode(p, c, paper) {
         const got = await api(`/api/platforms/${p.id}/exam-location`, { method: "POST", body: { course: c.id, task: paper.id } });
         if (closed || !dialog.classList.contains("locating")) return;
         locImg.src = got.qr;
+        qrAt = Date.now();
         if (!quiet) msg.textContent = "";
       } catch (error) {
         if (!closed && !quiet) msg.textContent = error.message;
@@ -2380,14 +2442,22 @@ function examCode(p, c, paper) {
         // The platform's own checks say only its page may go on (face check, old system…): nothing to type here.
         if (error.status === 409 && !img.src) {
           dialog.classList.add("blocked");
-          sub.textContent = paper.name;
           $("[data-cancel]", dialog).textContent = "知道了";
         } else if (!img.src) {
-          sub.textContent = paper.name;
+          sub.textContent = "";
         }
       }
     };
-    dialog.addEventListener("close", () => { closed = true; clearInterval(tick); stopLoc(); dialog.remove(); resolve(passed); });
+    dialog.addEventListener("cancel", (event) => { event.preventDefault(); closeModal(dialog); });
+    dialog.addEventListener("close", () => {
+      closed = true;
+      clearInterval(tick);
+      stopLoc();
+      document.removeEventListener("visibilitychange", onReturn);
+      window.removeEventListener("focus", onReturn);
+      dialog.remove();
+      resolve(passed);
+    });
     $("[data-cancel]", dialog).onclick = () => closeModal(dialog);
     $("[data-new-qr]", dialog).onclick = () => refreshLocationQr(false);
     $("[data-new-code]", dialog).onclick = () => { msg.textContent = ""; fetchCode(); };
@@ -2901,6 +2971,7 @@ let waitingRead = 0;
 function recheckWaiting() {
   const [, name, pid, cid, tab] = parseHash(location.hash);
   if (name !== "course" || tab !== "answer" || document.visibilityState !== "visible" || Date.now() - waitingRead < 5000) return;
+  if (document.querySelector("dialog.exam_code[open]")) return;
   const p = platformOf(pid), c = courseOf(pid, decodeURIComponent(cid || ""));
   if (!p || !c || !state.papers[key(pid, c.id)]?.some((x) => x.waiting)) return;
   waitingRead = Date.now();

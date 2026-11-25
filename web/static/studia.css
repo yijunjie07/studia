@@ -607,17 +607,34 @@ body.dragging, body.dragging * { cursor: grabbing !important; user-select: none;
 .plat { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 5px; color: #fff; font-size: 12px; font-weight: 700; }
 .plat.mooc { background: var(--mooc); } .plat.zhs { background: var(--zhs); }
 
-.form_card { padding: 16px 18px 14px; border-radius: 6px; background: var(--card); box-shadow: var(--shadow-pop); margin: 4px 0 12px; }
-.models .form_card { margin: 0; border-radius: 0; box-shadow: inset 4px 0 0 rgb(var(--ink)); }
-.form_card h3 { margin: 0 0 10px; font-size: 14px; }
-.field { display: grid; grid-template-columns: 96px 1fr; align-items: center; gap: 10px; margin: 8px 0; }
-.field label { color: var(--text-3); }
-.field input, .field select, .inline_num, .log_range input, .log_range select, .auth_field input {
-  border: 0; border-radius: 5px; background: var(--card); box-shadow: inset 0 0 0 1px var(--line-2); transition: box-shadow .15s; }
-.field input, .field select { min-width: 0; height: 34px; padding: 0 10px; font-size: 13px; background: var(--paper); }
-:is(.field input, .field select, .inline_num, .log_range input, .log_range select, .auth_field input):focus { outline: none; box-shadow: inset 0 0 0 1.5px var(--indigo), 0 0 0 3px var(--indigo-soft); }
-.field input[type="number"] { width: 90px; font-family: var(--mono); }
-.form_btns { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.form_card { padding: 20px 22px 18px; border-radius: 10px; background: var(--card); box-shadow: inset 0 2px 0 var(--indigo), var(--shadow-pop); margin: 4px 0 14px; }
+.models .form_card { margin: 0; border-radius: 0; background: color-mix(in srgb, var(--indigo) 3.5%, var(--card)); box-shadow: inset 3px 0 0 var(--indigo); }
+.models .form_card :is(input, select) { background: var(--card); }
+.form_card h3 { margin: 0 0 12px; font-size: 15px; font-weight: 700; }
+.form_grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
+.form_card .auth_field { margin-bottom: 12px; }
+.form_card .auth_field input, .form_card .auth_field select { width: 100%; height: 38px; padding: 0 11px; font-size: 13.5px; }
+.auth_field select { width: 100%; height: 40px; padding: 0 11px; font-size: 14px; }
+.mono_in { font-family: var(--mono); font-size: 13px !important; }
+.mono_in::placeholder { font-family: var(--sans); font-size: 13px; }
+.field { display: grid; grid-template-columns: 96px 1fr; align-items: center; gap: 10px; margin: 10px 0; }
+.field label { color: var(--text-3); font-size: 13px; }
+.field input, .field select, .inline_num, .log_range input, .log_range select, .auth_field input, .auth_field select, .row_input {
+  border: 0; border-radius: 7px; background: var(--paper-2); color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--line-2);
+  transition: box-shadow .18s var(--ease), background-color .18s var(--ease); }
+:is(.field input, .field select, .inline_num, .log_range input, .log_range select, .auth_field input, .auth_field select, .row_input)::placeholder { color: var(--text-4); }
+@media (hover: hover) {
+  :is(.field input, .field select, .inline_num, .log_range input, .log_range select, .auth_field input, .auth_field select, .row_input):not(:disabled):not(:focus):hover {
+    box-shadow: inset 0 0 0 1px rgb(var(--ink) / .28); }
+}
+.field input, .field select { min-width: 0; height: 36px; padding: 0 11px; font-size: 13.5px; }
+:is(.field input, .field select, .inline_num, .log_range input, .log_range select, .auth_field input, .auth_field select, .row_input):focus {
+  outline: none; background: var(--card); box-shadow: inset 0 0 0 1.5px var(--indigo), 0 0 0 3.5px var(--indigo-soft); }
+:is(.field input, .field select, .inline_num, .log_range input, .log_range select, .auth_field input, .auth_field select, .row_input):disabled { opacity: .55; cursor: not-allowed; }
+.field input[type="number"] { width: 92px; font-family: var(--mono); }
+.form_btns { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.form_btns .btn { height: 34px; padding: 0 14px; border-radius: 7px; }
 
 /* Platform login */
 .login_card { display: flex; gap: 26px; align-items: center; margin-top: 24px; padding: 22px; border-radius: 4px; background: var(--card); box-shadow: inset 0 0 0 1px var(--print); }
@@ -640,50 +657,73 @@ body.dragging, body.dragging * { cursor: grabbing !important; user-select: none;
 @keyframes fill-in { from { clip-path: inset(-20px calc(100% + 20px) -20px -20px); } to { clip-path: inset(-20px); } }
 .row_form label { display: flex; align-items: center; font-weight: 500; }
 .row_form small { color: var(--text-3); font-size: 12px; }
-.row_input { width: 240px; max-width: 100%; height: 30px; padding: 0 10px; border: 0; border-radius: 5px; background: var(--card); box-shadow: inset 0 0 0 1px var(--line-2); font-size: 13px; }
-.row_input:focus { outline: none; box-shadow: inset 0 0 0 1.5px var(--indigo), 0 0 0 3px var(--indigo-soft); }
-.row_form .inline_num { background: var(--card); }
+.row_input { width: 240px; max-width: 100%; height: 32px; padding: 0 11px; font-size: 13px; }
+.row_form .row_input, .row_form .inline_num { background: var(--card); }
 .btn[aria-pressed="true"] { background: rgb(var(--ink)); color: var(--paper); box-shadow: none; }
 .log_range { display: flex; flex-wrap: wrap; gap: 10px 16px; }
 .log_range label { display: grid; gap: 4px; font-size: 12px; color: var(--text-3); }
-.log_range input, .log_range select { height: 34px; padding: 0 10px; background: var(--paper); font: 13px var(--sans); color: var(--text); }
+.log_range input, .log_range select { height: 36px; padding: 0 11px; font: 13px var(--sans); color: var(--text); }
 
 /* Settings > account */
 .account_who { display: flex; align-items: center; gap: 14px; min-width: 0; }
 .model.password_form { grid-template-columns: minmax(0, 1fr); align-items: start; gap: 14px; }
-.form_msg { min-height: 18px; margin: 0 0 4px; font-size: 13px; line-height: 1.5; color: var(--seal); }
+.form_msg { min-height: 18px; margin: 4px 0 0; font-size: 13px; line-height: 1.55; color: var(--seal); }
 .form_msg.ok { color: var(--text-3); }
 .form_msg:empty { display: none; }
-.code_row { display: flex; gap: 8px; }
+.code_row { display: flex; align-items: stretch; gap: 8px; }
 .code_row input { flex: 1; min-width: 0; }
-.code_row .btn { flex: none; height: 38px; }
-.modal { width: 420px; max-width: calc(100% - 32px); padding: 22px 22px 16px; border: 0; border-radius: 8px; background: var(--card); color: var(--text); box-shadow: var(--shadow-pop); }
-.modal::backdrop { background: rgb(var(--ink) / .28); }
+.code_row .btn { flex: none; height: 40px; border-radius: 7px; }
+.modal { width: 432px; max-width: calc(100% - 32px); padding: 24px 24px 18px; border: 0; border-radius: 12px; background: var(--card); color: var(--text);
+         box-shadow: inset 0 2px 0 var(--indigo), 0 0 0 1px var(--line), 0 22px 48px rgb(20 24 30 / .18); overflow: hidden; }
+.modal.model_modal { width: 480px; }
+@media (max-width: 520px) { .form_grid { grid-template-columns: 1fr; } }
+:root[data-theme="night"] .modal { box-shadow: inset 0 2px 0 var(--indigo), 0 0 0 1px rgb(255 255 255 / .08), 0 24px 56px rgb(0 0 0 / .62); }
+.modal::backdrop { background: rgb(var(--ink) / .34); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+:root[data-theme="night"] .modal::backdrop { background: rgb(0 0 0 / .56); }
 .modal[open] { animation: dialog-in calc(.55s * var(--pace)) var(--ease-io) both; }
 .modal[open]::backdrop { animation: fade calc(.45s * var(--pace)) var(--ease) both; }
 @keyframes dialog-in { from { clip-path: inset(50% -40px 50% -40px); transform: scale(.985); } to { clip-path: inset(-40px); } }
-.modal h3 { margin: 0; font-size: 17px; outline: none; }
-.modal .sub { margin: 6px 0 18px; line-height: 1.6; }
-.modal .auth_field input { height: 38px; font-size: 14px; }
-.modal_btns { display: flex; align-items: center; gap: 8px; }
-.exam_code .code_row img { flex: none; width: 100px; height: 38px; border-radius: 4px; background: var(--well); object-fit: contain; cursor: pointer; }
+.modal h3 { margin: 0; font-size: 17.5px; font-weight: 700; letter-spacing: -.015em; line-height: 1.35; outline: none; }
+.modal .modal_paper { margin: 8px 0 0; font-size: 13.5px; font-weight: 600; color: var(--text); line-height: 1.45; }
+.modal .sub { margin: 6px 0 18px; font-size: 13px; color: var(--text-3); line-height: 1.65; }
+.modal .modal_paper + .sub { margin-top: 4px; }
+.modal .auth_field input { height: 40px; font-size: 14px; }
+.modal_btns { display: flex; align-items: center; gap: 8px; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.modal_btns .btn { height: 36px; padding: 0 16px; border-radius: 7px; font-variant-numeric: tabular-nums; }
+.exam_code .field_head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.exam_code .field_head > label { font-size: 12px; font-weight: 600; color: var(--indigo); cursor: pointer; }
+.exam_code .code_row input { font-family: var(--mono); font-size: 16px; font-weight: 600; letter-spacing: .16em; }
+.exam_code .code_row input::placeholder { font-family: var(--sans); font-size: 13.5px; font-weight: 400; letter-spacing: 0; }
+.exam_code .code_row img { flex: none; width: 112px; height: 40px; border-radius: 7px; background: #fff; box-shadow: inset 0 0 0 1px var(--line-2); object-fit: contain; cursor: pointer; transition: box-shadow .18s var(--ease), opacity .18s var(--ease); }
+@media (hover: hover) { .exam_code .code_row img:hover { box-shadow: inset 0 0 0 1px var(--print); opacity: .92; } }
 .exam_code [data-new-code], .exam_code [data-new-qr] { font-size: 12.5px; }
 .exam_code .sub b { color: var(--seal); font-weight: 600; }
-.exam_code .exam_loc { display: none; flex-direction: column; align-items: center; gap: 10px; margin: 4px 0 14px; }
-.exam_code .exam_loc .qr { width: 184px; height: 184px; }
-.exam_code.checking :is(.exam_loc, .auth_field, [data-new-code], .pledge, button.primary) { display: none; }
+.exam_code .exam_checking { display: none; align-items: center; gap: 10px; margin-top: 14px; padding: 14px 16px; border-radius: 8px; background: var(--well); color: var(--text-3); font-size: 13px; }
+.exam_code .exam_checking::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 1.5px; background: var(--indigo); animation: breathe 1.4s ease-in-out infinite; }
+.exam_code .exam_loc { display: none; flex-direction: column; align-items: center; gap: 12px; padding: 18px 16px 14px; border-radius: 10px; background: var(--well); box-shadow: inset 0 0 0 1px var(--line); }
+.exam_code .exam_loc .qr { width: 180px; height: 180px; padding: 10px; border-radius: 8px; background: #fff; box-shadow: 0 2px 10px rgb(20 24 30 / .08), 0 0 0 1px rgb(33 36 41 / .08); }
+.exam_code .exam_loc_foot { display: flex; align-items: center; justify-content: center; gap: 12px; font-size: 12.5px; color: var(--text-3); }
+.exam_code .exam_loc_wait { display: inline-flex; align-items: center; gap: 6px; }
+.exam_code .exam_loc_wait::before { content: ""; width: 6px; height: 6px; border-radius: 1.5px; background: var(--indigo); animation: breathe 1.6s ease-in-out infinite; }
+.exam_code.checking .exam_checking { display: flex; }
+.exam_code.checking :is(.sub, .exam_loc, .auth_field, .pledge, button.primary) { display: none; }
 .exam_code.locating .exam_loc { display: flex; }
-.exam_code.locating :is(.auth_field, [data-new-code], .pledge) { display: none; }
-.exam_code.locating .form_msg { text-align: center; }
-.exam_code.blocked :is(.exam_loc, .auth_field, [data-new-code], .pledge, button.primary) { display: none; }
-.exam_code.blocked .form_msg { padding: 8px 10px; border-radius: 4px; background: var(--seal-soft); }
-.exam_code .exam_warn { margin: -6px 0 16px; padding: 8px 10px; border-radius: 4px; background: var(--seal-soft); color: var(--seal); font-size: 13px; line-height: 1.6; }
-.exam_code .pledge { display: flex; align-items: center; gap: 8px; margin: 16px 0 14px; font-size: 13px; color: var(--text-2); }
-.exam_code .pledge input { width: 16px; height: 16px; margin: 0; accent-color: var(--indigo); }
+.exam_code.locating :is(.auth_field, .pledge) { display: none; }
+.exam_code.locating .form_msg { margin-top: 10px; text-align: center; }
+.exam_code.blocked :is(.sub, .exam_loc, .auth_field, .pledge, button.primary) { display: none; }
+.exam_code.blocked .form_msg { margin-top: 12px; padding: 11px 13px; border-radius: 8px; background: var(--seal-soft); }
+.exam_code .exam_warn { margin: -4px 0 14px; padding: 10px 12px; border-radius: 8px; background: var(--seal-soft); color: var(--seal); font-size: 13px; line-height: 1.6; }
+.exam_code .pledge { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; margin: 14px 0 6px; font-size: 13px; color: var(--text-2); }
+.exam_code .pledge label { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.exam_code .pledge input { position: relative; appearance: none; -webkit-appearance: none; flex: none; width: 17px; height: 17px; margin: 0; border-radius: 4.5px; background: var(--paper-2); box-shadow: inset 0 0 0 1.5px var(--line-2); cursor: pointer; transition: background-color .18s var(--ease), box-shadow .18s var(--ease); }
+@media (hover: hover) { .exam_code .pledge input:not(:checked):hover { box-shadow: inset 0 0 0 1.5px var(--indigo); } }
+.exam_code .pledge input:checked { background: var(--indigo); box-shadow: none; }
+.exam_code .pledge input:checked::after { content: ""; position: absolute; left: 5px; top: 3px; width: 5px; height: 8px; border: solid var(--paper); border-width: 0 2px 2px 0; transform: rotate(42deg); }
+.exam_code .pledge a { text-decoration: none; cursor: pointer; }
 .modal_btns .link { font-size: 13px; }
 .auth_forgot { margin: -6px 0 8px; text-align: right; font-size: 13px; }
 .pw_fields { display: grid; gap: 2px; max-width: 340px; }
-.pw_fields .auth_field input { height: 38px; font-size: 14px; }
+.pw_fields .auth_field input { height: 40px; font-size: 14px; }
 .pw_fields .row_btns { margin-top: 6px; }
 
 /* Studia sign-in (hosted): an answer sheet filling itself in on the left, the form on the right. */
@@ -773,7 +813,9 @@ body.signed-out .app, body.signed-out .player { display: none; }
   .nav_item { height: 44px; } .menu_row { padding: 11px 8px; }
   .tab { height: 44px; } .chip { height: 32px; padding: 0 12px; }
   .paper { min-height: 62px; } .run { min-height: 62px; }
-  .field input { height: 42px; font-size: 16px; }
+  .field input, .field select, .modal .auth_field input, .auth_field input { height: 42px; font-size: 16px; }
+  .exam_code .code_row img { height: 42px; }
+  .code_row .btn { height: 42px; }
   .nav, .sheet_body, .log_body { overscroll-behavior: contain; }
 }
 
