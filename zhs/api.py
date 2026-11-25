@@ -993,6 +993,39 @@ class ZHSApi:
         except (TypeError, ValueError):
             raise PlatformUnavailable("智慧树答案锁状态返回异常，请稍后重试") from None
 
+    # What the platform's exam list asks before it shows the entry picture code, in its order (stuExamWeb
+    # bindstateChangeLeft → checkLocationAndFace → checkFaceAndGoExam, 2026-11-25). See zhs.answer.exam_entry_check.
+    def shared_exception_action(self, recruit_id, school_id):
+        rt = self.exam_form(HOMEWORK_GATEWAY + "/appeal/getStuExceptionAction",
+                            {"recruitId": recruit_id, "schoolId": school_id}).get("rt")
+        return rt if isinstance(rt, dict) else {}
+
+    def shared_limit_time(self, exam_id, recruit_id):
+        """Truthy while the student still has time to sit the exam."""
+        return self.exam_form(TAURUS_GATEWAY + "/exam/getStuLimitTime",
+                              {"examId": exam_id, "recruitId": recruit_id}).get("rt")
+
+    def shared_progress_rule(self, recruit_id, school_id):
+        rt = self.exam_form(TAURUS_GATEWAY + "/student/getStuProgressRule",
+                            {"recruitId": recruit_id, "schoolId": school_id}).get("rt")
+        return rt if isinstance(rt, dict) else {}
+
+    def shared_location_on(self, course_id, recruit_id, school_id):
+        return self.exam_form(HOMEWORK_GATEWAY + "/location/queryIsOpenLocation",
+                              {"courseId": course_id, "recruitId": recruit_id, "schoolId": school_id}).get("rt") is True
+
+    def shared_location_passed(self, course_id, exam_id):
+        """Whether the phone scan that turns on location went through; the page shows the code while it reads 0."""
+        rt = self.exam_form(HOMEWORK_GATEWAY + "/location/queryEncodeImageIsPass",
+                            {"courseId": course_id, "examId": exam_id}).get("rt")
+        return rt not in (0, "0", "")
+
+    def shared_face_on(self, recruit_id, school_id):
+        """Whether the school checks faces before an exam; anything but resultStatus 0 counts as on."""
+        rt = self.exam_form(HOMEWORK_GATEWAY + "/common/queryFaceRecognitionSwitchFromWeb",
+                            {"recruitId": recruit_id, "schoolId": school_id}).get("rt")
+        return str(rt.get("resultStatus") if isinstance(rt, dict) else None) != "0"
+
     def shared_exam_captcha(self):
         """The picture code the platform asks for each time an exam is entered, as (image bytes, key).
 

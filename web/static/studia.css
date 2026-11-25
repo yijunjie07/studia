@@ -668,6 +668,10 @@ body.dragging, body.dragging * { cursor: grabbing !important; user-select: none;
 .modal_btns { display: flex; align-items: center; gap: 8px; }
 .exam_code .code_row img { flex: none; width: 100px; height: 38px; border-radius: 4px; background: var(--well); object-fit: contain; cursor: pointer; }
 .exam_code [data-new-code] { font-size: 12.5px; }
+.exam_code .sub b { color: var(--seal); font-weight: 600; }
+.exam_code.blocked :is(.auth_field, [data-new-code], .pledge, button.primary) { display: none; }
+.exam_code.blocked .form_msg { padding: 8px 10px; border-radius: 4px; background: var(--seal-soft); }
+.exam_code .exam_warn { margin: -6px 0 16px; padding: 8px 10px; border-radius: 4px; background: var(--seal-soft); color: var(--seal); font-size: 13px; line-height: 1.6; }
 .exam_code .pledge { display: flex; align-items: center; gap: 8px; margin: 16px 0 14px; font-size: 13px; color: var(--text-2); }
 .exam_code .pledge input { width: 16px; height: 16px; margin: 0; accent-color: var(--indigo); }
 .modal_btns .link { font-size: 13px; }

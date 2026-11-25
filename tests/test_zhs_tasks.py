@@ -56,6 +56,18 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(catalog.call_count, 2)
 
 
+    def test_exams_needing_a_picture_code_point_to_the_web_page(self):
+        view, _ = make_view()
+        app = Application(view, store=Mock())
+        exam = {"id": "sex-1-2", "name": "期末考试", "_captcha": True}
+        later = {"id": "sex-3-4", "name": "下学期考试", "_captcha": True, "startTime": "2099-01-01 00:00:00"}
+        with patch("zhs.answer.catalog", return_value=[(COURSE, exam, 2), (COURSE, later, 2)]):
+            (_, listed, _), (_, waiting, _) = app.zhs_task_catalog(Mock(), [COURSE])
+        from core.task_capabilities import task_availability
+        self.assertEqual(task_availability(listed, 2).label, "请用网页版")
+        self.assertEqual(task_availability(waiting, 2).label, "未开始")  # its opening time says more
+
+
 class ExecuteTest(unittest.TestCase):
     def setUp(self):
         view, _ = make_view()
