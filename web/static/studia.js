@@ -927,14 +927,9 @@ const VIEWS = {
     adminData = { tab, data };
     if (state.view !== "#/admin" || state.adminTab !== tab) return;
     const users = data.users?.users || [];
-    const modelForm = $("[data-default-model]", page);
-    const modelDraft = modelForm ? Object.fromEntries(new FormData(modelForm)) : null;
-    const smtpForm = $("[data-smtp]", page);
-    const smtpDraft = smtpForm ? Object.fromEntries(new FormData(smtpForm)) : null;
     let body = "";
     if (tab === "people") {
       const list = adminList("people"), q = list.q.trim().toLowerCase();
-      const edit = (u, kind) => state.adminEdit?.uid === u.id && state.adminEdit.kind === kind;
       // Busy people first, then whoever was around last; stopped accounts at the end.
       const rank = (u) => (u.disabled ? 2 : u.jobs?.length ? 0 : 1);
       const seen = (u) => u.last_login || u.created || 0;
@@ -948,22 +943,15 @@ const VIEWS = {
       const found = users.filter((u) => !q || `${u.username} ${u.email || ""}`.toLowerCase().includes(q))
         .sort((a, b) => rank(a) - rank(b) || seen(b) - seen(a));
       const { rows, counts } = facetFilter("people", found, FACETS);
-      const userRow = (u) => `<div class="model user_row ${state.adminOpen === u.id || state.adminEdit?.uid === u.id ? "open" : ""}" data-key="${esc(u.id)}" data-user-row="${esc(u.id)}">
+      const userRow = (u) => `<div class="model user_row ${state.adminOpen === u.id ? "open" : ""}" data-key="${esc(u.id)}" data-user-row="${esc(u.id)}">
             <span class="avatar big">${esc(u.username.slice(0, 1).toUpperCase())}</span>
             <span class="m1"><b>${esc(u.username)}</b>${u.role === "admin" ? '<span class="pill blue">管理员</span>' : ""}${u.disabled ? '<span class="pill red">已停用</span>' : ""}${u.max_jobs ? `<span class="pill">同时 ${u.max_jobs} 个</span>` : ""}
             <small class="sans">${u.jobs?.some((j) => j.state === "running") ? "学习中" : u.jobs?.some((j) => j.state === "queued") ? "排队中" : u.jobs?.length ? "已暂停" : u.last_login ? `上次在线 ${ago(u.last_login)}` : "还没登录过"}${u.email ? ` · ${esc(u.email)}` : ""}</small></span>
-            <button class="btn small row_more" data-user-more="${esc(u.id)}" aria-expanded="${state.adminOpen === u.id || state.adminEdit?.uid === u.id}">管理</button>
+            <button class="btn small row_more" data-user-more="${esc(u.id)}" aria-expanded="${state.adminOpen === u.id}">管理</button>
             <span class="row_btns">${u.jobs?.length ? `<button class="btn small danger" data-stop-user="${u.id}" data-confirm="确认全部停止">停止全部任务</button>` : ""}
-              <button class="btn small" data-row-edit="limit" data-uid="${u.id}" aria-pressed="${edit(u, "limit")}">任务上限</button>
-              <button class="btn small" data-row-edit="password" data-uid="${u.id}" aria-pressed="${edit(u, "password")}">重置密码</button>
-              ${u.id === session.user.id ? "" : u.disabled ? `<button class="btn small" data-enable="${u.id}">启用</button>` : `<button class="btn small danger" data-disable="${u.id}" data-confirm="确认停用">停用</button>`}</span>
-            ${edit(u, "limit") ? `<form class="row_form" data-row-form="limit" data-uid="${u.id}">
-                <label>同时最多<input class="inline_num" type="number" min="1" max="20" name="value" value="${esc(u.max_jobs || "")}" placeholder="${esc(u.job_limit)}">个任务</label>
-                <small>留空用站点默认</small><span class="grow"></span>
-                <button type="button" class="btn small" data-row-cancel>取消</button><button class="btn small primary">保存</button></form>`
-            : edit(u, "password") ? `<form class="row_form" data-row-form="password" data-uid="${u.id}" novalidate>
-                <input class="row_input" type="password" name="value" minlength="8" required autocomplete="new-password" placeholder="新密码，至少 8 位"><span class="grow"></span>
-                <button type="button" class="btn small" data-row-cancel>取消</button><button class="btn small primary">重置密码</button></form>` : ""}</div>`;
+              <button class="btn small" data-row-edit="limit" data-uid="${u.id}">任务上限</button>
+              <button class="btn small" data-row-edit="password" data-uid="${u.id}">重置密码</button>
+              ${u.id === session.user.id ? "" : u.disabled ? `<button class="btn small" data-enable="${u.id}">启用</button>` : `<button class="btn small danger" data-disable="${u.id}" data-confirm="确认停用">停用</button>`}</span></div>`;
       body = `${listTools("people", "搜索用户名或邮箱", FACETS, counts)}
         <div class="models">${pageOf("people", rows).map(userRow).join("")
           || `<div class="model plain"><span class="m1"><small class="sans">${users.length ? "没有符合条件的用户" : "还没有用户"}</small></span></div>`}</div>
@@ -991,32 +979,18 @@ const VIEWS = {
     } else if (tab === "site") {
       const settings = data.settings;
       const current = settings.default_model;
-      const model = modelDraft || current || {};
       const kept = (name, fallback) => $(`[name="${name}"]`, page)?.value || fallback;
       state.zhsParallel = settings.zhs_parallel_study;
       const fast = settings.answer_pace === "fast";
-      const editing = state.adminEdit?.kind === "default-model";
-      const smtp = settings.smtp, mailEditing = state.adminEdit?.kind === "smtp", sm = smtpDraft || smtp || { security: "ssl" };
+      const smtp = settings.smtp;
       const SECURITY = { ssl: "SSL", starttls: "STARTTLS", none: "不加密" };
       const smtpRow = smtp
         ? `<div class="model plain"><span class="m1"><b>${esc(smtp.sender_name || "Studia")} &lt;${esc(smtp.sender)}&gt;</b>
             <small class="sans">${esc(smtp.host)}:${smtp.port} · ${SECURITY[smtp.security]}${smtp.username ? ` · ${esc(smtp.username)}` : ""}</small></span>
-          <span class="row_btns"><button class="btn small" data-smtp-edit aria-pressed="${mailEditing}">编辑</button>
+          <span class="row_btns"><button class="btn small" data-smtp-edit>编辑</button>
             <button class="btn small danger" data-smtp-clear data-confirm="确认清除">清除</button></span></div>`
         : `<div class="model plain"><span class="m1"><small class="sans">还没有配置</small></span>
-          <span class="row_btns"><button class="btn small primary" data-smtp-edit aria-pressed="${mailEditing}">配置</button></span></div>`;
-      const smtpEdit = mailEditing ? `<form class="form_card" data-smtp>
-          <div class="field"><label>SMTP 服务器</label><input name="host" value="${esc(sm.host)}" placeholder="例如 smtp.qq.com" autocapitalize="off" required></div>
-          <div class="field"><label>加密方式</label><select name="security">${Object.entries(SECURITY).map(([k, v]) =>
-            `<option value="${k}" ${sm.security === k ? "selected" : ""}>${v}</option>`).join("")}</select></div>
-          <div class="field"><label>端口</label><input name="port" type="number" min="1" max="65535" value="${esc(sm.port || "")}" placeholder="留空用默认：SSL 465，STARTTLS 587，不加密 25"></div>
-          <div class="field"><label>账号</label><input name="username" value="${esc(sm.username)}" autocomplete="off" autocapitalize="off" placeholder="通常是完整的邮箱地址"></div>
-          <div class="field"><label>密码</label><input name="password" type="password" autocomplete="new-password" placeholder="${smtp?.password_hint ? `留空不修改（${esc(smtp.password_hint)}）` : "邮箱的 SMTP 授权码，不是登录密码"}"></div>
-          <div class="field"><label>发件地址</label><input name="sender" value="${esc(sm.sender)}" autocapitalize="off" placeholder="留空用账号"></div>
-          <div class="field"><label>发件人名称</label><input name="sender_name" value="${esc(sm.sender_name)}" placeholder="Studia"></div>
-          <div class="form_btns"><span class="grow"></span>
-            <button type="button" class="btn" data-smtp-cancel>取消</button><button class="btn primary">测试并保存</button></div>
-        </form>` : "";
+          <span class="row_btns"><button class="btn small primary" data-smtp-edit>配置</button></span></div>`;
       const [cls, label] = HEALTH[current?.health] || ["", "未测试"];
       const hostOf = (url) => { try { return new URL(url).host; } catch { return url || ""; } };
       const modelRow = current
@@ -1024,20 +998,10 @@ const VIEWS = {
             <small>${esc(current.model)} · ${esc(hostOf(current.base_url))} · ${esc(current.key_hint)}</small></span>
           <span class="health ${cls}" data-default-health title="${esc(current.health_message || (current.checked_at ? `测试于 ${current.checked_at.replace("T", " ")}` : ""))}">${label}</span>
           <span class="row_btns"><button class="btn small" data-default-test>测试</button>
-            <button class="btn small" data-default-edit aria-pressed="${editing}">编辑</button>
+            <button class="btn small" data-default-edit>编辑</button>
             ${current.source === "site" && settings.builtin_available ? '<button class="btn small danger" data-default-reset data-confirm="确认恢复">恢复内置</button>' : ""}</span></div>`
         : `<div class="model plain"><span class="m1"><small class="sans">还没有默认模型</small></span>
-          <span class="row_btns"><button class="btn small primary" data-default-edit aria-pressed="${editing}">配置</button></span></div>`;
-      const modelEdit = editing ? `<form class="form_card" data-default-model>
-          <div class="form_grid">
-            <label class="auth_field"><span>名称</span><input name="provider_name" value="${esc(model.provider_name)}" placeholder="默认供应商"></label>
-            <label class="auth_field"><span>模型</span><input class="mono_in" name="model" value="${esc(model.model)}" placeholder="例如 deepseek-chat" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
-          </div>
-          <label class="auth_field"><span>服务地址</span><input class="mono_in" name="base_url" inputmode="url" value="${esc(model.base_url)}" placeholder="https://api.example.com/v1" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
-          <label class="auth_field"><span>API Key</span><span class="pw"><input class="mono_in" name="api_key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false"><button type="button" class="pw_eye" data-reveal aria-label="显示密钥">显示</button></span></label>
-          <div class="form_btns"><span class="grow"></span>
-            <button type="button" class="btn" data-default-cancel>取消</button><button class="btn primary">测试并保存</button></div>
-        </form>` : "";
+          <span class="row_btns"><button class="btn small primary" data-default-edit>配置</button></span></div>`;
       // Who may sign up: closed, the two rules below have nothing to apply to and stay hidden.
       const reg = settings.registration;
       const choice = (key, value, label, attrs = "") =>
@@ -1049,9 +1013,9 @@ const VIEWS = {
         <div class="model plain stepper_row"><span class="m1"><b>验证邮箱</b>${smtp ? "" : '<small class="sans">先配置邮件服务</small>'}</span>
           <span class="row_btns">${choice("email", true, "需要", smtp ? "" : "disabled")}${choice("email", false, "不需要")}</span></div>` : ""}`;
       body = `<div class="section"><h2>全站默认 AI 模型</h2></div>
-        <div class="models">${modelRow}${modelEdit}</div>
+        <div class="models">${modelRow}</div>
         <div class="section"><h2>邮件服务</h2></div>
-        <div class="models">${smtpRow}${smtpEdit}</div>
+        <div class="models">${smtpRow}</div>
         <div class="section"><h2>注册</h2></div>
         <div class="models">${registrationRows}</div>
         <div class="section"><h2>界面</h2><span class="aside">0.5–2.0×</span></div>
@@ -1091,64 +1055,15 @@ const VIEWS = {
       try { await api(path, { method: "POST", body: payload || {} }); toast(message); VIEWS.admin(true, tab); } catch (e) { toast(e.message); }
     };
     const on = (selector, handler) => page.querySelectorAll(selector).forEach((el) => (el.onclick = () => handler(el)));
-    const defaultForm = $("[data-default-model]", page);
-    if (defaultForm) {
-      const saved = data.settings.default_model, { base_url, api_key } = defaultForm.elements;
-      const sameHost = () => { try { return saved && new URL(base_url.value.trim()).hostname === new URL(saved.base_url).hostname; } catch { return false; } };
-      // A blank key keeps the saved one only on the same host; the server refuses otherwise, say so up front.
-      const keyRule = () => {
-        api_key.required = !sameHost();
-        api_key.placeholder = !saved ? "必填" : sameHost() ? `留空不修改（${saved.key_hint}）` : "换了服务地址，请重新填写";
-      };
-      api_key.value = modelDraft?.api_key || "";
-      wireReveal(defaultForm);
-      base_url.oninput = keyRule;
-      keyRule();
-      if (!modelDraft) defaultForm.querySelector("input").focus();
-      defaultForm.onsubmit = async (event) => {
-        event.preventDefault();
-        const button = $("button.primary", defaultForm);
-        button.disabled = true; button.textContent = "测试中…";
-        try {
-          await api("/api/admin/settings", { method: "POST", body: { default_model: Object.fromEntries(new FormData(defaultForm)) } });
-          state.adminEdit = null;
-          defaultForm.removeAttribute("data-default-model");  // the refresh must not keep it as a draft
-          state.settings = null;
-          toast("已测试并保存");
-          if (state.view === "#/admin" && state.adminTab === tab) await VIEWS.admin(true, tab);
-        } catch (e) { toast(e.message); button.disabled = false; button.textContent = "测试并保存"; }
-      };
-    }
-    const mailForm = $("[data-smtp]", page);
-    if (mailForm) {
-      if (smtpDraft) mailForm.elements.password.value = smtpDraft.password;
-      else mailForm.querySelector("input").focus();
-      mailForm.onsubmit = async (event) => {
-        event.preventDefault();
-        const button = $("button.primary", mailForm);
-        button.disabled = true; button.textContent = "测试中…";
-        try {
-          await api("/api/admin/settings", { method: "POST", body: { smtp: Object.fromEntries(new FormData(mailForm)) } });
-          state.adminEdit = null;
-          session.mail = true;
-          mailForm.removeAttribute("data-smtp");  // the refresh must not keep it as a draft
-          toast("已测试并保存");
-          if (state.view === "#/admin" && state.adminTab === tab) await VIEWS.admin(true, tab);
-        } catch (e) { toast(e.message); button.disabled = false; button.textContent = "测试并保存"; }
-      };
-    }
-    on("[data-smtp-edit]", () => { state.adminEdit = state.adminEdit?.kind === "smtp" ? null : { kind: "smtp" }; VIEWS.admin(true, tab); });
-    on("[data-smtp-cancel]", () => { state.adminEdit = null; mailForm?.removeAttribute("data-smtp"); VIEWS.admin(true, tab); });
-    on("[data-smtp-clear]", () => { state.adminEdit = null; session.mail = false; act("/api/admin/settings", { smtp: null }, "已清除邮件服务"); });
-    on("[data-default-edit]", () => {
-      state.adminEdit = state.adminEdit?.kind === "default-model" ? null : { kind: "default-model" };
-      VIEWS.admin(true, tab);
-    });
-    on("[data-default-cancel]", () => {
-      state.adminEdit = null;
-      defaultForm?.removeAttribute("data-default-model");
-      VIEWS.admin(true, tab);
-    });
+    on("[data-smtp-edit]", () => openSmtpModal(data.settings.smtp, () => {
+      session.mail = true;
+      if (state.view === "#/admin" && state.adminTab === tab) VIEWS.admin(true, tab);
+    }));
+    on("[data-smtp-clear]", () => { session.mail = false; act("/api/admin/settings", { smtp: null }, "已清除邮件服务"); });
+    on("[data-default-edit]", () => openDefaultModelModal(data.settings.default_model, () => {
+      state.settings = null;
+      if (state.view === "#/admin" && state.adminTab === tab) VIEWS.admin(true, tab);
+    }));
     on("[data-default-test]", async (el) => {
       const chip = $("[data-default-health]", page);
       el.disabled = true; chip.className = "health busy"; chip.textContent = "测试中";
@@ -1201,21 +1116,13 @@ const VIEWS = {
       if (!(from < to)) { toast("请选择正确的时间段"); return; }
       location.href = `/api/admin/logs?kind=${$('[name="log_kind"]', page).value}&from=${Math.floor(from)}&to=${Math.ceil(to)}`;
     });
-    // Limit and password open a small form inside the user's row; one at a time.
+    // Limit and password open in a modal so background refreshes never disturb typing.
     on("[data-row-edit]", (el) => {
-      const same = state.adminEdit?.uid === el.dataset.uid && state.adminEdit.kind === el.dataset.rowEdit;
-      state.adminEdit = same ? null : { uid: el.dataset.uid, kind: el.dataset.rowEdit };
-      VIEWS.admin("local", tab).then(() => $(".row_form input", page)?.focus());
+      const u = users.find((x) => String(x.id) === el.dataset.uid);
+      if (!u) return;
+      if (el.dataset.rowEdit === "limit") openUserLimitModal(u, () => VIEWS.admin(true, tab));
+      else openUserPasswordModal(u, () => VIEWS.admin(true, tab));
     });
-    on("[data-row-cancel]", () => { state.adminEdit = null; VIEWS.admin("local", tab); });
-    page.querySelectorAll("[data-row-form]").forEach((form) => (form.onsubmit = (event) => {
-      event.preventDefault();
-      const { uid, rowForm } = form.dataset, value = form.elements.value.value.trim();
-      if (rowForm === "password" && value.length < 8) { toast("新密码至少 8 位"); return; }
-      state.adminEdit = null;
-      if (rowForm === "limit") act(`/api/admin/users/${uid}/limit`, { max_jobs: value }, "已保存");
-      else act(`/api/admin/users/${uid}/password`, { password: value }, "密码已重置");
-    }));
     on("[data-copy]", (el) => navigator.clipboard?.writeText(el.dataset.copy).then(() => toast("已复制"), () => toast(el.dataset.copy)));
     on("[data-revoke]", (el) => act(`/api/admin/invites/${el.dataset.revoke}/revoke`, null, "邀请码已作废"));
     on("[data-stop-user]", (el) => act(`/api/admin/users/${el.dataset.stopUser}/stop`, null, "已发出停止指令"));
@@ -1394,33 +1301,17 @@ const VIEWS = {
     tab = SETTINGS_TABS.some(([k]) => k === tab) ? tab : SETTINGS_TABS[0][0];
     const head = settingsHead(tab, "");
     if (tab === "account") {
-      const me = session.user, editing = state.accountEdit, admin = me?.role === "admin";
-      const cancel = '<button type="button" class="btn" data-account-edit="">取消</button>';
-      const nameRow = editing === "username" ? `<form class="model plain password_form" data-username>
-            <span class="m1"><b>修改用户名</b></span>
-            <span class="pw_fields"><label class="auth_field"><span>新用户名</span><input name="username" value="${esc(me?.username)}" autocomplete="username" autocapitalize="off" minlength="2" maxlength="32" required></label>
-              <p class="form_msg" role="alert"></p><span class="row_btns">${cancel}<button class="btn primary">保存</button></span></span></form>`
-        : `<div class="model plain"><span class="account_who"><span class="avatar big">${esc(me?.username.slice(0, 1).toUpperCase())}</span>
+      const me = session.user, admin = me?.role === "admin";
+      const nameRow = `<div class="model plain"><span class="account_who"><span class="avatar big">${esc(me?.username.slice(0, 1).toUpperCase())}</span>
             <span class="m1"><b>${esc(me?.username)}</b><span class="pill ${admin ? "blue" : ""}">${admin ? "管理员" : "成员"}</span>
             <small class="sans">${me?.created ? `${new Date(me.created * 1000).toLocaleDateString()} 加入` : ""}</small></span></span>
             <span class="row_btns"><button class="btn small" data-account-edit="username">修改用户名</button></span></div>`;
-      const emailRow = editing === "email" ? `<form class="model plain password_form" data-email-form>
-            <span class="m1"><b>${me?.email ? "更换邮箱" : "绑定邮箱"}</b></span>
-            <span class="pw_fields">${emailFields()}<span class="row_btns">${cancel}<button class="btn primary">绑定</button></span></span></form>`
-        : `<div class="model plain"><span class="m1"><b>邮箱</b><small class="sans">${me?.email ? esc(me.email)
+      const emailRow = `<div class="model plain"><span class="m1"><b>邮箱</b><small class="sans">${me?.email ? esc(me.email)
             : session.mail ? "未绑定" : "管理员未配置邮件服务"}</small></span>
             <span class="row_btns">${session.mail ? `<button class="btn small ${me?.email ? "" : "primary"}" data-account-edit="email">${me?.email ? "更换" : "绑定邮箱"}</button>`
               : admin ? '<button class="btn small" data-go="#/admin/site">去配置</button>' : ""}</span></div>`;
-      // 修改密码 asks first, then says where the mail went; another link waits a minute, since it voids the last.
-      const sent = state.passwordSent;
-      const passwordRow = editing === "password" ? `<div class="model plain password_form" data-password-panel>
-            <span class="m1"><b>${sent ? "邮件已发送" : "修改密码"}</b><small class="sans">${sent
-              ? `已发到 ${esc(me?.email)}`
-              : `链接会发到 ${esc(me?.email)}`}</small></span>
-            <span class="pw_fields"><p class="form_msg" role="alert"></p><span class="row_btns">
-              <button type="button" class="btn" data-account-edit="">${sent ? "完成" : "取消"}</button>
-              <button type="button" class="btn ${sent ? "" : "primary"}" data-password-send>${sent ? "重新发送" : "发送邮件"}</button></span></span></div>`
-        : `<div class="model plain"><span class="m1"><b>密码</b></span>
+      const passwordRow = `<div class="model plain"><span class="m1"><b>密码</b><small class="sans">${me?.email && session.mail
+            ? "通过邮箱重置链接修改密码" : "绑定邮箱并配置邮件服务后可修改"}</small></span>
             <span class="row_btns"><button class="btn small" data-account-edit="password" ${me?.email && session.mail ? "" : "disabled"}>修改密码</button></span></div>`;
       const studia = me ? `<div class="section"><h2>Studia 账号</h2></div>
         <div class="models">${nameRow}${emailRow}${passwordRow}</div>` : "";
@@ -1435,41 +1326,11 @@ const VIEWS = {
         VIEWS.settings("account");
       }));
       page.querySelectorAll("[data-account-edit]").forEach((el) => (el.onclick = () => {
-        state.accountEdit = el.dataset.accountEdit || null;
-        state.passwordSent = null;
-        quiet = true; VIEWS.settings("account"); quiet = false;
-        $("[data-username] input, [data-email-form] input, [data-password-send]", page)?.focus();
+        const kind = el.dataset.accountEdit;
+        if (kind === "username") openUsernameModal();
+        else if (kind === "email") openEmailModal();
+        else if (kind === "password") openPasswordModal();
       }));
-      const nameForm = $("[data-username]", page);
-      if (nameForm) nameForm.onsubmit = async (event) => {
-        event.preventDefault();
-        try {
-          ({ user: session.user } = await api("/api/auth/username", { method: "POST", body: { username: nameForm.elements.username.value.trim() } }));
-          state.accountEdit = null;
-          renderSidebar();
-          toast("用户名已修改");
-          VIEWS.settings("account");
-        } catch (e) { $(".form_msg", nameForm).textContent = e.message; }
-      };
-      const emailForm = $("[data-email-form]", page);
-      if (emailForm) wireEmailForm(emailForm, () => { state.accountEdit = null; toast("邮箱已绑定"); VIEWS.settings("account"); });
-      const send = $("[data-password-send]", page);
-      if (send) {
-        if (state.passwordSent) resendAfter(send, state.passwordSent);
-        send.onclick = async () => {
-          send.disabled = true;
-          send.textContent = "发送中…";
-          try {
-            await api("/api/auth/password", { method: "POST" });
-            state.passwordSent = Date.now();
-            quiet = true; VIEWS.settings("account"); quiet = false;
-          } catch (e) {
-            $("[data-password-panel] .form_msg", page).textContent = e.message;
-            send.disabled = false;
-            send.textContent = state.passwordSent ? "重新发送" : "发送邮件";
-          }
-        };
-      }
       return;
     }
     // Draw from the last copy at once; repaint only if the server's copy differs.
@@ -1494,13 +1355,14 @@ function resendAfter(button, sentAt) {
 
 // Binding an email: a code mailed to the address. In 设置 → 账号 and in the prompt when the page opens.
 // Replacing a bound address asks for the password (a stolen session alone can't redirect reset links).
-const emailFields = () => `${session.user?.email ? `<label class="auth_field"><span>当前密码</span><input name="password" type="password" autocomplete="current-password" required></label>` : ""}
+const emailFields = () => `${session.user?.email ? `<label class="auth_field"><span>当前密码</span><span class="pw"><input name="password" type="password" autocomplete="current-password" required><button type="button" class="pw_eye" data-reveal aria-label="显示密码">显示</button></span></label>` : ""}
   <label class="auth_field"><span>${session.user?.email ? "新邮箱" : "邮箱"}</span><span class="code_row">
     <input name="email" type="email" autocomplete="email" autocapitalize="off" placeholder="name@example.com" required>
     <button type="button" class="btn" data-send-code>发送验证码</button></span></label>
-  <label class="auth_field"><span>验证码</span><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="邮件里的 6 位数字" required></label>
+  <label class="auth_field"><span>验证码</span><input class="mono_in" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="邮件里的 6 位数字" required></label>
   <p class="form_msg" role="alert"></p>`;
 function wireEmailForm(form, done) {
+  wireReveal(form);
   const msg = $(".form_msg", form), send = $("[data-send-code]", form), { email, code, password } = form.elements;
   const say = (text, ok = false) => { msg.textContent = text; msg.classList.toggle("ok", ok); };
   form.oninput = () => { if (!msg.classList.contains("ok")) say(""); };
@@ -1523,9 +1385,102 @@ function wireEmailForm(form, done) {
     if (!code.value.trim()) { say("请填写验证码"); code.focus(); return; }
     const button = $("button.primary", form);
     button.disabled = true;
+    button.textContent = "绑定中…";
     try { ({ user: session.user } = await api("/api/auth/email", { method: "POST", body: { code: code.value.trim() } })); done(); }
-    catch (e) { say(e.message); button.disabled = false; }
+    catch (e) { say(e.message); button.disabled = false; button.textContent = "绑定"; }
   };
+}
+function openUsernameModal() {
+  const me = session.user;
+  const dialog = document.createElement("dialog");
+  dialog.className = "modal";
+  dialog.setAttribute("aria-labelledby", "username-modal-title");
+  dialog.innerHTML = `<form data-username>
+      <h3 id="username-modal-title" tabindex="-1" autofocus>修改用户名</h3>
+      <p class="sub">用户名用于登录和个人资料展示，长度 2–32 个字符。</p>
+      <label class="auth_field"><span>新用户名</span>
+        <input name="username" value="${esc(me?.username || "")}" autocomplete="username" autocapitalize="off" minlength="2" maxlength="32" required></label>
+      <p class="form_msg" role="alert"></p>
+      <div class="modal_btns"><span class="grow"></span>
+        <button type="button" class="btn" data-cancel>取消</button><button class="btn primary">保存</button></div></form>`;
+  document.body.appendChild(dialog);
+  const form = $("form", dialog), msg = $(".form_msg", dialog), ok = $("button.primary", dialog);
+  dialog.addEventListener("cancel", (e) => { e.preventDefault(); closeModal(dialog); });
+  dialog.addEventListener("close", () => dialog.remove());
+  $("[data-cancel]", dialog).onclick = () => closeModal(dialog);
+  form.oninput = () => (msg.textContent = "");
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    ok.disabled = true; ok.textContent = "保存中…";
+    try {
+      ({ user: session.user } = await api("/api/auth/username", { method: "POST", body: { username: form.elements.username.value.trim() } }));
+      closeModal(dialog);
+      renderSidebar();
+      toast("用户名已修改");
+      VIEWS.settings("account");
+    } catch (e) { msg.textContent = e.message; ok.disabled = false; ok.textContent = "保存"; }
+  };
+  dialog.showModal();
+  if (!TOUCH) { form.elements.username.focus(); form.elements.username.select(); }
+}
+function openEmailModal() {
+  const me = session.user;
+  const dialog = document.createElement("dialog");
+  dialog.className = "modal";
+  dialog.setAttribute("aria-labelledby", "email-modal-title");
+  dialog.innerHTML = `<form data-email-form>
+      <h3 id="email-modal-title" tabindex="-1" autofocus>${me?.email ? "更换邮箱" : "绑定邮箱"}</h3>
+      <p class="sub">${me?.email ? `当前已绑定 ${esc(me.email)}，验证新邮箱后立即生效。` : "绑定邮箱后可用于找回和修改密码。"}</p>
+      ${emailFields()}
+      <div class="modal_btns"><span class="grow"></span>
+        <button type="button" class="btn" data-cancel>取消</button><button class="btn primary">绑定</button></div></form>`;
+  document.body.appendChild(dialog);
+  dialog.addEventListener("cancel", (e) => { e.preventDefault(); closeModal(dialog); });
+  dialog.addEventListener("close", () => dialog.remove());
+  $("[data-cancel]", dialog).onclick = () => closeModal(dialog);
+  wireEmailForm($("form", dialog), () => { closeModal(dialog); toast("邮箱已绑定"); VIEWS.settings("account"); });
+  dialog.showModal();
+  if (!TOUCH) $("input", dialog)?.focus();
+}
+function openPasswordModal() {
+  const me = session.user;
+  const dialog = document.createElement("dialog");
+  dialog.className = "modal";
+  dialog.setAttribute("aria-labelledby", "password-modal-title");
+  dialog.innerHTML = `<div data-password-panel>
+      <h3 id="password-modal-title" tabindex="-1" autofocus>修改密码</h3>
+      <p class="sub" data-pw-sub>系统会将一次性重置密码链接发到 <b>${esc(me?.email || "")}</b>，点击邮件里的链接即可设置新密码。</p>
+      <p class="form_msg" role="alert"></p>
+      <div class="modal_btns"><span class="grow"></span>
+        <button type="button" class="btn" data-cancel>取消</button>
+        <button type="button" class="btn primary" data-password-send>发送邮件</button></div></div>`;
+  document.body.appendChild(dialog);
+  const msg = $(".form_msg", dialog), send = $("[data-password-send]", dialog), cancel = $("[data-cancel]", dialog), sub = $("[data-pw-sub]", dialog);
+  dialog.addEventListener("cancel", (e) => { e.preventDefault(); closeModal(dialog); });
+  dialog.addEventListener("close", () => dialog.remove());
+  cancel.onclick = () => closeModal(dialog);
+  const paintSent = () => {
+    sub.innerHTML = `重置链接已发到 <b>${esc(me?.email || "")}</b>，请查收邮件。重新发送会让上一封邮件里的链接失效。`;
+    cancel.textContent = "完成";
+    send.classList.remove("primary");
+    resendAfter(send, state.passwordSent);
+  };
+  if (state.passwordSent && Date.now() - state.passwordSent < 60000) paintSent();
+  send.onclick = async () => {
+    msg.textContent = "";
+    send.disabled = true;
+    send.textContent = "发送中…";
+    try {
+      await api("/api/auth/password", { method: "POST" });
+      state.passwordSent = Date.now();
+      paintSent();
+    } catch (e) {
+      msg.textContent = e.message;
+      send.disabled = false;
+      send.textContent = state.passwordSent ? "重新发送" : "发送邮件";
+    }
+  };
+  dialog.showModal();
 }
 // Once each time the page opens, until the email is bound or the person picks 今天不显示.
 // A dialog sinks and fades (its backdrop with it) before it closes.
@@ -1545,6 +1500,7 @@ function promptEmail() {
   dialog.setAttribute("aria-labelledby", "email-prompt");
   // On a phone, focusing the email field would pop the keyboard before the person has read the prompt.
   dialog.innerHTML = `<form data-email-form><h3 id="email-prompt" ${TOUCH ? 'tabindex="-1" autofocus' : ""}>绑定邮箱</h3>
+      <p class="sub">绑定邮箱后可用于找回和修改密码。</p>
       ${emailFields()}
       <div class="modal_btns"><button type="button" class="link" data-later>今天不再提醒</button><span class="grow"></span>
         <button type="button" class="btn" data-skip>暂时跳过</button><button class="btn primary">绑定</button></div></form>`;
@@ -1708,6 +1664,181 @@ function openModelModal(m, onDone) {
   };
   dialog.showModal();
   if (!TOUCH) formEl.elements.provider_name.focus();
+}
+
+function openDefaultModelModal(saved, onDone) {
+  const model = saved || {};
+  const dialog = document.createElement("dialog");
+  dialog.className = "modal model_modal";
+  dialog.setAttribute("aria-labelledby", "default-model-title");
+  dialog.innerHTML = `<form data-default-model>
+      <h3 id="default-model-title" tabindex="-1" autofocus>${saved ? "编辑全站默认模型" : "配置全站默认模型"}</h3>
+      <p class="sub">所有未自配模型的成员都会使用这里配置的服务，保存前会自动测试连接。</p>
+      <div class="form_grid">
+        <label class="auth_field"><span>名称</span>
+          <input name="provider_name" value="${esc(model.provider_name || "")}" placeholder="默认供应商"></label>
+        <label class="auth_field"><span>模型</span>
+          <input class="mono_in" name="model" value="${esc(model.model || "")}" placeholder="例如 deepseek-chat" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
+      </div>
+      <label class="auth_field"><span>服务地址</span>
+        <input class="mono_in" name="base_url" inputmode="url" value="${esc(model.base_url || "")}" placeholder="https://api.example.com/v1" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
+      <label class="auth_field"><span>API Key</span>
+        <span class="pw"><input class="mono_in" name="api_key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false">
+          <button type="button" class="pw_eye" data-reveal aria-label="显示密钥">显示</button></span></label>
+      <p class="form_msg" role="alert"></p>
+      <div class="modal_btns"><span class="grow"></span>
+        <button type="button" class="btn" data-cancel>取消</button>
+        <button class="btn primary">测试并保存</button></div>
+    </form>`;
+  document.body.appendChild(dialog);
+  const form = $("form", dialog), msg = $(".form_msg", dialog), ok = $("button.primary", dialog);
+  const { base_url, api_key } = form.elements;
+  const sameHost = () => { try { return saved && new URL(base_url.value.trim()).hostname === new URL(saved.base_url).hostname; } catch { return false; } };
+  const keyRule = () => {
+    api_key.required = !sameHost();
+    api_key.placeholder = !saved ? "sk-..." : sameHost() ? `留空不修改（${saved.key_hint}）` : "换了服务地址，请重新填写";
+  };
+  wireReveal(dialog);
+  base_url.oninput = keyRule;
+  keyRule();
+  dialog.addEventListener("cancel", (e) => { e.preventDefault(); closeModal(dialog); });
+  dialog.addEventListener("close", () => dialog.remove());
+  $("[data-cancel]", dialog).onclick = () => closeModal(dialog);
+  form.oninput = () => (msg.textContent = "");
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    msg.textContent = "";
+    ok.disabled = true; ok.textContent = "测试并保存中…";
+    try {
+      await api("/api/admin/settings", { method: "POST", body: { default_model: Object.fromEntries(new FormData(form)) } });
+      closeModal(dialog); toast("已测试并保存"); onDone();
+    } catch (e) { msg.textContent = e.message; ok.disabled = false; ok.textContent = "测试并保存"; }
+  };
+  dialog.showModal();
+  if (!TOUCH) form.elements.provider_name.focus();
+}
+
+function openSmtpModal(smtp, onDone) {
+  const sm = smtp || { security: "ssl" };
+  const SECURITY = { ssl: "SSL", starttls: "STARTTLS", none: "不加密" };
+  const dialog = document.createElement("dialog");
+  dialog.className = "modal model_modal";
+  dialog.setAttribute("aria-labelledby", "smtp-modal-title");
+  dialog.innerHTML = `<form data-smtp>
+      <h3 id="smtp-modal-title" tabindex="-1" autofocus>${smtp ? "编辑邮件服务" : "配置邮件服务"}</h3>
+      <p class="sub">用于成员注册验证邮箱、绑定邮箱与重置密码，保存前会自动连接测试。</p>
+      <div class="form_grid">
+        <label class="auth_field"><span>SMTP 服务器</span>
+          <input class="mono_in" name="host" value="${esc(sm.host || "")}" placeholder="例如 smtp.qq.com" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
+        <label class="auth_field"><span>加密方式</span>
+          <select name="security">${Object.entries(SECURITY).map(([k, v]) => `<option value="${k}" ${sm.security === k ? "selected" : ""}>${v}</option>`).join("")}</select></label>
+      </div>
+      <div class="form_grid">
+        <label class="auth_field"><span>端口</span>
+          <input class="mono_in" name="port" type="number" min="1" max="65535" value="${esc(sm.port || "")}" placeholder="留空默认 465 / 587 / 25"></label>
+        <label class="auth_field"><span>发件人名称</span>
+          <input name="sender_name" value="${esc(sm.sender_name || "")}" placeholder="Studia"></label>
+      </div>
+      <div class="form_grid">
+        <label class="auth_field"><span>账号</span>
+          <input class="mono_in" name="username" value="${esc(sm.username || "")}" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="通常是完整的邮箱地址"></label>
+        <label class="auth_field"><span>发件地址</span>
+          <input class="mono_in" name="sender" value="${esc(sm.sender || "")}" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="留空用账号"></label>
+      </div>
+      <label class="auth_field"><span>密码 / 授权码</span>
+        <span class="pw"><input class="mono_in" name="password" type="password" autocomplete="new-password" placeholder="${smtp?.password_hint ? `留空不修改（${esc(smtp.password_hint)}）` : "邮箱的 SMTP 授权码，不是登录密码"}">
+          <button type="button" class="pw_eye" data-reveal aria-label="显示密码">显示</button></span></label>
+      <p class="form_msg" role="alert"></p>
+      <div class="modal_btns"><span class="grow"></span>
+        <button type="button" class="btn" data-cancel>取消</button>
+        <button class="btn primary">测试并保存</button></div>
+    </form>`;
+  document.body.appendChild(dialog);
+  const form = $("form", dialog), msg = $(".form_msg", dialog), ok = $("button.primary", dialog);
+  wireReveal(dialog);
+  dialog.addEventListener("cancel", (e) => { e.preventDefault(); closeModal(dialog); });
+  dialog.addEventListener("close", () => dialog.remove());
+  $("[data-cancel]", dialog).onclick = () => closeModal(dialog);
+  form.oninput = () => (msg.textContent = "");
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    msg.textContent = "";
+    ok.disabled = true; ok.textContent = "测试并保存中…";
+    try {
+      await api("/api/admin/settings", { method: "POST", body: { smtp: Object.fromEntries(new FormData(form)) } });
+      closeModal(dialog); toast("已测试并保存"); onDone();
+    } catch (e) { msg.textContent = e.message; ok.disabled = false; ok.textContent = "测试并保存"; }
+  };
+  dialog.showModal();
+  if (!TOUCH) form.elements.host.focus();
+}
+
+function openUserLimitModal(u, onDone) {
+  const dialog = document.createElement("dialog");
+  dialog.className = "modal";
+  dialog.setAttribute("aria-labelledby", "user-limit-title");
+  dialog.innerHTML = `<form>
+      <h3 id="user-limit-title" tabindex="-1" autofocus>设置任务上限</h3>
+      <p class="sub">设置 <b>${esc(u.username)}</b> 最多可同时运行的任务数（1–20），留空则沿用站点默认（${esc(u.job_limit)} 个）。</p>
+      <label class="auth_field"><span>同时最多任务数</span>
+        <input class="mono_in" type="number" min="1" max="20" name="value" value="${esc(u.max_jobs || "")}" placeholder="站点默认：${esc(u.job_limit)}"></label>
+      <p class="form_msg" role="alert"></p>
+      <div class="modal_btns"><span class="grow"></span>
+        <button type="button" class="btn" data-cancel>取消</button>
+        <button class="btn primary">保存</button></div>
+    </form>`;
+  document.body.appendChild(dialog);
+  const form = $("form", dialog), msg = $(".form_msg", dialog), ok = $("button.primary", dialog);
+  dialog.addEventListener("cancel", (e) => { e.preventDefault(); closeModal(dialog); });
+  dialog.addEventListener("close", () => dialog.remove());
+  $("[data-cancel]", dialog).onclick = () => closeModal(dialog);
+  form.oninput = () => (msg.textContent = "");
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    ok.disabled = true; ok.textContent = "保存中…";
+    try {
+      await api(`/api/admin/users/${u.id}/limit`, { method: "POST", body: { max_jobs: form.elements.value.value.trim() } });
+      closeModal(dialog); toast("已保存"); onDone();
+    } catch (e) { msg.textContent = e.message; ok.disabled = false; ok.textContent = "保存"; }
+  };
+  dialog.showModal();
+  if (!TOUCH) form.elements.value.focus();
+}
+
+function openUserPasswordModal(u, onDone) {
+  const dialog = document.createElement("dialog");
+  dialog.className = "modal";
+  dialog.setAttribute("aria-labelledby", "user-pw-title");
+  dialog.innerHTML = `<form novalidate>
+      <h3 id="user-pw-title" tabindex="-1" autofocus>重置成员密码</h3>
+      <p class="sub">为 <b>${esc(u.username)}</b> 设置新的登录密码（至少 8 位），保存后立即生效。</p>
+      <label class="auth_field"><span>新密码</span>
+        <span class="pw"><input name="value" type="password" minlength="8" autocomplete="new-password" placeholder="至少 8 位" required>
+          <button type="button" class="pw_eye" data-reveal aria-label="显示密码">显示</button></span></label>
+      <p class="form_msg" role="alert"></p>
+      <div class="modal_btns"><span class="grow"></span>
+        <button type="button" class="btn" data-cancel>取消</button>
+        <button class="btn primary">重置密码</button></div>
+    </form>`;
+  document.body.appendChild(dialog);
+  const form = $("form", dialog), msg = $(".form_msg", dialog), ok = $("button.primary", dialog);
+  wireReveal(dialog);
+  dialog.addEventListener("cancel", (e) => { e.preventDefault(); closeModal(dialog); });
+  dialog.addEventListener("close", () => dialog.remove());
+  $("[data-cancel]", dialog).onclick = () => closeModal(dialog);
+  form.oninput = () => (msg.textContent = "");
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    const value = form.elements.value.value.trim();
+    if (value.length < 8) { msg.textContent = "新密码至少 8 位"; form.elements.value.focus(); return; }
+    ok.disabled = true; ok.textContent = "重置中…";
+    try {
+      await api(`/api/admin/users/${u.id}/password`, { method: "POST", body: { password: value } });
+      closeModal(dialog); toast("密码已重置"); onDone();
+    } catch (e) { msg.textContent = e.message; ok.disabled = false; ok.textContent = "重置密码"; }
+  };
+  dialog.showModal();
+  if (!TOUCH) form.elements.value.focus();
 }
 
 const HEALTH = { ok: ["ok", "可用"], error: ["error", "出错"] };
@@ -2648,23 +2779,23 @@ async function qrLogin(pid) {
   // qr: this tab's own scan is under way, so the account event it sends leaves the finish to afterLogin.
   const token = (state.loginToken = { cancelled: false, qr: pid });
   const box = $(".qr", page), status = $("[data-status]", page);
-  const say = (title, text) => { status.innerHTML = `<b>${esc(title)}</b><p>${esc(text)}</p>`; };
+  const say = (title, text, stopped = false) => { status.classList.toggle("stopped", stopped); status.innerHTML = `<b>${esc(title)}</b><p>${esc(text)}</p>`; };
   const setImage = (src) => { box.innerHTML = `<img alt="登录二维码" src="${src}">`; };
   let started, wait = 1500;
   try { started = await api(`/api/platforms/${pid}/login`, { method: "POST" }); setImage(started.qr); }
-  catch (error) { token.cancelled = true; say("获取二维码失败", error.message); return; }
+  catch (error) { token.cancelled = true; say("获取二维码失败", error.message, true); return; }
   while (!token.cancelled) {
     await sleep(wait);
     if (token.cancelled || !box.isConnected) return;
     let result;
     // This page's own code: another tab or device showing a code must not swap it out.
-    try { result = await api(`/api/platforms/${pid}/login?id=${encodeURIComponent(started.id || "")}`); } catch (error) { say("网络异常", error.message); continue; }
+    try { result = await api(`/api/platforms/${pid}/login?id=${encodeURIComponent(started.id || "")}`); } catch (error) { say("网络异常", error.message, true); continue; }
     if (result.qr) setImage(result.qr);
     // Scanned: the tap on the phone is seconds away, so look more often and go in as soon as it lands.
     wait = result.status === "scanned" ? 500 : 1500;
     if (result.status === "scanned") say("已扫码", "请在手机上确认登录。");
     else if (result.status === "refreshed") say("二维码已刷新", "请扫新的二维码。");
-    else if (result.status === "failed") { token.cancelled = true; say("登录未完成", result.message || "请点击刷新二维码重试。"); return; }
+    else if (result.status === "failed") { token.cancelled = true; say("登录未完成", result.message || "请点击刷新二维码重试。", true); return; }
     else if (result.status === "done") { token.cancelled = true; await afterLogin(pid); return; }
   }
 }
@@ -2850,7 +2981,7 @@ function paintFinder() {
     i += 1;
     return html;
   }).join(""));
-  finderList.innerHTML = groups.join('<div class="psep"></div>') || `<div class="prow" style="color:var(--text-4)">没有找到</div>`;
+  finderList.innerHTML = groups.join('<div class="psep"></div>') || `<div class="prow_empty">没有找到匹配的课程、试卷或页面</div>`;
   finderList.querySelectorAll("[data-i]").forEach((el) => (el.onclick = () => { closeFinder(); go(finderItems[el.dataset.i].hash); }));
   finderList.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
 }
