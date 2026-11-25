@@ -413,7 +413,10 @@ class Application:
         with self.view.activity("读取课程任务"):
             for course in courses:
                 catalog.extend(zhs.answer.catalog(client, course))
-        return catalog
+        # An exam is entered with a picture code typed by the person, which only the web page asks for.
+        return [(course, dict(item, _unavailable=("请用网页版", "进入考试要输入验证码，请在 Studia 网页版作答。"))
+                 if item.get("_captcha") and task_availability(item, category).available else item, category)
+                for course, item, category in catalog]
 
     def execute_zhs_ai(self, client, selected, config, auto_submit):
         results = []

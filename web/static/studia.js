@@ -90,8 +90,8 @@ async function api(path, { method = "GET", body } = {}) {
     else if (path !== "/api/state") refreshState();
   }
   // A proxy's own error page (no JSON) while the server restarts or is down.
-  if (!response.ok) throw new Error(data.error || ([502, 503, 504].includes(response.status)
-    ? `Studia 暂时连不上，可能正在重启，稍后再试（${response.status}）` : `请求失败（${response.status}）`));
+  if (!response.ok) throw Object.assign(new Error(data.error || ([502, 503, 504].includes(response.status)
+    ? `Studia 暂时连不上，可能正在重启，稍后再试（${response.status}）` : `请求失败（${response.status}）`)), { status: response.status });
   return data;
 }
 
@@ -1905,6 +1905,7 @@ function renderCourse(p, c, tab, full = false) {
         : sheet || !x.available ? ""
         : x.redo_left != null ? `<span class="pill blue">可重做 · 剩 ${esc(x.redo_left)} 次</span>`
         : x.redo ? '<span class="pill blue">可重做</span>'
+        : x.start ? '<span class="pill blue">输验证码开考</span>'
         : x.done ? `<span class="pill">已提交</span>` : "";
       const note = x.reason || (x.available ? x.status : "");
       return `<button class="paper ${on ? "on" : ""} ${r?.state === "running" ? "now" : ""} ${x.available && !(sheet && !r) ? "" : "off"}" data-key="${esc(x.id)}" data-paper="${esc(x.id)}">
@@ -2014,9 +2015,10 @@ async function loadPapers(p, c, again = false, fresh = false) {
     state.papers[k] = papers;
     delete state.paperErrors[k];
     const selected = selectedOf(k);
-    if (!again && !selected.size) papers.filter((x) => x.available && !x.done && x.status !== "状态未知").forEach((x) => selected.add(x.id));
+    // Starting an exam cannot be undone (its clock runs, an attempt is used): that one is only ever ticked by hand.
+    if (!again && !selected.size) papers.filter((x) => x.available && !x.done && !x.start && x.status !== "状态未知").forEach((x) => selected.add(x.id));
     // An exam just opened on the platform is ticked, as it would have been had it been open from the start.
-    else if (before) papers.filter((x) => x.available && !x.done && before.some((y) => y.id === x.id && !y.available)).forEach((x) => selected.add(x.id));
+    else if (before) papers.filter((x) => x.available && !x.done && !x.start && before.some((y) => y.id === x.id && !y.available)).forEach((x) => selected.add(x.id));
   } catch (error) {
     // A failed read is not an empty course: keep it unloaded so a retry or the next login reads it again.
     // A failed reread keeps the list already shown.
@@ -2248,15 +2250,20 @@ async function startJob(body) {
   } catch (error) { toast(error.message); return false; }
 }
 // 智慧树 asks for a picture code and the honesty pledge each time an exam is entered, and will not open the paper
-// without them. The code is read with this account's own login and typed by the person; the platform's page also
-// waits 8 s before it takes one. Resolves true once the platform accepted it, false if the person gave up.
+// without them; for an exam not yet started, entering is what starts it. The code is read with this account's own
+// login and typed by the person; the platform's page also waits 8 s before it takes one. The server first makes the
+// platform's own checks and says so when only the platform's page may go on (face check, location scan…).
+// Resolves true once the platform accepted the code, false if the person gave up.
 function examCode(p, c, paper) {
   return new Promise((resolve) => {
     const dialog = document.createElement("dialog");
     dialog.className = "modal exam_code";
     dialog.setAttribute("aria-labelledby", "exam-code-title");
-    dialog.innerHTML = `<form><h3 id="exam-code-title">进入考试验证</h3>
-        <p class="sub">${esc(paper.name)}<br>智慧树每次进入考试都要输入验证码。图是用你的登录取的，通过后才能打开试卷。</p>
+    dialog.innerHTML = `<form><h3 id="exam-code-title">${paper.start ? "开考验证" : "进入考试验证"}</h3>
+        <p class="sub">${esc(paper.name)}<br>${paper.start
+          ? "这场考试还没开考。<b>验证通过后会立即开考</b>：开始计时，并用掉一次考试机会<span data-remain></span>。"
+          : "智慧树每次进入考试都要输入验证码。图是用你的登录取的，通过后才能打开试卷。"}</p>
+        <p class="exam_warn" hidden></p>
         <label class="auth_field"><span>验证码</span><span class="code_row">
           <input name="code" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="8" required>
           <img alt="验证码图片" width="100" height="38"></span></label>
@@ -2278,8 +2285,20 @@ function examCode(p, c, paper) {
     const show = (image) => { img.src = image; code.value = ""; ready = Date.now() + 8000; paint(); code.focus(); };
     const fetchCode = async () => {
       ready = 0; paint();
-      try { show((await api(`/api/platforms/${p.id}/exam-captcha?course=${encodeURIComponent(c.id)}&task=${encodeURIComponent(paper.id)}`)).image); }
-      catch (error) { msg.textContent = error.message; }
+      try {
+        const got = await api(`/api/platforms/${p.id}/exam-captcha?course=${encodeURIComponent(c.id)}&task=${encodeURIComponent(paper.id)}`);
+        if (got.warning) { const warn = $(".exam_warn", dialog); warn.textContent = got.warning; warn.hidden = false; }
+        if (got.remain != null && $("[data-remain]", dialog)) $("[data-remain]", dialog).textContent = `（剩 ${got.remain} 次）`;
+        show(got.image);
+      } catch (error) {
+        msg.textContent = error.message;
+        // The platform's own checks say only its page may go on (face check, location scan…): nothing to type here.
+        if (error.status === 409 && !img.src) {
+          dialog.classList.add("blocked");
+          $(".sub", dialog).textContent = paper.name;
+          $("[data-cancel]", dialog).textContent = "知道了";
+        }
+      }
     };
     dialog.addEventListener("close", () => { clearInterval(tick); dialog.remove(); resolve(passed); });
     $("[data-cancel]", dialog).onclick = () => closeModal(dialog);

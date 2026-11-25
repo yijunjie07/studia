@@ -39,7 +39,7 @@ from mooc.oauth_login import oauth_login
 from core.settings import DEFAULT_PROFILE_ID, SettingsError, SettingsStore
 from core.task_capabilities import task_availability, task_type_label
 from core.task_metrics import completion_with_score, score_text
-from zhs.answer import ZHSAnswerRunner, catalog
+from zhs.answer import ZHSAnswerRunner, catalog, exam_entry_check
 from zhs.api import CaptchaRequired, StudyTimeLimit, ZHSApi, ZHSError, course_offers
 from zhs.main import ZHSHandler, course_units as zhs_units
 from zhs.memory import AnswerMemory
@@ -149,6 +149,7 @@ class Platform:
         self.qr_done = None  # the code that signed in, for its page coming back after the server finished it
         self.lapsed = False  # the saved login was deleted as expired, so the page says why it asks to sign in again
         self.captcha = {}  # exam task id -> the key of the entry picture code last shown for it
+        self.entry_checked = {}  # exam task id -> when it last passed exam_entry_check, so a new picture skips it
 
     def public(self, logged_in, rescan=False, rescan_at=None):
         spec = self.spec
@@ -672,7 +673,8 @@ class Studia:
                 "name": (item.get("name") if pid == "zhs" else paper_display_name(item)) or "未命名试卷",
                 "category": "作业" if pid == "zhs" and category == 1 else "考试" if pid == "zhs" else task_type_label(item, category),
                 # A handed-in paper reads 已提交 even once closed or out of attempts; the reason says which.
-                "status": "已提交" if done else availability.label or STATUS_LABEL.get(item.get("_completion_status"), "未作答"),
+                "status": "已提交" if done else availability.label or ("未开考" if item.get("_start") else None)
+                          or STATUS_LABEL.get(item.get("_completion_status"), "未作答"),
                 "score": score,
                 "available": availability.available,
                 "done": done and not item.get("_redo"),
@@ -681,6 +683,7 @@ class Studia:
                 "waiting": bool(item.get("_waiting")),
                 # Entered with the platform's picture code: the page asks for it before starting the job.
                 "captcha": bool(item.get("_captcha")),
+                "start": bool(item.get("_start")),  # and entering it starts the exam
                 "hint": item.get("_hint", ""),
                 "redo": bool(item.get("_redo")),
                 "redo_left": item.get("answerCount") if item.get("_redo") else None,
@@ -691,14 +694,25 @@ class Studia:
         entry = (platform.entries.get(course_id) or {}).get(task_id)
         if platform.id != "zhs" or not entry or not entry[1].get("_captcha"):
             raise HttpError(404, "没有找到这场考试，请刷新列表")
-        return entry[1]["zhs"]
+        return entry[1]
 
     def exam_captcha(self, pid, course_id, task_id):
-        """A fresh entry picture code for one 智慧树 exam, read with this account's own login."""
+        """A fresh entry picture code for one 智慧树 exam, read with this account's own login. The first one
+        follows the platform's own checks (face, location, progress…); an exam that needs the platform's page
+        for them gets the reason instead."""
         platform = self.platform(pid)
-        self._exam_entry(platform, course_id, task_id)
+        item = self._exam_entry(platform, course_id, task_id)
         client = self.client(platform)
+        warning = ""
         try:
+            with self.lock:
+                checked = time.time() - platform.entry_checked.get(task_id, 0) < CACHE_TTL
+            if not checked:
+                blocked, warning = exam_entry_check(client, item)
+                if blocked:
+                    raise HttpError(409, blocked)
+                with self.lock:
+                    platform.entry_checked[task_id] = time.time()
             client.shared_exam_sso()
             image, key = client.shared_exam_captcha()
         except AuthenticationExpired:
@@ -707,7 +721,9 @@ class Studia:
             raise HttpError(502, "取验证码失败：%s" % exc)
         with self.lock:
             platform.captcha[task_id] = key
-        return {"image": _data_url(image)}
+        entry = item.get("_entry") or {}
+        return {"image": _data_url(image), "warning": warning, "start": bool(item.get("_start")),
+                "remain": entry.get("remain")}
 
     def exam_captcha_check(self, pid, body):
         """Hand the typed code to the platform, as its exam page does before opening the paper. A wrong code
@@ -715,7 +731,7 @@ class Studia:
         platform = self.platform(pid)
         course_id, task_id = str(body.get("course") or ""), str(body.get("task") or "")
         code = str(body.get("code") or "").strip()
-        z = self._exam_entry(platform, course_id, task_id)
+        z = self._exam_entry(platform, course_id, task_id)["zhs"]
         if not code:
             raise HttpError(400, "请输入验证码")
         with self.lock:
@@ -725,6 +741,8 @@ class Studia:
         client = self.client(platform)
         try:
             if client.shared_exam_captcha_check(code, key, z["stuExamId"]):
+                with self.lock:
+                    platform.entry_checked.pop(task_id, None)  # the next entry walks the checks again
                 return {"ok": True}
         except AuthenticationExpired:
             raise self.expire(platform)

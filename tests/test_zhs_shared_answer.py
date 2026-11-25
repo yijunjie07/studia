@@ -4,7 +4,7 @@ import unittest
 
 from core.auth import PlatformUnavailable
 from core.task_capabilities import task_availability
-from zhs.answer import ZHSAnswerRunner, catalog, catalog_shared, encode, prepare_shared
+from zhs.answer import ZHSAnswerRunner, catalog, catalog_shared, encode, exam_entry_check, prepare_shared
 from zhs.api import CaptchaRequired, ZHSApiError
 
 
@@ -98,6 +98,34 @@ class FakeSharedClient:
     def shared_redo_homework(self, recruit_id, exam_id, course_id):
         self._record("shared_redo_homework", (recruit_id, exam_id, course_id))
         return {"rt": True}
+
+    # The platform's checks before an exam's entry code; by default the school asks for nothing more.
+    entry = {"exception": {"examStatus": 1}, "limit": 1, "rule": {"progress": 1, "progressRule": 36},
+             "location": False, "located": True, "face": False}
+
+    def shared_exception_action(self, recruit_id, school_id):
+        self._record("shared_exception_action", (recruit_id, school_id))
+        return self.entry["exception"]
+
+    def shared_limit_time(self, exam_id, recruit_id):
+        self._record("shared_limit_time", exam_id)
+        return self.entry["limit"]
+
+    def shared_progress_rule(self, recruit_id, school_id):
+        self._record("shared_progress_rule", school_id)
+        return self.entry["rule"]
+
+    def shared_location_on(self, course_id, recruit_id, school_id):
+        self._record("shared_location_on", course_id)
+        return self.entry["location"]
+
+    def shared_location_passed(self, course_id, exam_id):
+        self._record("shared_location_passed", exam_id)
+        return self.entry["located"]
+
+    def shared_face_on(self, recruit_id, school_id):
+        self._record("shared_face_on", school_id)
+        return self.entry["face"]
 
     def names(self):
         return [name for name, _ in self.calls]
@@ -345,6 +373,60 @@ class SharedExamFlowTest(unittest.TestCase):
         self.assertNotIn("shared_do_exam", client.names())
 
 
+
+class ExamEntryCheckTest(unittest.TestCase):
+    """The platform's checks before it shows an exam's entry code, as its exam list makes them."""
+
+    def item(self, start=True, parent=None, review=0):
+        return dict(exam_item(), _entry={"start": start, "remain": 1, "parentId": parent, "reviewType": review})
+
+    def check(self, start=True, **entry):
+        client = FakeSharedClient([])
+        client.entry = dict(FakeSharedClient.entry, **entry)
+        return exam_entry_check(client, self.item(start)), client
+
+    def test_nothing_more_asked_lets_the_code_show(self):
+        (blocked, warning), client = self.check()
+        self.assertEqual((blocked, warning), ("", ""))
+        self.assertEqual(client.names(), ["shared_exam_sso", "shared_school_id", "shared_exception_action",
+                                          "shared_limit_time", "shared_progress_rule", "shared_location_on",
+                                          "shared_face_on"])
+
+    def test_continuing_an_exam_skips_the_progress_rule(self):
+        (blocked, _), client = self.check(start=False, rule={"progress": 0, "progressRule": 36})
+        self.assertEqual(blocked, "")
+        self.assertNotIn("shared_progress_rule", client.names())
+
+    def test_each_requirement_that_needs_the_platforms_page(self):
+        cases = [
+            ({"exception": {"examStatus": 3}}, "异常"),
+            ({"exception": {}}, "异常"),
+            ({"limit": False}, "作答时间已经结束"),
+            ({"rule": {"progress": 0, "progressRule": 36}}, "学习进度达到 36%"),
+            ({"location": True, "located": False}, "定位"),
+            ({"face": True}, "人脸识别"),
+        ]
+        for entry, words in cases:
+            with self.subTest(entry=entry):
+                (blocked, _), _ = self.check(**entry)
+                self.assertIn(words, blocked)
+        (blocked, _), _ = self.check(location=True, located=True)
+        self.assertEqual(blocked, "")
+
+    def test_old_exam_system_and_makeup_exams(self):
+        client = FakeSharedClient([])
+        blocked, _ = exam_entry_check(client, self.item(review=1))
+        self.assertIn("旧版考试系统", blocked)
+        client.entry = dict(FakeSharedClient.entry, exception={"examStatus": 1, "makeUpExamStatus": 3})
+        blocked, _ = exam_entry_check(client, self.item(parent=99))
+        self.assertIn("异常", blocked)  # a make-up exam reads its own status
+
+    def test_a_reset_exam_warns_but_goes_on(self):
+        (blocked, warning), _ = self.check(exception={"examStatus": 2})
+        self.assertEqual(blocked, "")
+        self.assertIn("0 分", warning)
+
+
 class CatalogSharedTest(unittest.TestCase):
     def make_client(self, **kwargs):
         client = FakeSharedClient([], **kwargs)
@@ -434,7 +516,7 @@ class CatalogSharedTest(unittest.TestCase):
     def test_exam_unavailable_reasons(self):
         rows = [
             {"id": 1, "examId": 11, "examName": "已交", "state": 4},
-            {"id": 2, "examId": 12, "examName": "未开考", "state": 1},
+            {"id": 2, "examId": 12, "examName": "未开考", "state": 1, "faStudentExamRemainCount": 1},
             {"id": 3, "examId": 13, "examName": "没次数", "state": 2,
              "studentStartTime": "s", "faStudentExamRemainCount": 0},
             {"id": 4, "examId": 14, "examName": "可考", "state": 2,
@@ -445,7 +527,9 @@ class CatalogSharedTest(unittest.TestCase):
         by_id = {item["id"]: item for _, item, _ in catalog(client, COURSE)}
         self.assertEqual(by_id["sex-1-11"]["_unavailable"][0], "已提交")
         self.assertEqual(by_id["sex-1-11"]["_completion_status"], "submitted")
-        self.assertEqual(by_id["sex-2-12"]["_unavailable"][0], "未开考")
+        # Not started, and no window given: Studia starts it with the picture code.
+        self.assertNotIn("_unavailable", by_id["sex-2-12"])
+        self.assertTrue(by_id["sex-2-12"]["_start"])
         self.assertTrue(by_id["sex-2-12"]["_waiting"])
         self.assertEqual(by_id["sex-3-13"]["_unavailable"][0], "无剩余次数")
         self.assertNotIn("_unavailable", by_id["sex-4-14"])
@@ -469,6 +553,29 @@ class CatalogSharedTest(unittest.TestCase):
         self.assertEqual(by_id["sex-3-13"]["_unavailable"][0], "禁止考试")
         self.assertFalse(by_id["sex-3-13"]["_waiting"])
         self.assertEqual(by_id["sex-4-14"]["_unavailable"][0], "状态未知")
+
+    def test_an_exam_not_started_opens_for_starting_only_in_its_window(self):
+        rows = [
+            {"id": 1, "examId": 11, "examName": "下学期", "state": 1, "studentStartTime": None,
+             "faStudentExamRemainCount": 1, "startTime": "2099-01-21 00:00:00", "endDate": "2099-01-31 23:59:59"},
+            {"id": 2, "examId": 12, "examName": "本周", "state": 1, "studentStartTime": None,
+             "faStudentExamRemainCount": 1, "startTime": "2026-01-01 00:00:00", "endDate": "2099-01-01 00:00:00",
+             "parentId": None, "reviewType": 0},
+            {"id": 3, "examId": 13, "examName": "过期", "state": 1, "studentStartTime": None,
+             "faStudentExamRemainCount": 1, "startTime": "2020-01-01 00:00:00", "endDate": "2020-02-01 00:00:00"},
+        ]
+        client = self.make_client(exam_rows=rows)
+        client.homework_rows = []
+        by_id = {item["id"]: item for _, item, _ in catalog(client, COURSE)}
+        self.assertEqual(task_availability(by_id["sex-1-11"], 2).label, "未开始")
+        self.assertEqual(task_availability(by_id["sex-3-13"], 2).label, "已截止")
+        open_now = by_id["sex-2-12"]
+        self.assertTrue(task_availability(open_now, 2).available)
+        self.assertTrue(open_now["_start"])
+        self.assertIn("开考", open_now["_hint"])
+        self.assertEqual(open_now["_entry"], {"start": True, "remain": 1, "parentId": None, "reviewType": 0})
+        # Only the one that can be started now asks for its answer lock.
+        self.assertEqual([p for n, p in client.calls if n == "shared_answer_lock"], [12])
 
     def test_answer_lock_failure_is_unknown(self):
         client = self.make_client()

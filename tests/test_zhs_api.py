@@ -669,6 +669,36 @@ class SharedExamApiTest(unittest.TestCase):
         client.session.request.return_value = json_response({"status": "500", "msg": "验证码错误"})
         self.assertFalse(client.shared_exam_captcha_check("ab13", "k1", "5XxWlDWz"))
 
+    def test_shared_exam_entry_checks_ask_the_platform(self):
+        client = make_api()
+        calls = [
+            (lambda: client.shared_exception_action(9, "88"), {"examStatus": 1}, {"examStatus": 1},
+             api.HOMEWORK_GATEWAY + "/appeal/getStuExceptionAction", {"recruitId": 9, "schoolId": "88"}),
+            (lambda: client.shared_limit_time("e1", 9), True, True,
+             api.TAURUS_GATEWAY + "/exam/getStuLimitTime", {"examId": "e1", "recruitId": 9}),
+            (lambda: client.shared_progress_rule(9, "88"), {"progress": 1}, {"progress": 1},
+             api.TAURUS_GATEWAY + "/student/getStuProgressRule", {"recruitId": 9, "schoolId": "88"}),
+            (lambda: client.shared_location_on(3, 9, "88"), True, True,
+             api.HOMEWORK_GATEWAY + "/location/queryIsOpenLocation", {"courseId": 3, "recruitId": 9, "schoolId": "88"}),
+            (lambda: client.shared_location_passed(3, "e1"), 0, False,
+             api.HOMEWORK_GATEWAY + "/location/queryEncodeImageIsPass", {"courseId": 3, "examId": "e1"}),
+            (lambda: client.shared_face_on(9, "88"), {"resultStatus": 0}, False,
+             api.HOMEWORK_GATEWAY + "/common/queryFaceRecognitionSwitchFromWeb", {"recruitId": 9, "schoolId": "88"}),
+        ]
+        for call, rt, expected, url, body in calls:
+            with self.subTest(url=url):
+                client.session.request.return_value = json_response({"status": "200", "rt": rt})
+                self.assertEqual(call(), expected)
+                self.assertEqual(client.session.request.call_args.args[1], url)
+                sent = client.session.request.call_args.kwargs["data"]["secretStr"]
+                self.assertEqual(json.loads(decrypt(sent, KEYS["exam"])), body)
+        # Readings the page would not take as "nothing to do" keep the stricter answer.
+        client.session.request.return_value = json_response({"status": "200", "rt": "true"})
+        self.assertFalse(client.shared_location_on(3, 9, "88"))
+        client.session.request.return_value = json_response({"status": "200", "rt": None})
+        self.assertTrue(client.shared_face_on(9, "88"))
+        self.assertEqual(client.shared_exception_action(9, "88"), {})
+
     def test_shared_submit_exam_uses_taurus(self):
         client = make_api()
         client.session.request.return_value = json_response({"status": "200", "rt": {"statu": "1"}})
