@@ -1015,10 +1015,37 @@ class ZHSApi:
                               {"courseId": course_id, "recruitId": recruit_id, "schoolId": school_id}).get("rt") is True
 
     def shared_location_passed(self, course_id, exam_id):
-        """Whether the phone scan that turns on location went through; the page shows the code while it reads 0."""
+        """Whether the phone scan that turns on location went through (1 = passed, 0 = waiting)."""
         rt = self.exam_form(HOMEWORK_GATEWAY + "/location/queryEncodeImageIsPass",
                             {"courseId": course_id, "examId": exam_id}).get("rt")
-        return rt not in (0, "0", "")
+        return rt in (1, "1")
+
+    def _exam_image(self, url, label):
+        if not isinstance(url, str) or not url.strip():
+            raise PlatformUnavailable("智慧树%s返回格式异常，请稍后重试" % label)
+        url = url.strip()
+        if url.startswith("data:"):
+            try:
+                image = base64.b64decode(url.split(",", 1)[1])
+            except (IndexError, ValueError):
+                raise PlatformUnavailable("智慧树%s无法识别，请换一张" % label) from None
+            if not image:
+                raise PlatformUnavailable("智慧树%s是空的，请换一张" % label)
+            return image
+        if url.startswith("//"):
+            url = "https:" + url
+        elif url.startswith("/"):
+            url = EXAM_PAGE + url
+        image = self._request("GET", url, expect_json=False, origin=EXAM_PAGE).content
+        if not image:
+            raise PlatformUnavailable("智慧树%s是空的，请换一张" % label)
+        return image
+
+    def shared_location_qr(self, course_id, exam_id):
+        """The QR image the student scans in 知到 App to enable exam location (onlineexamh5new stuExamWeb)."""
+        rt = self.exam_form(HOMEWORK_GATEWAY + "/location/createEncodeImage",
+                            {"courseId": course_id, "examId": exam_id}).get("rt")
+        return self._exam_image(rt, "定位二维码")
 
     def shared_face_on(self, recruit_id, school_id):
         """Whether the school checks faces before an exam; anything but resultStatus 0 counts as on."""
@@ -1037,17 +1064,7 @@ class ZHSApi:
         key = rt.get("keyCaptchaKey") if isinstance(rt, dict) else None
         if not isinstance(url, str) or not url or not key:
             raise PlatformUnavailable("智慧树验证码返回格式异常，请稍后重试")
-        if url.startswith("data:"):
-            try:
-                return base64.b64decode(url.split(",", 1)[1]), key
-            except (IndexError, ValueError):
-                raise PlatformUnavailable("智慧树验证码图片无法识别，请换一张") from None
-        if url.startswith("//"):
-            url = "https:" + url
-        image = self._request("GET", url, expect_json=False, origin=EXAM_PAGE).content
-        if not image:
-            raise PlatformUnavailable("智慧树验证码图片是空的，请换一张")
-        return image, key
+        return self._exam_image(url, "验证码图片"), key
 
     def shared_exam_captcha_check(self, code, key, stu_exam_id):
         """Whether the platform took this picture code for entering the exam (stuExamId is the list's "id")."""
@@ -1078,6 +1095,11 @@ class ZHSApi:
         payload = {"stuExamAnswer": json.dumps([answer_item]), "recruitId": recruit_id}
         try:
             result = self.exam_form(url, payload, extra=extra)
+        except ZHSApiError as error:
+            if exam and str(error.code) == "-1" and str(error.message) == "2":
+                raise ZHSApiError(
+                    error.code, "智慧树要求开启定位：请重新进入这场考试，用知到 App 扫码开启定位后再继续") from None
+            raise
         except CaptchaRequired as error:
             chapter_id = answer_item.get("examId")
             if exam or captcha_vision is None or not chapter_id or "滑块验证未通过" not in str(error):

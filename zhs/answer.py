@@ -6,6 +6,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import NamedTuple
 
 import requests
 
@@ -1280,12 +1281,19 @@ def _shared_exam_items(client, recruit_id, course_id, seen=()):
     return items
 
 
+class EntryCheck(NamedTuple):
+    blocked: str = ""
+    warning: str = ""
+    location: bool = False
+
+
 def exam_entry_check(client, item):
     """Walk the checks the platform's exam list makes before it shows the entry picture code, in its order:
     exception record, time left, study progress (starting only), old exam system, location scan, face check.
 
-    Returns (blocked, warning): why this exam can only be entered on the platform's page, or not at all ("" when
-    the picture code may be shown), and a notice to show beside the code.
+    Returns EntryCheck(blocked, warning, location): blocked says why this exam cannot be entered here; location
+    means the student must scan the platform's location QR in 知到 App before continuing to face check and the
+    picture code; warning is a notice to show alongside either step.
     """
     z, entry = item["zhs"], item.get("_entry") or {}
     recruit_id, exam_id, course_id = z["recruitId"], z["examId"], z["courseId"]
@@ -1298,20 +1306,20 @@ def exam_entry_check(client, item):
     if str(status) == "2":  # the platform still lets them in, after this notice
         warning = "智慧树检测到这场考试有异常行为，已清空作答、退回重做；再被发现会直接 0 分。"
     elif str(status) != "1":
-        return "智慧树把这场考试标成了异常（状态 %s），请到平台网页查看异常记录。" % status, ""
+        return EntryCheck(blocked="智慧树把这场考试标成了异常（状态 %s），请到平台网页查看异常记录。" % status)
     if not client.shared_limit_time(exam_id, recruit_id):
-        return "这场考试的作答时间已经结束，平台会在次日凌晨自动交卷。", ""
+        return EntryCheck(blocked="这场考试的作答时间已经结束，平台会在次日凌晨自动交卷。")
     if entry.get("start"):
         rule = client.shared_progress_rule(recruit_id, school)
         if str(rule.get("progress")) == "0":
-            return "学校规定学习进度达到 %s%% 才能参加期末考试，你的进度还没达到。" % rule.get("progressRule"), ""
+            return EntryCheck(blocked="学校规定学习进度达到 %s%% 才能参加期末考试，你的进度还没达到。" % rule.get("progressRule"))
     if str(entry.get("reviewType")) == "1":
-        return "这场考试在智慧树的旧版考试系统里，只能到平台网页%s。" % enter, ""
+        return EntryCheck(blocked="这场考试在智慧树的旧版考试系统里，只能到平台网页%s。" % enter)
     if client.shared_location_on(course_id, recruit_id, school) and not client.shared_location_passed(course_id, exam_id):
-        return "学校要求这场考试先用手机扫码开启定位，只能到平台网页%s。" % enter, ""
+        return EntryCheck(warning=warning, location=True)
     if client.shared_face_on(recruit_id, school):
-        return "学校开了人脸识别，只能到平台网页%s。" % enter, ""
-    return "", warning
+        return EntryCheck(blocked="学校开了人脸识别，只能到平台网页%s。" % enter)
+    return EntryCheck(warning=warning)
 
 
 def catalog_shared(client, course):

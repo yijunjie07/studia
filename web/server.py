@@ -698,19 +698,27 @@ class Studia:
 
     def exam_captcha(self, pid, course_id, task_id):
         """A fresh entry picture code for one 智慧树 exam, read with this account's own login. The first one
-        follows the platform's own checks (face, location, progress…); an exam that needs the platform's page
-        for them gets the reason instead."""
+        follows the platform's own checks (exception, progress, location, face…): when the exam asks for a phone
+        location scan first, it returns the location QR code so the student can scan it right here; an exam that
+        still needs the platform's page (e.g. face check) gets the reason instead."""
         platform = self.platform(pid)
         item = self._exam_entry(platform, course_id, task_id)
         client = self.client(platform)
         warning = ""
+        entry = item.get("_entry") or {}
         try:
             with self.lock:
                 checked = time.time() - platform.entry_checked.get(task_id, 0) < CACHE_TTL
             if not checked:
-                blocked, warning = exam_entry_check(client, item)
-                if blocked:
-                    raise HttpError(409, blocked)
+                check = exam_entry_check(client, item)
+                if check.blocked:
+                    raise HttpError(409, check.blocked)
+                if check.location:
+                    z = item["zhs"]
+                    qr = client.shared_location_qr(z["courseId"], z["examId"])
+                    return {"step": "location", "qr": _data_url(qr), "warning": check.warning,
+                            "start": bool(item.get("_start")), "remain": entry.get("remain")}
+                warning = check.warning
                 with self.lock:
                     platform.entry_checked[task_id] = time.time()
             client.shared_exam_sso()
@@ -721,9 +729,37 @@ class Studia:
             raise HttpError(502, "取验证码失败：%s" % exc)
         with self.lock:
             platform.captcha[task_id] = key
-        entry = item.get("_entry") or {}
-        return {"image": _data_url(image), "warning": warning, "start": bool(item.get("_start")),
+        return {"step": "captcha", "image": _data_url(image), "warning": warning, "start": bool(item.get("_start")),
                 "remain": entry.get("remain")}
+
+    def exam_location_status(self, pid, course_id, task_id):
+        """Whether the student's phone scan in 知到 App enabled location for this exam."""
+        platform = self.platform(pid)
+        z = self._exam_entry(platform, course_id, task_id)["zhs"]
+        client = self.client(platform)
+        try:
+            client.shared_exam_sso()
+            passed = client.shared_location_passed(z["courseId"], z["examId"])
+        except AuthenticationExpired:
+            raise self.expire(platform)
+        except (PlatformUnavailable, ZHSError) as exc:
+            raise HttpError(502, "查询定位状态失败：%s" % exc)
+        return {"passed": bool(passed)}
+
+    def exam_location_qr(self, pid, body):
+        """A fresh location QR code for an exam whose phone scan is still waiting."""
+        platform = self.platform(pid)
+        course_id, task_id = str(body.get("course") or ""), str(body.get("task") or "")
+        z = self._exam_entry(platform, course_id, task_id)["zhs"]
+        client = self.client(platform)
+        try:
+            client.shared_exam_sso()
+            qr = client.shared_location_qr(z["courseId"], z["examId"])
+        except AuthenticationExpired:
+            raise self.expire(platform)
+        except (PlatformUnavailable, ZHSError) as exc:
+            raise HttpError(502, "取定位二维码失败：%s" % exc)
+        return {"qr": _data_url(qr)}
 
     def exam_captcha_check(self, pid, body):
         """Hand the typed code to the platform, as its exam page does before opening the paper. A wrong code
@@ -1788,6 +1824,8 @@ ROUTES = [
     ("GET", r"/api/platforms/(\w+)/score", lambda app, m, q, b: app.score(m[1], (q.get("course") or [""])[0], (q.get("fresh") or [""])[0] == "1")),
     ("GET", r"/api/platforms/(\w+)/exam-captcha", lambda app, m, q, b: app.exam_captcha(m[1], (q.get("course") or [""])[0], (q.get("task") or [""])[0])),
     ("POST", r"/api/platforms/(\w+)/exam-captcha", lambda app, m, q, b: app.exam_captcha_check(m[1], b)),
+    ("GET", r"/api/platforms/(\w+)/exam-location", lambda app, m, q, b: app.exam_location_status(m[1], (q.get("course") or [""])[0], (q.get("task") or [""])[0])),
+    ("POST", r"/api/platforms/(\w+)/exam-location", lambda app, m, q, b: app.exam_location_qr(m[1], b)),
     ("GET", r"/api/platforms/(\w+)/tasks", lambda app, m, q, b: app.tasks(m[1], (q.get("course") or [""])[0], (q.get("fresh") or [""])[0] == "1")),
     ("GET", r"/api/jobs", lambda app, m, q, b: app.jobs_state()),
     ("POST", r"/api/jobs", lambda app, m, q, b: app.start_job(b)),
