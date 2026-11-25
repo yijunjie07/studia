@@ -5,7 +5,7 @@ import unittest
 from core.auth import PlatformUnavailable
 from core.task_capabilities import task_availability
 from zhs.answer import ZHSAnswerRunner, catalog, catalog_shared, encode, prepare_shared
-from zhs.api import CaptchaRequired
+from zhs.api import CaptchaRequired, ZHSApiError
 
 
 class FixedRng(random.Random):
@@ -79,6 +79,8 @@ class FakeSharedClient:
     def shared_do_exam(self, recruit_id, exam_id, stu_exam_id, school_id, course_id):
         self._record("shared_do_exam",
                      (recruit_id, exam_id, stu_exam_id, school_id, course_id))
+        if getattr(self, "refuse", None) is not None:
+            raise ZHSApiError("-1", self.refuse)
         return {"examBase": {"workExamParts": [{"questionDtos": self.questions}]}}
 
     def shared_save_answer(self, answer_item, recruit_id, *, exam, captcha_vision=None):
@@ -318,6 +320,23 @@ class SharedExamFlowTest(unittest.TestCase):
         self.assertIn("禁止考试", result["message"])
         self.assertNotIn("shared_do_exam", client.names())
 
+    def test_exam_entered_without_its_picture_code_says_so(self):
+        # What the real final exam answered: doExam status -1, msg 3 (验证码是否通过异常 on the platform's page).
+        client = FakeSharedClient([shared_question("e1")])
+        client.refuse = 3
+        result = runner(client, FakeAI(["B"])).run_paper(COURSE, exam_item(), 2)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("验证码", result["message"])
+        self.assertNotIn("-1", result["message"])
+        self.assertNotIn("shared_save_answer", client.names())
+
+    def test_other_exam_refusals_keep_the_platform_text(self):
+        client = FakeSharedClient([shared_question("e1")])
+        client.refuse = "考点考试异常"
+        result = runner(client, FakeAI(["B"])).run_paper(COURSE, exam_item(), 2)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("考点考试异常", result["message"])
+
     def test_recheck_sends_identity_check_to_the_platform(self):
         client = FakeSharedClient([shared_question("e1")], lock=2)
         result = runner(client, FakeAI(["B"])).run_paper(COURSE, exam_item(), 2)
@@ -431,6 +450,9 @@ class CatalogSharedTest(unittest.TestCase):
         self.assertEqual(by_id["sex-3-13"]["_unavailable"][0], "无剩余次数")
         self.assertNotIn("_unavailable", by_id["sex-4-14"])
         self.assertTrue(task_availability(by_id["sex-4-14"], 2).available)
+        # Every exam not yet handed in is entered with the platform's picture code.
+        self.assertTrue(all(by_id[i].get("_captcha") for i in ("sex-2-12", "sex-3-13", "sex-4-14")))
+        self.assertNotIn("_captcha", by_id["sex-1-11"])
 
     def test_answer_lock_reads_as_the_platform_does(self):
         # What the platform's own exam list does with getSaveAnswerLockResult before letting a student in:

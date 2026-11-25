@@ -636,6 +636,39 @@ class SharedExamApiTest(unittest.TestCase):
         body = json.loads(decrypt(kwargs["data"]["secretStr"], KEYS["exam"]))
         self.assertEqual(body, {"recruitId": 9, "examId": 200, "description": "", "courseId": 3})
 
+    def test_shared_exam_captcha_reads_the_picture_with_this_login(self):
+        client = make_api()
+        picture = Mock(status_code=200, content=b"\x89PNG-code")
+        client.session.request.side_effect = [
+            json_response({"status": "200", "rt": {"url": "//img.zhihuishu.com/code/1.png", "keyCaptchaKey": "k1"}}),
+            picture]
+        self.assertEqual(client.shared_exam_captcha(), (b"\x89PNG-code", "k1"))
+        first, second = client.session.request.call_args_list
+        self.assertIn(api.TAURUS + "/taurusExam/gateway/t/v1/common/changeCodeImg", first.args[1])
+        self.assertEqual((second.args[0], second.args[1]), ("GET", "https://img.zhihuishu.com/code/1.png"))
+
+    def test_shared_exam_captcha_takes_an_inline_picture(self):
+        client = make_api()
+        client.session.request.return_value = json_response(
+            {"status": "200", "rt": {"url": "data:image/png;base64,iVBORw==", "keyCaptchaKey": "k2"}})
+        self.assertEqual(client.shared_exam_captcha(), (b"\x89PNG", "k2"))
+        client.session.request.return_value = json_response({"status": "200", "rt": {"url": ""}})
+        with self.assertRaises(PlatformUnavailable):
+            client.shared_exam_captcha()
+
+    def test_shared_exam_captcha_check(self):
+        client = make_api()
+        client.session.request.return_value = json_response({"status": "200", "rt": True})
+        self.assertTrue(client.shared_exam_captcha_check("ab12", "k1", "5XxWlDWz"))
+        _, kwargs = client.session.request.call_args
+        self.assertIn(api.TAURUS + "/taurusExam/gateway/t/v1/common/codeImgIsRight", client.session.request.call_args.args[1])
+        body = json.loads(decrypt(kwargs["data"]["secretStr"], KEYS["exam"]))
+        self.assertEqual(body, {"userCode": "ab12", "captchaKey": "k1", "encryptedStuExamId": "5XxWlDWz"})
+        client.session.request.return_value = json_response({"status": "200", "rt": False})
+        self.assertFalse(client.shared_exam_captcha_check("ab13", "k1", "5XxWlDWz"))
+        client.session.request.return_value = json_response({"status": "500", "msg": "验证码错误"})
+        self.assertFalse(client.shared_exam_captcha_check("ab13", "k1", "5XxWlDWz"))
+
     def test_shared_submit_exam_uses_taurus(self):
         client = make_api()
         client.session.request.return_value = json_response({"status": "200", "rt": {"statu": "1"}})
