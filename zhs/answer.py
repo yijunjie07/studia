@@ -548,14 +548,14 @@ class ZHSAnswerRunner:
 
         def submit():
             if is_exam:
-                self.client.shared_submit_exam(recruit_id, exam_id, stu_exam_id, total)
-                return {"paper": name, "status": "submitted", "message": "已交卷，成绩以平台为准"}
-            rt = self.client.shared_submit_homework(recruit_id, exam_id, stu_exam_id, total) or {}
+                rt = self.client.shared_submit_exam(recruit_id, exam_id, stu_exam_id, total) or {}
+            else:
+                rt = self.client.shared_submit_homework(recruit_id, exam_id, stu_exam_id, total) or {}
             score = rt.get("score")
             total_score = rt.get("totalScore")
-            if score is None:
+            if score in (None, ""):
                 message = "已交卷，成绩以平台为准"
-            elif total_score is None:
+            elif total_score in (None, ""):
                 message = "已交卷，得分 %s" % score
             else:
                 message = "已交卷，得分 %s/%s" % (score, total_score)
@@ -1216,9 +1216,9 @@ ANSWER_LOCK = {
 
 
 def _shared_exam_items(client, recruit_id, course_id, seen=()):
+    # Platform's webExamList queries flag=1 (未提交) and flag=2 (已提交, which carries the score).
     rows = client.shared_exam_list(recruit_id, course_id, 1)
-    rows += client.shared_exam_list(recruit_id, course_id, 0)
-    # flag=0 also returns the chapter tests already listed as homework (same ids).
+    rows += client.shared_exam_list(recruit_id, course_id, 2)
     items, seen = [], set(seen)
     for row in rows or []:
         if not isinstance(row, dict):
@@ -1240,12 +1240,17 @@ def _shared_exam_items(client, recruit_id, course_id, seen=()):
             "zhs": {"kind": "shared_exam", "recruitId": recruit_id,
                     "courseId": course_id, "stuExamId": stu_exam_id, "examId": exam_id},
         }
-        if "score" in row:
-            item["score"] = row["score"]
+        # Make-up exams (parentId != None) show oneHundredPont on the platform's exam list.
+        score = row.get("oneHundredPont") if row.get("parentId") not in (None, "") else row.get("score")
+        if score in (None, "") and row.get("score") not in (None, ""):
+            score = row.get("score")
+        if score not in (None, ""):
+            item["score"] = score
         state = row.get("state")
-        if state == 4:
+        if state in (3, 4):
             item["_completion_status"] = "submitted"
-            item["_unavailable"] = ("已提交", "考试已提交。")
+            item["_unavailable"] = (
+                "已提交", "考试已提交，等待平台公布成绩。" if state == 3 and "score" not in item else "考试已提交。")
             items.append(item)
             continue
         item["_captcha"] = True  # entered with the platform's picture code each time, see ZHSApi.shared_exam_captcha

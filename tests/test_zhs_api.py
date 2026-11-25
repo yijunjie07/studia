@@ -618,6 +618,9 @@ class SharedExamApiTest(unittest.TestCase):
         client = make_api()
         client.session.request.return_value = json_response({"status": "200", "rt": {"statu": "1"}})
         self.assertEqual(client.shared_submit_exam(1, 2, 3, 4)["statu"], "1")
+        # Platform's doExamination returns statu 0 with score when an exam grades immediately.
+        client.session.request.return_value = json_response({"status": "200", "rt": {"statu": 0, "score": 92}})
+        self.assertEqual(client.shared_submit_exam(1, 2, 3, 4)["score"], 92)
         client.session.request.return_value = json_response(
             {"status": "200", "rt": {"statu": "0", "msg": "no"}})
         with self.assertRaises(ZHSApiError) as ctx:

@@ -2020,11 +2020,12 @@ function scoreNote(c, papers, earned) {
   return scores.length ? `作业均分 <b>${(scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1)}</b>${full(100)}` : "";
 }
 const loadingEarned = new Set(), earnedErrors = new Set(), earnedRetry = new Set();
-async function loadEarned(p, c) {
+async function loadEarned(p, c, fresh = false) {
   const k = key(p.id, c.id);
-  if (loadingEarned.has(k) || earnedErrors.has(k) || state.earned[k]) return;
+  if (loadingEarned.has(k) || (!fresh && (earnedErrors.has(k) || state.earned[k]))) return;
   loadingEarned.add(k);
-  try { state.earned[k] = (await api(`/api/platforms/${p.id}/score?course=${encodeURIComponent(c.id)}`)).earned; }
+  if (fresh) earnedErrors.delete(k);
+  try { state.earned[k] = (await api(`/api/platforms/${p.id}/score?course=${encodeURIComponent(c.id)}${fresh ? "&fresh=1" : ""}`)).earned; }
   catch { if (!earnedRetry.has(k)) earnedErrors.add(k); }  // retry on re-entry, not on every repaint
   finally { loadingEarned.delete(k); earnedRetry.delete(k); }
   repaint();
@@ -2217,7 +2218,9 @@ async function loadPapers(p, c, again = false, fresh = false) {
 function stalePapers(pid, cid) {
   const k = key(pid, cid);
   delete state.papers[k];
-  if (loadingPapers.has(k)) papersAgain.add(k);
+  delete state.earned[k];
+  earnedErrors.delete(k);
+  if (loadingPapers.has(k)) papersAgain.set(k, true);
   if (rereads[k]?.timer) { clearTimeout(rereads[k].timer); rereads[k].timer = 0; }  // the next look reads it anyway
 }
 // A paper handed in mid-run: its score shows without waiting for the whole job. At most one read per 15 s,
@@ -3026,7 +3029,7 @@ document.addEventListener("click", (event) => {
   const papersFresh = t.closest("[data-papers-fresh]");
   if (papersFresh) {
     const [pid, ...rest] = papersFresh.dataset.papersFresh.split(":"), p = platformOf(pid), c = courseOf(pid, rest.join(":"));
-    if (p && c) loadPapers(p, c, true, true);
+    if (p && c) { loadPapers(p, c, true, true); if (c.shares) loadEarned(p, c, true); }
   }
   const retry = t.closest("[data-units-retry]");
   if (retry) { const [pid, ...rest] = retry.dataset.unitsRetry.split(":"); delete state.units[retry.dataset.unitsRetry]; loadUnits(pid, rest.join(":")); repaint(); }

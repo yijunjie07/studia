@@ -1156,7 +1156,10 @@ class ZHSApi:
         ).get("rt")
         if not isinstance(rt, dict):
             raise PlatformUnavailable("智慧树交卷结果返回格式异常，请稍后重试")
-        if str(rt.get("statu")) != "1":
+        # Platform's doExamination apiSubmitExam: statu 1 = submitted (score hidden),
+        # statu 0 with score = submitted and immediately graded (nowScore = rt.score).
+        statu = str(rt.get("statu"))
+        if statu != "1" and not (statu == "0" and rt.get("score") not in (None, "")):
             raise ZHSApiError("statu", rt.get("msg"))
         return rt
 
