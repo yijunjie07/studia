@@ -667,9 +667,15 @@ body.dragging, body.dragging * { cursor: grabbing !important; user-select: none;
 .modal .auth_field input { height: 38px; font-size: 14px; }
 .modal_btns { display: flex; align-items: center; gap: 8px; }
 .exam_code .code_row img { flex: none; width: 100px; height: 38px; border-radius: 4px; background: var(--well); object-fit: contain; cursor: pointer; }
-.exam_code [data-new-code] { font-size: 12.5px; }
+.exam_code [data-new-code], .exam_code [data-new-qr] { font-size: 12.5px; }
 .exam_code .sub b { color: var(--seal); font-weight: 600; }
-.exam_code.blocked :is(.auth_field, [data-new-code], .pledge, button.primary) { display: none; }
+.exam_code .exam_loc { display: none; flex-direction: column; align-items: center; gap: 10px; margin: 4px 0 14px; }
+.exam_code .exam_loc .qr { width: 184px; height: 184px; }
+.exam_code.checking :is(.exam_loc, .auth_field, [data-new-code], .pledge, button.primary) { display: none; }
+.exam_code.locating .exam_loc { display: flex; }
+.exam_code.locating :is(.auth_field, [data-new-code], .pledge) { display: none; }
+.exam_code.locating .form_msg { text-align: center; }
+.exam_code.blocked :is(.exam_loc, .auth_field, [data-new-code], .pledge, button.primary) { display: none; }
 .exam_code.blocked .form_msg { padding: 8px 10px; border-radius: 4px; background: var(--seal-soft); }
 .exam_code .exam_warn { margin: -6px 0 16px; padding: 8px 10px; border-radius: 4px; background: var(--seal-soft); color: var(--seal); font-size: 13px; line-height: 1.6; }
 .exam_code .pledge { display: flex; align-items: center; gap: 8px; margin: 16px 0 14px; font-size: 13px; color: var(--text-2); }

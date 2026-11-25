@@ -386,15 +386,15 @@ class ExamEntryCheckTest(unittest.TestCase):
         return exam_entry_check(client, self.item(start)), client
 
     def test_nothing_more_asked_lets_the_code_show(self):
-        (blocked, warning), client = self.check()
-        self.assertEqual((blocked, warning), ("", ""))
+        check, client = self.check()
+        self.assertEqual((check.blocked, check.warning, check.location), ("", "", False))
         self.assertEqual(client.names(), ["shared_exam_sso", "shared_school_id", "shared_exception_action",
                                           "shared_limit_time", "shared_progress_rule", "shared_location_on",
                                           "shared_face_on"])
 
     def test_continuing_an_exam_skips_the_progress_rule(self):
-        (blocked, _), client = self.check(start=False, rule={"progress": 0, "progressRule": 36})
-        self.assertEqual(blocked, "")
+        check, client = self.check(start=False, rule={"progress": 0, "progressRule": 36})
+        self.assertEqual((check.blocked, check.location), ("", False))
         self.assertNotIn("shared_progress_rule", client.names())
 
     def test_each_requirement_that_needs_the_platforms_page(self):
@@ -403,28 +403,32 @@ class ExamEntryCheckTest(unittest.TestCase):
             ({"exception": {}}, "异常"),
             ({"limit": False}, "作答时间已经结束"),
             ({"rule": {"progress": 0, "progressRule": 36}}, "学习进度达到 36%"),
-            ({"location": True, "located": False}, "定位"),
             ({"face": True}, "人脸识别"),
         ]
         for entry, words in cases:
             with self.subTest(entry=entry):
-                (blocked, _), _ = self.check(**entry)
-                self.assertIn(words, blocked)
-        (blocked, _), _ = self.check(location=True, located=True)
-        self.assertEqual(blocked, "")
+                check, _ = self.check(**entry)
+                self.assertIn(words, check.blocked)
+                self.assertFalse(check.location)
+        # Location scan is done right inside Studia before checking face / showing the picture code.
+        need_loc, client = self.check(location=True, located=False)
+        self.assertEqual((need_loc.blocked, need_loc.location), ("", True))
+        self.assertNotIn("shared_face_on", client.names())
+        passed, _ = self.check(location=True, located=True)
+        self.assertEqual((passed.blocked, passed.location), ("", False))
 
     def test_old_exam_system_and_makeup_exams(self):
         client = FakeSharedClient([])
-        blocked, _ = exam_entry_check(client, self.item(review=1))
-        self.assertIn("旧版考试系统", blocked)
+        check = exam_entry_check(client, self.item(review=1))
+        self.assertIn("旧版考试系统", check.blocked)
         client.entry = dict(FakeSharedClient.entry, exception={"examStatus": 1, "makeUpExamStatus": 3})
-        blocked, _ = exam_entry_check(client, self.item(parent=99))
-        self.assertIn("异常", blocked)  # a make-up exam reads its own status
+        check = exam_entry_check(client, self.item(parent=99))
+        self.assertIn("异常", check.blocked)  # a make-up exam reads its own status
 
     def test_a_reset_exam_warns_but_goes_on(self):
-        (blocked, warning), _ = self.check(exception={"examStatus": 2})
-        self.assertEqual(blocked, "")
-        self.assertIn("0 分", warning)
+        check, _ = self.check(exception={"examStatus": 2})
+        self.assertEqual((check.blocked, check.location), ("", False))
+        self.assertIn("0 分", check.warning)
 
 
 class CatalogSharedTest(unittest.TestCase):

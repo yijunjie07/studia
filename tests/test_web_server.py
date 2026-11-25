@@ -336,12 +336,14 @@ class WebServerTest(unittest.TestCase):
         return platform
 
     def test_an_exam_picture_code_is_read_and_checked_with_the_accounts_login(self):
+        from zhs.answer import EntryCheck
         platform = self._exam_with_captcha()
-        checks = patch("web.server.exam_entry_check", return_value=("", "")).start()
+        checks = patch("web.server.exam_entry_check", return_value=EntryCheck()).start()
         self.addCleanup(patch.stopall)
         status, body = self.request("GET", "/api/platforms/zhs/exam-captcha?course=shared-3&task=2-sex-5XxWlDWz-wM3vWWJ5")
         self.assertEqual(status, 200)
         got = json.loads(body)
+        self.assertEqual(got["step"], "captcha")
         self.assertTrue(got["image"].startswith("data:image/png;base64,"))
         self.assertEqual((got["start"], got["remain"], got["warning"]), (True, 1, ""))
         self.assertEqual(platform.captcha, {"2-sex-5XxWlDWz-wM3vWWJ5": "k1"})
@@ -369,15 +371,48 @@ class WebServerTest(unittest.TestCase):
                                  body={"course": "shared-3", "task": "2-sex-5XxWlDWz-wM3vWWJ5", "code": "cd34"})
         self.assertEqual(status, 409)
 
-    def test_an_exam_the_platform_page_must_enter_says_why_instead_of_a_code(self):
+    def test_an_exam_requiring_location_serves_qr_polls_and_moves_on_to_captcha(self):
+        from zhs.answer import EntryCheck
         platform = self._exam_with_captcha()
-        with patch("web.server.exam_entry_check", return_value=("学校开了人脸识别，只能到平台网页开考。", "")):
+        platform.client.shared_location_qr.side_effect = [b"\x89PNG-loc1", b"\x89PNG-loc2"]
+        with patch("web.server.exam_entry_check", return_value=EntryCheck(warning="注意异常", location=True)):
+            status, body = self.request("GET", "/api/platforms/zhs/exam-captcha?course=shared-3&task=2-sex-5XxWlDWz-wM3vWWJ5")
+        self.assertEqual(status, 200)
+        got = json.loads(body)
+        self.assertEqual(got["step"], "location")
+        self.assertTrue(got["qr"].startswith("data:image/png;base64,"))
+        self.assertEqual(got["warning"], "注意异常")
+        platform.client.shared_location_qr.assert_called_with(3, "wM3vWWJ5")
+        platform.client.shared_exam_captcha.assert_not_called()
+        self.assertEqual(platform.entry_checked, {})
+
+        # Polling before and after the phone scan, plus manual QR refresh.
+        platform.client.shared_location_passed.side_effect = [False, True]
+        status, body = self.request("GET", "/api/platforms/zhs/exam-location?course=shared-3&task=2-sex-5XxWlDWz-wM3vWWJ5")
+        self.assertEqual((status, json.loads(body)), (200, {"passed": False}))
+        status, body = self.request("POST", "/api/platforms/zhs/exam-location",
+                                    body={"course": "shared-3", "task": "2-sex-5XxWlDWz-wM3vWWJ5"})
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["qr"].startswith("data:image/png;base64,"))
+        status, body = self.request("GET", "/api/platforms/zhs/exam-location?course=shared-3&task=2-sex-5XxWlDWz-wM3vWWJ5")
+        self.assertEqual((status, json.loads(body)), (200, {"passed": True}))
+
+        # Once location passed, the next exam-captcha call proceeds to the picture code.
+        with patch("web.server.exam_entry_check", return_value=EntryCheck()):
+            status, body = self.request("GET", "/api/platforms/zhs/exam-captcha?course=shared-3&task=2-sex-5XxWlDWz-wM3vWWJ5")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["step"], "captcha")
+
+    def test_an_exam_the_platform_page_must_enter_says_why_instead_of_a_code(self):
+        from zhs.answer import EntryCheck
+        platform = self._exam_with_captcha()
+        with patch("web.server.exam_entry_check", return_value=EntryCheck(blocked="学校开了人脸识别，只能到平台网页开考。")):
             status, body = self.request("GET", "/api/platforms/zhs/exam-captcha?course=shared-3&task=2-sex-5XxWlDWz-wM3vWWJ5")
         self.assertEqual(status, 409)
         self.assertIn("人脸识别", json.loads(body)["error"])
         platform.client.shared_exam_captcha.assert_not_called()
         self.assertEqual((platform.captcha, platform.entry_checked), ({}, {}))
-        with patch("web.server.exam_entry_check", return_value=("", "智慧树检测到这场考试有异常行为")):
+        with patch("web.server.exam_entry_check", return_value=EntryCheck(warning="智慧树检测到这场考试有异常行为")):
             got = json.loads(self.request("GET", "/api/platforms/zhs/exam-captcha?course=shared-3&task=2-sex-5XxWlDWz-wM3vWWJ5")[1])
         self.assertIn("异常行为", got["warning"])
 

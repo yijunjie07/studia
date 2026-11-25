@@ -2252,20 +2252,28 @@ async function startJob(body) {
 // 智慧树 asks for a picture code and the honesty pledge each time an exam is entered, and will not open the paper
 // without them; for an exam not yet started, entering is what starts it. The code is read with this account's own
 // login and typed by the person; the platform's page also waits 8 s before it takes one. The server first makes the
-// platform's own checks and says so when only the platform's page may go on (face check, location scan…).
-// Resolves true once the platform accepted the code, false if the person gave up.
+// platform's own checks: when the exam requires a phone location scan first, this dialog shows the platform's QR
+// code and polls until it passes, then moves on to the picture code; when only the platform's page may go on (face
+// check…), it says why. Resolves true once the platform accepted the code, false if the person gave up.
 function examCode(p, c, paper) {
   return new Promise((resolve) => {
     const dialog = document.createElement("dialog");
-    dialog.className = "modal exam_code";
+    dialog.className = "modal exam_code checking";
     dialog.setAttribute("aria-labelledby", "exam-code-title");
+    const captchaSub = (remain) => `${esc(paper.name)}<br>${paper.start
+      ? `这场考试还没开考。<b>验证通过后会立即开考</b>：开始计时，并用掉一次考试机会${remain != null ? `（剩 ${remain} 次）` : ""}。`
+      : "智慧树每次进入考试都要输入验证码。图是用你的登录取的，通过后才能打开试卷。"}`;
+    const locSub = () => `${esc(paper.name)}<br>该考试需要开启定位，请使用「知到 App」扫码开启定位，成功后会自动继续。${
+      TOUCH ? "（长按保存二维码，在知到 App 里从相册扫码）" : ""}`;
     dialog.innerHTML = `<form><h3 id="exam-code-title">${paper.start ? "开考验证" : "进入考试验证"}</h3>
-        <p class="sub">${esc(paper.name)}<br>${paper.start
-          ? "这场考试还没开考。<b>验证通过后会立即开考</b>：开始计时，并用掉一次考试机会<span data-remain></span>。"
-          : "智慧树每次进入考试都要输入验证码。图是用你的登录取的，通过后才能打开试卷。"}</p>
+        <p class="sub">${esc(paper.name)}<br>正在检查进入条件…</p>
         <p class="exam_warn" hidden></p>
+        <div class="exam_loc">
+          <div class="qr"><img alt="开启定位二维码"></div>
+          <button type="button" class="link" data-new-qr>刷新二维码</button>
+        </div>
         <label class="auth_field"><span>验证码</span><span class="code_row">
-          <input name="code" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="8" required>
+          <input name="code" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="8">
           <img alt="验证码图片" width="100" height="38"></span></label>
         <button type="button" class="link" data-new-code>看不清，换一张</button>
         <label class="pledge"><input type="checkbox" name="pledge"> 我已阅读并同意《在线考试诚信承诺书》</label>
@@ -2273,48 +2281,130 @@ function examCode(p, c, paper) {
         <div class="modal_btns"><span class="grow"></span><button type="button" class="btn" data-cancel>取消</button>
           <button class="btn primary" disabled>确定</button></div></form>`;
     document.body.appendChild(dialog);
-    const form = $("form", dialog), img = $("img", dialog), msg = $(".form_msg", dialog), ok = $("button.primary", dialog);
+    const form = $("form", dialog), sub = $(".sub", dialog), img = $(".code_row img", dialog);
+    const locImg = $(".exam_loc img", dialog), msg = $(".form_msg", dialog), ok = $("button.primary", dialog);
     const { code, pledge } = form.elements;
-    let passed = false, ready = 0, busy = false;
+    let passed = false, ready = 0, busy = false, closed = false, checkingLoc = false;
+    let locPoll = 0, locRefresh = 0;
+    const stopLoc = () => {
+      if (locPoll) { clearInterval(locPoll); locPoll = 0; }
+      if (locRefresh) { clearInterval(locRefresh); locRefresh = 0; }
+    };
     const tick = setInterval(() => paint(), 500);
     const paint = () => {
+      if (dialog.classList.contains("locating")) {
+        ok.textContent = busy ? "检查中…" : "我已开启定位";
+        ok.disabled = busy;
+        return;
+      }
       const left = Math.ceil((ready - Date.now()) / 1000);
       ok.textContent = left > 0 ? `确定（${left}）` : "确定";
       ok.disabled = busy || !ready || left > 0;
     };
-    const show = (image) => { img.src = image; code.value = ""; ready = Date.now() + 8000; paint(); code.focus(); };
+    const showWarning = (text) => {
+      if (!text) return;
+      const warn = $(".exam_warn", dialog);
+      warn.textContent = text;
+      warn.hidden = false;
+    };
+    const showLocation = (qr) => {
+      dialog.classList.remove("checking", "blocked");
+      dialog.classList.add("locating");
+      code.required = false;
+      sub.innerHTML = locSub();
+      locImg.src = qr;
+      ready = 0;
+      paint();
+      stopLoc();
+      locPoll = setInterval(() => checkLocation(true), 4000);
+      locRefresh = setInterval(() => refreshLocationQr(true), 90000);
+    };
+    const showCode = (image, remain) => {
+      stopLoc();
+      dialog.classList.remove("checking", "locating", "blocked");
+      code.required = true;
+      sub.innerHTML = captchaSub(remain);
+      img.src = image;
+      code.value = "";
+      ready = Date.now() + 8000;
+      paint();
+      code.focus();
+    };
+    const refreshLocationQr = async (quiet = false) => {
+      if (closed || !dialog.classList.contains("locating")) return;
+      try {
+        const got = await api(`/api/platforms/${p.id}/exam-location`, { method: "POST", body: { course: c.id, task: paper.id } });
+        if (closed || !dialog.classList.contains("locating")) return;
+        locImg.src = got.qr;
+        if (!quiet) msg.textContent = "";
+      } catch (error) {
+        if (!closed && !quiet) msg.textContent = error.message;
+      }
+    };
+    const checkLocation = async (auto) => {
+      if (closed || checkingLoc || !dialog.classList.contains("locating")) return;
+      checkingLoc = true;
+      if (!auto) { busy = true; msg.textContent = ""; paint(); }
+      try {
+        const got = await api(`/api/platforms/${p.id}/exam-location?course=${encodeURIComponent(c.id)}&task=${encodeURIComponent(paper.id)}`);
+        if (closed || !dialog.classList.contains("locating")) return;
+        if (got.passed) {
+          stopLoc();
+          msg.textContent = "";
+          busy = false;
+          checkingLoc = false;
+          await fetchCode();
+          return;
+        }
+        if (!auto) msg.textContent = "您还未开启定位";
+      } catch (error) {
+        if (!closed && !auto) msg.textContent = error.message;
+      } finally {
+        checkingLoc = false;
+        if (!auto) { busy = false; paint(); }
+      }
+    };
     const fetchCode = async () => {
       ready = 0; paint();
       try {
         const got = await api(`/api/platforms/${p.id}/exam-captcha?course=${encodeURIComponent(c.id)}&task=${encodeURIComponent(paper.id)}`);
-        if (got.warning) { const warn = $(".exam_warn", dialog); warn.textContent = got.warning; warn.hidden = false; }
-        if (got.remain != null && $("[data-remain]", dialog)) $("[data-remain]", dialog).textContent = `（剩 ${got.remain} 次）`;
-        show(got.image);
+        if (closed) return;
+        showWarning(got.warning);
+        if (got.step === "location") { showLocation(got.qr); return; }
+        showCode(got.image, got.remain);
       } catch (error) {
+        if (closed) return;
+        stopLoc();
+        dialog.classList.remove("checking", "locating");
         msg.textContent = error.message;
-        // The platform's own checks say only its page may go on (face check, location scan…): nothing to type here.
+        // The platform's own checks say only its page may go on (face check, old system…): nothing to type here.
         if (error.status === 409 && !img.src) {
           dialog.classList.add("blocked");
-          $(".sub", dialog).textContent = paper.name;
+          sub.textContent = paper.name;
           $("[data-cancel]", dialog).textContent = "知道了";
+        } else if (!img.src) {
+          sub.textContent = paper.name;
         }
       }
     };
-    dialog.addEventListener("close", () => { clearInterval(tick); dialog.remove(); resolve(passed); });
+    dialog.addEventListener("close", () => { closed = true; clearInterval(tick); stopLoc(); dialog.remove(); resolve(passed); });
     $("[data-cancel]", dialog).onclick = () => closeModal(dialog);
+    $("[data-new-qr]", dialog).onclick = () => refreshLocationQr(false);
     $("[data-new-code]", dialog).onclick = () => { msg.textContent = ""; fetchCode(); };
     img.onclick = () => { msg.textContent = ""; fetchCode(); };
     form.onsubmit = async (event) => {
       event.preventDefault();
+      if (dialog.classList.contains("locating")) { await checkLocation(false); return; }
       if (!code.value.trim()) { msg.textContent = "请输入验证码"; code.focus(); return; }
       if (!pledge.checked) { msg.textContent = "请先阅读并同意《在线考试诚信承诺书》"; return; }
       busy = true; paint();
       try {
         const result = await api(`/api/platforms/${p.id}/exam-captcha`, { method: "POST", body: { course: c.id, task: paper.id, code: code.value.trim() } });
+        if (closed) return;
         if (result.ok) { passed = true; closeModal(dialog); return; }
         msg.textContent = result.message;
-        show(result.image);
-      } catch (error) { msg.textContent = error.message; if (/过期/.test(error.message)) fetchCode(); }
+        showCode(result.image, result.remain);
+      } catch (error) { if (!closed) { msg.textContent = error.message; if (/过期/.test(error.message)) fetchCode(); } }
       finally { busy = false; paint(); }
     };
     dialog.showModal();

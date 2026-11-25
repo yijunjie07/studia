@@ -695,9 +695,35 @@ class SharedExamApiTest(unittest.TestCase):
         # Readings the page would not take as "nothing to do" keep the stricter answer.
         client.session.request.return_value = json_response({"status": "200", "rt": "true"})
         self.assertFalse(client.shared_location_on(3, 9, "88"))
+        client.session.request.return_value = json_response({"status": "200", "rt": 1})
+        self.assertTrue(client.shared_location_passed(3, "e1"))
+        client.session.request.return_value = json_response({"status": "200", "rt": None})
+        self.assertFalse(client.shared_location_passed(3, "e1"))
         client.session.request.return_value = json_response({"status": "200", "rt": None})
         self.assertTrue(client.shared_face_on(9, "88"))
         self.assertEqual(client.shared_exception_action(9, "88"), {})
+
+    def test_shared_location_qr_reads_inline_and_remote_images(self):
+        client = make_api()
+        client.session.request.return_value = json_response(
+            {"status": "200", "rt": "data:image/png;base64,iVBORw=="})
+        self.assertEqual(client.shared_location_qr(3, "e1"), b"\x89PNG")
+        _, kwargs = client.session.request.call_args
+        self.assertEqual(client.session.request.call_args.args[1], api.HOMEWORK_GATEWAY + "/location/createEncodeImage")
+        self.assertEqual(json.loads(decrypt(kwargs["data"]["secretStr"], KEYS["exam"])), {"courseId": 3, "examId": "e1"})
+        picture = Mock(status_code=200, content=b"\x89PNG-qr")
+        client.session.request.side_effect = [
+            json_response({"status": "200", "rt": "//img.zhihuishu.com/loc/qr.png"}),
+            picture]
+        self.assertEqual(client.shared_location_qr(3, "e1"), b"\x89PNG-qr")
+        self.assertEqual(client.session.request.call_args.args[:2], ("GET", "https://img.zhihuishu.com/loc/qr.png"))
+
+    def test_shared_save_answer_explains_location_rejection(self):
+        client = make_api()
+        client.session.request.return_value = json_response({"status": "-1", "msg": "2"})
+        with self.assertRaises(api.ZHSApiError) as caught:
+            client.shared_save_answer({"examId": 1}, 9, exam=True)
+        self.assertIn("开启定位", str(caught.exception))
 
     def test_shared_submit_exam_uses_taurus(self):
         client = make_api()
