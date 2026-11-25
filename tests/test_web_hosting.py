@@ -539,6 +539,44 @@ class HostedServerTest(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/auth/logout", {}, cookie=token, csrf=me["csrf"])[0], 200)
         self.assertEqual(self.request("GET", "/api/state", cookie=token)[0], 401)
 
+    def test_login_accepts_username_or_bound_email(self):
+        alice = self.hub.accounts.create_user("alice", "alice-password")
+        self.hub.accounts.set_email(alice, "Alice@Example.com")
+        self.hub.accounts.create_user("nomail", "nomail-password")
+
+        for body in (
+            {"username": "alice", "password": "alice-password"},
+            {"username": "alice@example.com", "password": "alice-password"},
+            {"login": "ALICE@EXAMPLE.COM", "password": "alice-password"},
+        ):
+            with self.subTest(body=body):
+                status, payload, token, _ = self.request("POST", "/api/auth/login", body)
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["user"]["username"], "alice")
+                self.assertEqual(self.request("GET", "/api/auth/me", cookie=token)[1]["user"]["id"], alice)
+
+        self.assertEqual(self.request("POST", "/api/auth/login", {"username": "alice@example.com", "password": "wrong"})[0], 401)
+        self.assertEqual(self.request("POST", "/api/auth/login", {"username": "ghost@example.com", "password": "alice-password"})[0], 401)
+        self.assertEqual(self.request("POST", "/api/auth/login", {"username": "", "password": "nomail-password"})[0], 401)
+
+        self.hub.accounts.set_email(alice, "new@example.com")
+        self.assertEqual(self.request("POST", "/api/auth/login", {"username": "alice@example.com", "password": "alice-password"})[0], 401)
+        self.assertEqual(self.request("POST", "/api/auth/login", {"username": "new@example.com", "password": "alice-password"})[0], 200)
+
+        self.hub.accounts.set_disabled(alice, True)
+        self.assertEqual(self.request("POST", "/api/auth/login", {"username": "new@example.com", "password": "alice-password"})[0], 403)
+
+    def test_account_login_throttle_is_shared_between_username_and_email(self):
+        self.hub.trust_proxy = True
+        alice = self.hub.accounts.create_user("alice", "alice-password")
+        self.hub.accounts.set_email(alice, "alice@example.com")
+        for i in range(15):
+            self.assertEqual(self.login_from("192.0.2.%d" % i, "alice", "nope"), 401)
+        for i in range(15, 30):
+            self.assertEqual(self.login_from("192.0.2.%d" % i, "ALICE@example.com", "nope"), 401)
+        self.assertEqual(self.login_from("192.0.2.99", "alice", "nope"), 429)
+        self.assertEqual(self.login_from("192.0.2.100", "alice@example.com", "nope"), 429)
+
     def test_repeated_failures_lock_the_login(self):
         for _ in range(5):
             self.assertEqual(self.request("POST", "/api/auth/login", {"username": "admin", "password": "nope"})[0], 401)

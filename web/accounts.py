@@ -180,15 +180,17 @@ class Accounts:
             return [self.public(row) for row in self.db.execute("SELECT * FROM users ORDER BY created")]
 
     def find(self, login):
-        """A user by username or bound email (忘记密码 takes either)."""
+        """A user by username or bound email (登录 and 忘记密码 take either)."""
+        if not login:
+            return None
         row = self._one("SELECT * FROM users WHERE username = ? OR email = ? COLLATE NOCASE", login, login)
         return self.public(row) if row else None
 
     def has_admin(self):
         return self._one("SELECT 1 FROM users WHERE role = 'admin'") is not None
 
-    def authenticate(self, username, password):
-        row = self._one("SELECT * FROM users WHERE username = ?", username or "")
+    def authenticate(self, login, password):
+        row = self._one("SELECT * FROM users WHERE username = ? OR email = ? COLLATE NOCASE", login, login) if login else None
         if not check_password(password or "", row["password"] if row else _DUMMY) or row is None:
             return None
         if row["disabled"]:

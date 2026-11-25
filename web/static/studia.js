@@ -1430,7 +1430,7 @@ function openEmailModal() {
   dialog.setAttribute("aria-labelledby", "email-modal-title");
   dialog.innerHTML = `<form data-email-form>
       <h3 id="email-modal-title" tabindex="-1" autofocus>${me?.email ? "更换邮箱" : "绑定邮箱"}</h3>
-      <p class="sub">${me?.email ? `当前已绑定 ${esc(me.email)}，验证新邮箱后立即生效。` : "绑定邮箱后可用于找回和修改密码。"}</p>
+      <p class="sub">${me?.email ? `当前已绑定 ${esc(me.email)}，验证新邮箱后立即生效。` : "绑定邮箱后可用于登录、找回和修改密码。"}</p>
       ${emailFields()}
       <div class="modal_btns"><span class="grow"></span>
         <button type="button" class="btn" data-cancel>取消</button><button class="btn primary">绑定</button></div></form>`;
@@ -1500,7 +1500,7 @@ function promptEmail() {
   dialog.setAttribute("aria-labelledby", "email-prompt");
   // On a phone, focusing the email field would pop the keyboard before the person has read the prompt.
   dialog.innerHTML = `<form data-email-form><h3 id="email-prompt" ${TOUCH ? 'tabindex="-1" autofocus' : ""}>绑定邮箱</h3>
-      <p class="sub">绑定邮箱后可用于找回和修改密码。</p>
+      <p class="sub">绑定邮箱后可用于登录、找回和修改密码。</p>
       ${emailFields()}
       <div class="modal_btns"><button type="button" class="link" data-later>今天不再提醒</button><span class="grow"></span>
         <button type="button" class="btn" data-skip>暂时跳过</button><button class="btn primary">绑定</button></div></form>`;
@@ -3173,7 +3173,7 @@ function showAuth(mode = "login") {
         ${mode === "setup" ? field("code", "设置码", 'required autocomplete="off" autocapitalize="characters" placeholder="例如 2593-2D9E-D41F"') : ""}
         ${mode === "register" && rules.invite ? field("invite", "邀请码", 'required autocomplete="off" autocapitalize="characters" placeholder="例如 3F2A-91BC-04DE"') : ""}
         ${mode === "forgot" ? field("login", "用户名或邮箱", 'required autocomplete="username" autocapitalize="off"') : ""}
-        ${mode === "reset" || mode === "forgot" ? "" : field("username", mode === "setup" ? "管理员用户名" : "用户名", `required autocomplete="username" autocapitalize="off" ${mode === "login" ? "" : 'minlength="2" maxlength="32"'}`)}
+        ${mode === "reset" || mode === "forgot" ? "" : field("username", mode === "setup" ? "管理员用户名" : mode === "login" ? "用户名或邮箱" : "用户名", `required autocomplete="username" autocapitalize="off" ${mode === "login" ? "" : 'minlength="2" maxlength="32"'}`)}
         ${mode === "register" && rules.email ? `${field("email", "邮箱", 'type="email" required autocomplete="email" autocapitalize="off"')}
           <label class="auth_field"><span>验证码</span><span class="pw"><input name="code" required inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位数字">
             <button type="button" class="pw_eye code_send" data-send-code>发送验证码</button></span></label>` : ""}
