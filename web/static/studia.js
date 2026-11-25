@@ -1980,10 +1980,17 @@ function renderCourse(p, c, tab, full = false) {
     renderCourse(p, c, tab);
   }));
   const tasks = () => [...selectedOf(k)];
+  // An exam the platform enters with a picture code: the person types it first, as on the platform's own page.
+  const answer = async (auto_submit) => {
+    const picked = tasks(), gated = (papers || []).filter((y) => y.captcha && picked.includes(y.id)).map((y) => y.id);
+    for (const id of gated) if (!(await examCode(p, c, papers.find((y) => y.id === id)))) return;
+    // Such an exam goes first, opened while the platform still has its code, not after the other papers.
+    startJob({ platform: p.id, course: c.id, type: "answer", tasks: [...gated, ...picked.filter((id) => !gated.includes(id))], auto_submit });
+  };
   const save = $("[data-save]", page);
-  if (save) save.onclick = () => startJob({ platform: p.id, course: c.id, type: "answer", tasks: tasks(), auto_submit: false });
+  if (save) save.onclick = () => answer(false);
   const submit = $("[data-submit]", page);
-  if (submit) submit.onclick = () => startJob({ platform: p.id, course: c.id, type: "answer", tasks: tasks(), auto_submit: true });
+  if (submit) submit.onclick = () => answer(true);
   if (tab === "study") loadUnits(p.id, c.id);
   if (c.shares) loadEarned(p, c);
   if (tab === "answer" && p.features.answer && !papers && !state.paperErrors[k]) loadPapers(p, c);
@@ -2239,6 +2246,61 @@ async function startJob(body) {
     if (body.type === "answer") state.selected[key(body.platform, body.course)] = new Set();
     return true;
   } catch (error) { toast(error.message); return false; }
+}
+// 智慧树 asks for a picture code and the honesty pledge each time an exam is entered, and will not open the paper
+// without them. The code is read with this account's own login and typed by the person; the platform's page also
+// waits 8 s before it takes one. Resolves true once the platform accepted it, false if the person gave up.
+function examCode(p, c, paper) {
+  return new Promise((resolve) => {
+    const dialog = document.createElement("dialog");
+    dialog.className = "modal exam_code";
+    dialog.setAttribute("aria-labelledby", "exam-code-title");
+    dialog.innerHTML = `<form><h3 id="exam-code-title">进入考试验证</h3>
+        <p class="sub">${esc(paper.name)}<br>智慧树每次进入考试都要输入验证码。图是用你的登录取的，通过后才能打开试卷。</p>
+        <label class="auth_field"><span>验证码</span><span class="code_row">
+          <input name="code" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="8" required>
+          <img alt="验证码图片" width="100" height="38"></span></label>
+        <button type="button" class="link" data-new-code>看不清，换一张</button>
+        <label class="pledge"><input type="checkbox" name="pledge"> 我已阅读并同意《在线考试诚信承诺书》</label>
+        <p class="form_msg" role="alert"></p>
+        <div class="modal_btns"><span class="grow"></span><button type="button" class="btn" data-cancel>取消</button>
+          <button class="btn primary" disabled>确定</button></div></form>`;
+    document.body.appendChild(dialog);
+    const form = $("form", dialog), img = $("img", dialog), msg = $(".form_msg", dialog), ok = $("button.primary", dialog);
+    const { code, pledge } = form.elements;
+    let passed = false, ready = 0, busy = false;
+    const tick = setInterval(() => paint(), 500);
+    const paint = () => {
+      const left = Math.ceil((ready - Date.now()) / 1000);
+      ok.textContent = left > 0 ? `确定（${left}）` : "确定";
+      ok.disabled = busy || !ready || left > 0;
+    };
+    const show = (image) => { img.src = image; code.value = ""; ready = Date.now() + 8000; paint(); code.focus(); };
+    const fetchCode = async () => {
+      ready = 0; paint();
+      try { show((await api(`/api/platforms/${p.id}/exam-captcha?course=${encodeURIComponent(c.id)}&task=${encodeURIComponent(paper.id)}`)).image); }
+      catch (error) { msg.textContent = error.message; }
+    };
+    dialog.addEventListener("close", () => { clearInterval(tick); dialog.remove(); resolve(passed); });
+    $("[data-cancel]", dialog).onclick = () => closeModal(dialog);
+    $("[data-new-code]", dialog).onclick = () => { msg.textContent = ""; fetchCode(); };
+    img.onclick = () => { msg.textContent = ""; fetchCode(); };
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      if (!code.value.trim()) { msg.textContent = "请输入验证码"; code.focus(); return; }
+      if (!pledge.checked) { msg.textContent = "请先阅读并同意《在线考试诚信承诺书》"; return; }
+      busy = true; paint();
+      try {
+        const result = await api(`/api/platforms/${p.id}/exam-captcha`, { method: "POST", body: { course: c.id, task: paper.id, code: code.value.trim() } });
+        if (result.ok) { passed = true; closeModal(dialog); return; }
+        msg.textContent = result.message;
+        show(result.image);
+      } catch (error) { msg.textContent = error.message; if (/过期/.test(error.message)) fetchCode(); }
+      finally { busy = false; paint(); }
+    };
+    dialog.showModal();
+    fetchCode();
+  });
 }
 async function stopJob(id) {
   if (!id) return;

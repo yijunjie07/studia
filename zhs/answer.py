@@ -16,7 +16,7 @@ from core.concurrency import INTERACTIVE_WORKERS
 from core.log import Logger
 from core.reporting import Reporter, child_thread_name
 from core.task_metrics import nonnegative_number
-from zhs.api import CaptchaRequired, StudyTimeLimit
+from zhs.api import CaptchaRequired, StudyTimeLimit, ZHSApiError
 from zhs.memory import Scoped
 
 logger = Logger(__name__).get_log()
@@ -509,7 +509,12 @@ class ZHSAnswerRunner:
                 return self._result(name, "error", "申请重做失败：%s" % exc)
             logger.info("%s：已申请重做（剩余 %s 次）", name, current.get("answerCount"))
         opener = self.client.shared_do_exam if is_exam else self.client.shared_do_homework
-        rt = opener(recruit_id, exam_id, stu_exam_id, school, course_id)
+        try:
+            rt = opener(recruit_id, exam_id, stu_exam_id, school, course_id)
+        except ZHSApiError as exc:
+            if not is_exam or str(exc.message) not in DO_EXAM_REFUSED:
+                raise
+            return self._result(name, "error", DO_EXAM_REFUSED[str(exc.message)])
         try:
             parts = rt["examBase"]["workExamParts"]
         except (KeyError, TypeError):
@@ -1190,6 +1195,15 @@ def _shared_homework_items(client, recruit_id, course_id):
     return items
 
 
+# doExam's msg when it will not open an exam, worded as the platform's own exam page words them (2026-11-25).
+DO_EXAM_REFUSED = {
+    "3": "智慧树说这场考试还没通过进入验证码（或已过期）。请重新作答这场考试，按提示输入验证码。",
+    "4": "试卷已经交了，不能再打开。",
+    "5": "智慧树取不到这场考试的开始、结束时间，请到平台网页核对。",
+    "7": "这场考试的作答时间已经用完了。",
+    "8": "智慧树说这份试卷不是考试，请到平台网页核对。",
+}
+
 # getSaveAnswerLockResult's state, as the platform's own exam list reads it before letting a student in
 # (onlineexamh5new stuExamWeb, checked 2026-11-25): 1 go ahead, 2 picked for an identity check, 3 barred.
 ANSWER_LOCK = {
@@ -1232,6 +1246,7 @@ def _shared_exam_items(client, recruit_id, course_id, seen=()):
             item["_unavailable"] = ("已提交", "考试已提交。")
             items.append(item)
             continue
+        item["_captcha"] = True  # entered with the platform's picture code each time, see ZHSApi.shared_exam_captcha
         if not row.get("studentStartTime") and state != 2:
             item["_unavailable"] = ("未开考", "先在平台网页上开考，回到这里会自动刷新。")
             item["_waiting"] = True

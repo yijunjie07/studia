@@ -323,6 +323,49 @@ class WebServerTest(unittest.TestCase):
         self.assertEqual(len(reads), 2)
         self.assertEqual((again["available"], again["waiting"]), (True, False))
 
+    def _exam_with_captcha(self):
+        platform = self.app.platforms["zhs"]
+        row = {"courseName": "导论", "zhs": {"kind": "shared", "courseId": 3, "recruitId": 9}}
+        exam = {"id": "sex-5XxWlDWz-wM3vWWJ5", "name": "期末考试", "_captcha": True,
+                "zhs": {"kind": "shared_exam", "recruitId": 9, "courseId": 3, "stuExamId": "5XxWlDWz", "examId": "wM3vWWJ5"}}
+        homework = {"id": "shw-1-2", "name": "作业", "zhs": {"kind": "shared_homework", "stuExamId": 1, "examId": 2}}
+        platform.rows, platform.client = [row], Mock()
+        platform.entries["shared-3"] = {"2-sex-5XxWlDWz-wM3vWWJ5": (row, exam, 2), "1-shw-1-2": (row, homework, 1)}
+        platform.client.shared_exam_captcha.side_effect = [(b"\x89PNG-1", "k1"), (b"GIF89a-2", "k2"), (b"\x89PNG-3", "k3")]
+        return platform
+
+    def test_an_exam_picture_code_is_read_and_checked_with_the_accounts_login(self):
+        platform = self._exam_with_captcha()
+        status, body = self.request("GET", "/api/platforms/zhs/exam-captcha?course=shared-3&task=2-sex-5XxWlDWz-wM3vWWJ5")
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["image"].startswith("data:image/png;base64,"))
+        self.assertEqual(platform.captcha, {"2-sex-5XxWlDWz-wM3vWWJ5": "k1"})
+
+        platform.client.shared_exam_captcha_check.return_value = False
+        status, body = self.request("POST", "/api/platforms/zhs/exam-captcha",
+                                    body={"course": "shared-3", "task": "2-sex-5XxWlDWz-wM3vWWJ5", "code": "ab12"})
+        wrong = json.loads(body)
+        self.assertEqual((status, wrong["ok"]), (200, False))
+        self.assertTrue(wrong["image"].startswith("data:image/gif;base64,"))  # a new picture to try
+        platform.client.shared_exam_captcha_check.assert_called_with("ab12", "k1", "5XxWlDWz")
+
+        platform.client.shared_exam_captcha_check.return_value = True
+        status, body = self.request("POST", "/api/platforms/zhs/exam-captcha",
+                                    body={"course": "shared-3", "task": "2-sex-5XxWlDWz-wM3vWWJ5", "code": " cd34 "})
+        self.assertEqual((status, json.loads(body)), (200, {"ok": True}))
+        platform.client.shared_exam_captcha_check.assert_called_with("cd34", "k2", "5XxWlDWz")
+        self.assertEqual(platform.captcha, {})
+
+        # Each picture is good for one try: sending again without a new one asks for one.
+        status, _ = self.request("POST", "/api/platforms/zhs/exam-captcha",
+                                 body={"course": "shared-3", "task": "2-sex-5XxWlDWz-wM3vWWJ5", "code": "cd34"})
+        self.assertEqual(status, 409)
+
+    def test_only_exams_entered_with_a_picture_code_have_one(self):
+        self._exam_with_captcha()
+        self.assertEqual(self.request("GET", "/api/platforms/zhs/exam-captcha?course=shared-3&task=1-shw-1-2")[0], 404)
+        self.assertEqual(self.request("GET", "/api/platforms/zhs/exam-captcha?course=shared-3&task=nope")[0], 404)
+
     def test_fresh_reads_the_paper_list_past_the_cache(self):
         platform = self.app.platforms["mooc"]
         row = {"courseName": "英语", "courseId": "c1"}

@@ -148,6 +148,7 @@ class Platform:
         self.qr = {}
         self.qr_done = None  # the code that signed in, for its page coming back after the server finished it
         self.lapsed = False  # the saved login was deleted as expired, so the page says why it asks to sign in again
+        self.captcha = {}  # exam task id -> the key of the entry picture code last shown for it
 
     def public(self, logged_in, rescan=False, rescan_at=None):
         spec = self.spec
@@ -678,11 +679,58 @@ class Studia:
                 "reason": availability.reason,
                 # Opened on the platform, not here: the page reads the list again when the student comes back.
                 "waiting": bool(item.get("_waiting")),
+                # Entered with the platform's picture code: the page asks for it before starting the job.
+                "captcha": bool(item.get("_captcha")),
                 "hint": item.get("_hint", ""),
                 "redo": bool(item.get("_redo")),
                 "redo_left": item.get("answerCount") if item.get("_redo") else None,
             })
         return listed, result
+
+    def _exam_entry(self, platform, course_id, task_id):
+        entry = (platform.entries.get(course_id) or {}).get(task_id)
+        if platform.id != "zhs" or not entry or not entry[1].get("_captcha"):
+            raise HttpError(404, "没有找到这场考试，请刷新列表")
+        return entry[1]["zhs"]
+
+    def exam_captcha(self, pid, course_id, task_id):
+        """A fresh entry picture code for one 智慧树 exam, read with this account's own login."""
+        platform = self.platform(pid)
+        self._exam_entry(platform, course_id, task_id)
+        client = self.client(platform)
+        try:
+            client.shared_exam_sso()
+            image, key = client.shared_exam_captcha()
+        except AuthenticationExpired:
+            raise self.expire(platform)
+        except (PlatformUnavailable, ZHSError) as exc:
+            raise HttpError(502, "取验证码失败：%s" % exc)
+        with self.lock:
+            platform.captcha[task_id] = key
+        return {"image": _data_url(image)}
+
+    def exam_captcha_check(self, pid, body):
+        """Hand the typed code to the platform, as its exam page does before opening the paper. A wrong code
+        comes back with a new picture to try."""
+        platform = self.platform(pid)
+        course_id, task_id = str(body.get("course") or ""), str(body.get("task") or "")
+        code = str(body.get("code") or "").strip()
+        z = self._exam_entry(platform, course_id, task_id)
+        if not code:
+            raise HttpError(400, "请输入验证码")
+        with self.lock:
+            key = platform.captcha.pop(task_id, None)
+        if not key:
+            raise HttpError(409, "验证码过期了，请换一张")
+        client = self.client(platform)
+        try:
+            if client.shared_exam_captcha_check(code, key, z["stuExamId"]):
+                return {"ok": True}
+        except AuthenticationExpired:
+            raise self.expire(platform)
+        except (PlatformUnavailable, ZHSError) as exc:
+            raise HttpError(502, "验证失败：%s" % exc)
+        return dict(self.exam_captcha(pid, course_id, task_id), ok=False, message="验证码不对，换了一张，请再输一次")
 
     def units(self, pid, course_id, fresh=False):
         """Every learning unit of one course by chapter, for the course grid."""
@@ -1673,7 +1721,7 @@ def _order(job):
 
 
 def _data_url(image):
-    mime = "image/png" if image[:4] == b"\x89PNG" else "image/jpeg"
+    mime = "image/png" if image[:4] == b"\x89PNG" else "image/gif" if image[:4] == b"GIF8" else "image/jpeg"
     return "data:%s;base64,%s" % (mime, base64.b64encode(image).decode("ascii"))
 
 
@@ -1720,6 +1768,8 @@ ROUTES = [
     ("POST", r"/api/platforms/(\w+)/qa/peers", lambda app, m, q, b: app.set_qa_peers(m[1], b)),
     ("POST", r"/api/platforms/(\w+)/qa/draft", lambda app, m, q, b: app.qa_draft(m[1], b)),
     ("GET", r"/api/platforms/(\w+)/score", lambda app, m, q, b: app.score(m[1], (q.get("course") or [""])[0], (q.get("fresh") or [""])[0] == "1")),
+    ("GET", r"/api/platforms/(\w+)/exam-captcha", lambda app, m, q, b: app.exam_captcha(m[1], (q.get("course") or [""])[0], (q.get("task") or [""])[0])),
+    ("POST", r"/api/platforms/(\w+)/exam-captcha", lambda app, m, q, b: app.exam_captcha_check(m[1], b)),
     ("GET", r"/api/platforms/(\w+)/tasks", lambda app, m, q, b: app.tasks(m[1], (q.get("course") or [""])[0], (q.get("fresh") or [""])[0] == "1")),
     ("GET", r"/api/jobs", lambda app, m, q, b: app.jobs_state()),
     ("POST", r"/api/jobs", lambda app, m, q, b: app.start_job(b)),

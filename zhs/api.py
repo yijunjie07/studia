@@ -993,6 +993,38 @@ class ZHSApi:
         except (TypeError, ValueError):
             raise PlatformUnavailable("智慧树答案锁状态返回异常，请稍后重试") from None
 
+    def shared_exam_captcha(self):
+        """The picture code the platform asks for each time an exam is entered, as (image bytes, key).
+
+        The exam list page shows it with the honesty pledge and sends it to codeImgIsRight before it opens the
+        paper; doExam answers msg 3 for a paper entered without it (onlineexamh5new stuExamWeb, 2026-11-25).
+        """
+        rt = self.exam_form(TAURUS_GATEWAY + "/common/changeCodeImg", {}).get("rt")
+        url = rt.get("url") if isinstance(rt, dict) else None
+        key = rt.get("keyCaptchaKey") if isinstance(rt, dict) else None
+        if not isinstance(url, str) or not url or not key:
+            raise PlatformUnavailable("智慧树验证码返回格式异常，请稍后重试")
+        if url.startswith("data:"):
+            try:
+                return base64.b64decode(url.split(",", 1)[1]), key
+            except (IndexError, ValueError):
+                raise PlatformUnavailable("智慧树验证码图片无法识别，请换一张") from None
+        if url.startswith("//"):
+            url = "https:" + url
+        image = self._request("GET", url, expect_json=False, origin=EXAM_PAGE).content
+        if not image:
+            raise PlatformUnavailable("智慧树验证码图片是空的，请换一张")
+        return image, key
+
+    def shared_exam_captcha_check(self, code, key, stu_exam_id):
+        """Whether the platform took this picture code for entering the exam (stuExamId is the list's "id")."""
+        try:
+            rt = self.exam_form(TAURUS_GATEWAY + "/common/codeImgIsRight",
+                                {"userCode": code, "captchaKey": key, "encryptedStuExamId": stu_exam_id}).get("rt")
+        except CaptchaRequired:  # a refusal that talks of 验证码: the code was wrong or the picture went stale
+            return False
+        return bool(rt) and rt not in ("false", "0")
+
     def shared_do_homework(self, recruit_id, exam_id, stu_exam_id, school_id, course_id):
         return self.exam_form(
             HOMEWORK_GATEWAY + "/student/doHomework",
