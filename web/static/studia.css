@@ -423,7 +423,8 @@ code { font: 12px var(--mono); padding: 1px 5px; border-radius: 3px; background:
 .score.none { color: var(--text-4); font-size: 14px; } .score.none::after { display: none; }
 
 .dock { position: sticky; bottom: calc(var(--mtabs-h, 0px) + var(--player-h, 0px) + 16px); z-index: 5; display: flex; align-items: center; gap: 8px; margin-top: 18px; padding: 10px 10px 10px 16px; border-radius: 6px; background: var(--card); box-shadow: var(--shadow-pop); }
-.dock .info { flex: 1; color: var(--text-2); }
+.dock .info { flex: 1; display: flex; align-items: baseline; gap: 12px; color: var(--text-2); }
+.dock .info .link { margin: 0 8px 0 auto; font-size: 12.5px; white-space: nowrap; }
 .dock .info b { font: 600 13px var(--mono); color: var(--text); }
 
 /* ---------------------------------------------------------------- now studying (player) */

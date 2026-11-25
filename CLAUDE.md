@@ -7,3 +7,4 @@
 - 接口的 POST 请求体只收 `Content-Type: application/json`（否则 415），带 `Sec-Fetch-Site: cross-site` 的 POST 一律 403，这是防登录 CSRF 的；新写的客户端或测试要带上 JSON 头。
 - 灰色文字用 `--text-3`（浅色、夜读都 ≥ 4.5:1）；`--text-4` 只给不承载信息的东西（分隔符、箭头、占位符）。改颜色后用 axe-core 把浅色和夜读都扫一遍。`.link` 已经是文字链接按钮的类名，别拿来起别的名字。
 - 托管模式下成员填的模型地址不能指向内网（`web.server.public_endpoint`），测试里用 `patch("web.server.resolve_host", ...)` 代替真实 DNS。
+- 智慧树 `getSaveAnswerLockResult` 的 `state`：1 可以进考试、2 要做身份验证、3 禁止考试（照平台自己考试列表页 onlineexamh5new 的写法；以前把 1 当成“已锁定”，正常的考试全被拦了）。要用户先去平台操作的试卷（未开考、要验证）标 `_waiting`：后端这类列表只缓存 `WAITING_TTL` 秒，前端在用户回到页面时跳过缓存重读（`recheckWaiting`）。

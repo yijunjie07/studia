@@ -59,6 +59,8 @@ MAX_JOBS = 4
 MAX_PENDING = 20
 # The platform's unit and paper lists take seconds to tens of seconds; reuse them for a while.
 CACHE_TTL = 600
+# A list with a paper the student must open on the platform first (智慧树's exams) can change any moment.
+WAITING_TTL = 30
 LABEL = {"study": "自动学习", "review": "每日复习", "answer": "AI 答题", "qa": "问答区答题", "ask": "问答区提问"}
 # Jobs that play course content conflict with each other; answering is separate.
 # Answering the board and asking on it are separate lines, so drafting questions never waits out an answering run.
@@ -631,6 +633,10 @@ class Studia:
         if not platform.spec["answer"]:
             raise HttpError(400, "%s 的网页版答题还在接入中，请先用终端版" % platform.spec["name"])
         row = self.find_row(platform, course_id)
+        with platform.cache_lock:
+            hit = platform.cache.get(("tasks", course_id))
+        if hit and time.time() - hit[0] >= WAITING_TTL and any(t.get("waiting") for t in hit[1][1]):
+            fresh = True
         listed, result = self._cached(platform, ("tasks", course_id), fresh, lambda: self._read_tasks(platform, row))
         with self.lock:
             platform.entries[course_id] = listed
@@ -670,6 +676,8 @@ class Studia:
                 "available": availability.available,
                 "done": done and not item.get("_redo"),
                 "reason": availability.reason,
+                # Opened on the platform, not here: the page reads the list again when the student comes back.
+                "waiting": bool(item.get("_waiting")),
                 "hint": item.get("_hint", ""),
                 "redo": bool(item.get("_redo")),
                 "redo_left": item.get("answerCount") if item.get("_redo") else None,

@@ -1917,15 +1917,17 @@ function renderCourse(p, c, tab, full = false) {
     const rank = (label) => (order.includes(label) ? order.indexOf(label) : order.length);
     const categories = [...new Set(papers.map((x) => x.category))].sort((a, b) => rank(a) - rank(b));
     const n = selected.size;
+    // The list is kept for a while; an exam opened on the platform or a paper the teacher just added shows after this.
+    const refresh = `<button class="link" data-papers-fresh="${esc(k)}" ${loadingPapers.has(k) ? "disabled" : ""}>${loadingPapers.has(k) ? "正在刷新…" : "刷新列表"}</button>`;
     body = categories.map((label) => {
       const list = papers.filter((x) => x.category === label), open = list.filter((x) => x.available);
       const all = open.length && open.every((x) => selected.has(x.id));
       return `<div class="section"><h2>${esc(label)}</h2><span class="aside">${open.length} / ${list.length} 份可选</span>
           ${open.length > 1 && !sheet ? `<button class="link" data-pick-all="${esc(label)}">${all ? "取消全选" : "全选"}</button>` : ""}</div>
         <div class="papers">${list.map(row).join("")}</div>`;
-    }).join("") || `<div class="empty">这门课没有作业、测验或考试</div>`;
+    }).join("") || `<div class="empty">这门课没有作业、测验或考试 · ${refresh}</div>`;
     // While it runs, the player bar below carries the progress and the stop button.
-    if (categories.length && !sheet) body += `<div class="dock"><span class="info">${answerBlock ? esc(answerBlock) : n ? `已选 <b>${n}</b> 份` : "勾选要作答的试卷"}</span>
+    if (categories.length && !sheet) body += `<div class="dock"><span class="info"><span>${answerBlock ? esc(answerBlock) : n ? `已选 <b>${n}</b> 份` : "勾选要作答的试卷"}</span>${refresh}</span>
       <button class="btn" data-save ${n && !answerBlock ? "" : "disabled"}>仅生成答案</button>
       <button class="btn primary" data-submit data-confirm="再按一次，交 ${n} 份卷" ${n && !answerBlock ? "" : "disabled"}>AI 作答并交卷</button></div>`;
   }
@@ -1987,25 +1989,35 @@ function renderCourse(p, c, tab, full = false) {
   if (tab === "answer" && p.features.answer && !papers && !state.paperErrors[k]) loadPapers(p, c);
 }
 
-const loadingPapers = new Set(), papersAgain = new Set();
+const loadingPapers = new Map(), papersAgain = new Map();  // course -> whether that read skips the server's cache
 // again: the list on the page is out of date (a paper was handed in), read it once more even if a read is under way.
-async function loadPapers(p, c, again = false) {
+// fresh: past the server's cache too (刷新列表, or coming back after opening an exam on the platform).
+async function loadPapers(p, c, again = false, fresh = false) {
   const k = key(p.id, c.id);
-  if (loadingPapers.has(k)) { if (again) papersAgain.add(k); return; }
-  loadingPapers.add(k);
+  if (loadingPapers.has(k)) {
+    // A fresh read under way already answers a refresh; a handed-in paper needs a read begun after it.
+    if (again || (fresh && !loadingPapers.get(k))) papersAgain.set(k, fresh || papersAgain.get(k) || false);
+    return;
+  }
+  loadingPapers.set(k, fresh);
+  if (fresh) repaint();  // 刷新列表 shows it is reading
   try {
-    const papers = (await api(`/api/platforms/${p.id}/tasks?course=${encodeURIComponent(c.id)}`)).tasks;
+    const before = state.papers[k];
+    const papers = (await api(`/api/platforms/${p.id}/tasks?course=${encodeURIComponent(c.id)}${fresh ? "&fresh=1" : ""}`)).tasks;
     state.papers[k] = papers;
     delete state.paperErrors[k];
     const selected = selectedOf(k);
     if (!again && !selected.size) papers.filter((x) => x.available && !x.done && x.status !== "状态未知").forEach((x) => selected.add(x.id));
+    // An exam just opened on the platform is ticked, as it would have been had it been open from the start.
+    else if (before) papers.filter((x) => x.available && !x.done && before.some((y) => y.id === x.id && !y.available)).forEach((x) => selected.add(x.id));
   } catch (error) {
     // A failed read is not an empty course: keep it unloaded so a retry or the next login reads it again.
     // A failed reread keeps the list already shown.
     if (!again || !state.papers[k]) state.paperErrors[k] = error.message;
+    else if (fresh) toast(error.message);
   } finally {
     loadingPapers.delete(k);
-    if (papersAgain.delete(k)) loadPapers(p, c, true);
+    if (papersAgain.has(k)) { const f = papersAgain.get(k); papersAgain.delete(k); loadPapers(p, c, true, f); }
   }
   repaint();
 }
@@ -2639,6 +2651,11 @@ document.addEventListener("click", (event) => {
     if (p && c) loadPapers(p, c);
     repaint();
   }
+  const papersFresh = t.closest("[data-papers-fresh]");
+  if (papersFresh) {
+    const [pid, ...rest] = papersFresh.dataset.papersFresh.split(":"), p = platformOf(pid), c = courseOf(pid, rest.join(":"));
+    if (p && c) loadPapers(p, c, true, true);
+  }
   const retry = t.closest("[data-units-retry]");
   if (retry) { const [pid, ...rest] = retry.dataset.unitsRetry.split(":"); delete state.units[retry.dataset.unitsRetry]; loadUnits(pid, rest.join(":")); repaint(); }
 });
@@ -2699,13 +2716,27 @@ function route(event) {
   if (name === "admin") { if (session.user?.role === "admin") VIEWS.admin(false, a); else go("#/settings"); }
   else if (name === "jobs") { VIEWS.jobs(a); if (a === "all" && session.user?.role === "admin") loadSiteJobs(); }
   else if (name === "settings") { state.accountEdit = state.passwordSent = null; VIEWS.settings(a); }
-  else if (name === "course") VIEWS.course(a, decodeURIComponent(b || ""), c);
+  else if (name === "course") { VIEWS.course(a, decodeURIComponent(b || ""), c); recheckWaiting(); }
   else if (name === "login") VIEWS.login(a, b === "again");
   else if (VIEWS[name]) VIEWS[name]();
   else go(homeOf(currentPlatform()));
 }
 window.addEventListener("hashchange", route);
 window.addEventListener("hashchange", closeJobMenu);
+
+// A paper waiting on the platform (an exam to open there, or its identity check) changes there, not here: coming
+// back to this page or to the course's 答题 tab reads the list again past the server's cache, at most every 5 s.
+let waitingRead = 0;
+function recheckWaiting() {
+  const [, name, pid, cid, tab] = parseHash(location.hash);
+  if (name !== "course" || tab !== "answer" || document.visibilityState !== "visible" || Date.now() - waitingRead < 5000) return;
+  const p = platformOf(pid), c = courseOf(pid, decodeURIComponent(cid || ""));
+  if (!p || !c || !state.papers[key(pid, c.id)]?.some((x) => x.waiting)) return;
+  waitingRead = Date.now();
+  loadPapers(p, c, true, true);
+}
+document.addEventListener("visibilitychange", recheckWaiting);
+addEventListener("focus", recheckWaiting);
 addEventListener("scroll", closeJobMenu, { passive: true });
 window.addEventListener("resize", closeJobMenu);
 
