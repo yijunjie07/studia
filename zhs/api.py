@@ -1036,6 +1036,9 @@ class ZHSApi:
             url = "https:" + url
         elif url.startswith("/"):
             url = EXAM_PAGE + url
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise PlatformUnavailable("智慧树%s返回格式异常，请稍后重试" % label)
         image = self._request("GET", url, expect_json=False, origin=EXAM_PAGE).content
         if not image:
             raise PlatformUnavailable("智慧树%s是空的，请换一张" % label)
