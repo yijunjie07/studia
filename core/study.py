@@ -10,16 +10,18 @@ from core.reporting import Reporter, child_thread_name
 def check_study_response(response, *, parsed=False):
     """Accept legacy message acknowledgements, but never an explicit failure code."""
     if not isinstance(response, dict):
-        raise RuntimeError('平台未确认学习记录保存成功')
+        raise RuntimeError('平台未确认学习记录保存成功（响应类型：%s）' % type(response).__name__)
     code = response.get('code')
+    msg = str(response.get('msg') or response.get('message') or '').strip()[:120]
     if str(code) == '429':
         raise RequestRateLimited('平台请求过于频繁，请稍后重试')
     if str(code) in ('401', '403'):
         raise AuthenticationExpired('平台登录已过期或无权访问')
     if code is not None and str(code) != '200':
-        raise RuntimeError('平台未确认学习记录保存成功')
+        detail = 'code=%s%s' % (code, '，' + msg if msg else '')
+        raise RuntimeError('平台未确认学习记录保存成功（%s）' % detail)
     if code is None and not (response.get('msg') or (parsed and response)):
-        raise RuntimeError('平台未确认学习记录保存成功')
+        raise RuntimeError('平台未确认学习记录保存成功（无 code/msg）')
 
 
 def unique_resources(resources):
@@ -118,7 +120,11 @@ def run_resources(handler, resources, course_name='课程'):
             if isinstance(error, (AuthenticationExpired, RequestRateLimited)) or not isinstance(error, Exception):
                 handler.cancel_event.set()
                 return error
-            handler.logging.error('处理资源失败: %s', error)
+            handler.logging.error(
+                'MOOC · 课程「%s」· 资源「%s」（类型：%s，ID：%s）处理失败：%s',
+                course_name, node.get('name', '未知资源'), node.get('fileType', '未知类型'),
+                node.get('id', ''), error,
+            )
         else:
             observe(node, status)
         return None

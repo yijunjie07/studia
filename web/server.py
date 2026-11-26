@@ -90,15 +90,21 @@ RESUME_LIMIT = 3
 STEADY = 600  # seconds a resumed job must run before its resume count starts over
 INTERRUPTED = "更新时中断"
 JOB_THREAD = re.compile(r"studia-job-([0-9a-f]+)")
+_REQUEST_OWNER = threading.local()
+
+
+def set_request_owner(owner):
+    """Bind the current HTTP request thread to a Studia username so non-job logs carry [who]."""
+    _REQUEST_OWNER.owner = owner or ""
 
 
 def _job_context():
-    """Tag runtime-log lines written by a job (or a helper thread it started) with its owner and job id."""
+    """Tag runtime-log lines with owner/job-id on job threads, or owner on HTTP request threads."""
     match = JOB_THREAD.match(threading.current_thread().name)
-    if not match:
-        return ""
-    owner = getattr(JOBS.get(match[1]), "owner", None)
-    return "%s/%s" % (owner, match[1]) if owner else "任务 %s" % match[1]
+    if match:
+        owner = getattr(JOBS.get(match[1]), "owner", None)
+        return "%s/%s" % (owner, match[1]) if owner else "任务 %s" % match[1]
+    return getattr(_REQUEST_OWNER, "owner", "") or ""
 
 
 core.log.line_context = _job_context
@@ -660,6 +666,10 @@ class Studia:
             raise HttpError(502, str(exc) or "试卷列表读取失败")
         listed = {}
         result = []
+        course_name = row.get("courseName") or "未知课程"
+        course_id = _course_id(pid, row)
+        pname = platform.spec["name"]
+        diagnostic_labels = ("暂不支持", "状态未知", "时间未知", "需要验证", "禁止考试")
         for entry in entries:
             _, item, category = entry
             task_id = _task_id(pid, item, category)
@@ -673,13 +683,28 @@ class Studia:
             else:
                 score = score_text(item)
                 score = None if score in ("?", "--") else score
+            name = (item.get("name") if pid == "zhs" else paper_display_name(item)) or "未命名试卷"
+            kind_label = "作业" if pid == "zhs" and category == 1 else "考试" if pid == "zhs" else task_type_label(item, category)
+            status_label = ("已提交" if done else availability.label or ("未开考" if item.get("_start") else None)
+                            or STATUS_LABEL.get(item.get("_completion_status"), "未作答"))
+            unknown_mooc_type = pid == "mooc" and item.get("typeId") not in (None, "", 1, "1", 3, "3", 4, "4")
+            if (not availability.available and availability.label in diagnostic_labels) or unknown_mooc_type:
+                field_keys = ("id", "examId", "categoryId", "typeId", "questionSettingMethod",
+                              "status", "answerCount", "startTime", "endTime", "tjzt", "score") if pid == "mooc" else (
+                              "id", "startTime", "endTime", "score", "answerCount", "frequency", "zhs", "_entry")
+                logger.warning(
+                    "发现未适配或受限试卷 · %s · 课程「%s」（%s）· 试卷「%s」（%s）· 状态：%s · 原因：%s · 原始字段：%s",
+                    pname, course_name, course_id, name, kind_label,
+                    availability.label or status_label,
+                    availability.reason or "未知类型",
+                    core.log.summarize_fields(item, keys=field_keys),
+                )
             result.append({
                 "id": task_id,
-                "name": (item.get("name") if pid == "zhs" else paper_display_name(item)) or "未命名试卷",
-                "category": "作业" if pid == "zhs" and category == 1 else "考试" if pid == "zhs" else task_type_label(item, category),
+                "name": name,
+                "category": kind_label,
                 # A handed-in paper reads 已提交 even once closed or out of attempts; the reason says which.
-                "status": "已提交" if done else availability.label or ("未开考" if item.get("_start") else None)
-                          or STATUS_LABEL.get(item.get("_completion_status"), "未作答"),
+                "status": status_label,
                 "score": score,
                 "available": availability.available,
                 "done": done and not item.get("_redo"),
@@ -693,6 +718,10 @@ class Studia:
                 "redo": bool(item.get("_redo")),
                 "redo_left": item.get("answerCount") if item.get("_redo") else None,
             })
+        avail_count = sum(1 for r in result if r["available"])
+        done_count = sum(1 for r in result if r["done"])
+        logger.info("读取试卷列表 · %s · 课程「%s」（%s）· 共 %d 项（可做 %d / 已完成 %d / 不可做 %d）",
+                    pname, course_name, course_id, len(result), avail_count, done_count, len(result) - avail_count)
         return listed, result
 
     def _exam_entry(self, platform, course_id, task_id):
@@ -700,6 +729,16 @@ class Studia:
         if platform.id != "zhs" or not entry or not entry[1].get("_captcha"):
             raise HttpError(404, "没有找到这场考试，请刷新列表")
         return entry[1]
+
+    def _course_name(self, platform, course_id):
+        entry = (platform.entries.get(course_id) or {})
+        for row, _, _ in entry.values():
+            if row and row.get("courseName"):
+                return row["courseName"]
+        for row in getattr(platform, "rows", ()) or ():
+            if _course_id(platform.id, row) == course_id and row.get("courseName"):
+                return row["courseName"]
+        return course_id or "未知课程"
 
     def exam_captcha(self, pid, course_id, task_id):
         """A fresh entry picture code for one 智慧树 exam, read with this account's own login. The first one
@@ -711,19 +750,29 @@ class Studia:
         client = self.client(platform)
         warning = ""
         entry = item.get("_entry") or {}
+        course_name = self._course_name(platform, course_id)
+        exam_name = item.get("name") or task_id
         try:
             with self.lock:
                 checked = time.time() - platform.entry_checked.get(task_id, 0) < CACHE_TTL
             if not checked:
                 check = exam_entry_check(client, item)
                 if check.blocked:
+                    logger.warning("考试入口受阻 · %s · 课程「%s」（%s）· 考试「%s」· 原因：%s · 入口字段：%s",
+                                   platform.spec["name"], course_name, course_id, exam_name, check.blocked,
+                                   core.log.summarize_fields(entry))
                     raise HttpError(409, check.blocked)
                 if check.location:
+                    logger.info("考试需要定位扫码 · %s · 课程「%s」（%s）· 考试「%s」",
+                                platform.spec["name"], course_name, course_id, exam_name)
                     z = item["zhs"]
                     qr = client.shared_location_qr(z["courseId"], z["examId"])
                     return {"step": "location", "qr": _data_url(qr), "warning": check.warning,
                             "start": bool(item.get("_start")), "remain": entry.get("remain")}
                 warning = check.warning
+                if warning:
+                    logger.warning("考试入口提示 · %s · 课程「%s」（%s）· 考试「%s」· %s",
+                                   platform.spec["name"], course_name, course_id, exam_name, warning)
                 with self.lock:
                     platform.entry_checked[task_id] = time.time()
             client.shared_exam_sso()
@@ -731,6 +780,8 @@ class Studia:
         except AuthenticationExpired:
             raise self.expire(platform)
         except (PlatformUnavailable, ZHSError) as exc:
+            logger.warning("取考试验证码失败 · %s · 课程「%s」（%s）· 考试「%s」· %s",
+                           platform.spec["name"], course_name, course_id, exam_name, exc)
             raise HttpError(502, "取验证码失败：%s" % exc)
         with self.lock:
             platform.captcha[task_id] = key
@@ -835,6 +886,8 @@ class Studia:
                 job["lines"].append({"text": "服务更新后自动继续", "level": "", "time": time.strftime("%H:%M")})
             if kind == "answer":
                 selected = self._selected(platform, course_id, body.get("tasks") or [])
+                job["papers"] = [(item.get("name") if platform.id == "zhs" else paper_display_name(item)) or "试卷"
+                                 for _, item, _ in selected]
                 target = lambda: self._answer(platform, selected, bool(body.get("auto_submit")), job)
             elif kind == "qa":
                 options = _qa_options(body)
@@ -1057,9 +1110,21 @@ class Studia:
 
     def _run_job(self, job, target, platform):
         state, summary = "done", ""
+        pname = (PLATFORMS.get(job.get("platform")) or {}).get("name") or job.get("platform") or "未知平台"
+        course_name = job.get("course_name") or "未知课程"
+        course_id = job.get("course") or ""
+        title = job.get("title") or job.get("kind") or "任务"
+        papers = job.get("papers") or []
+        paper_note = (" · 共 %d 份试卷：%s%s" % (
+            len(papers), "、".join(papers[:5]), " 等" if len(papers) > 5 else ""
+        )) if papers else ""
+        started_logged = False
         try:
             while True:
                 self._wait_turn(job)
+                if not started_logged:
+                    logger.info("任务开始 · %s · 课程「%s」（%s）· %s%s", pname, course_name, course_id, title, paper_note)
+                    started_logged = True
                 try:
                     summary = target() or "已完成"
                 except KeyboardInterrupt:
@@ -1081,7 +1146,7 @@ class Studia:
         except HttpError as exc:  # e.g. a queued job rebuilt the client and found the login expired
             state, summary = "waiting" if exc.status == 401 else "error", str(exc)
         except Exception as exc:
-            logger.exception("网页任务失败")
+            logger.exception("网页任务失败 · %s · 课程「%s」（%s）· %s", pname, course_name, course_id, title)
             state, summary = "error", str(exc) or "任务失败"
         finally:
             if platform is not None:
@@ -1094,6 +1159,9 @@ class Studia:
                 self._remember(job)
                 self.jobs.pop(job["id"], None)
                 self._save()
+            log_end = logger.error if state == "error" else logger.warning if state == "waiting" else logger.info
+            log_end("任务结束 · %s · 课程「%s」（%s）· %s · 状态：%s · %s",
+                    pname, course_name, course_id, title, state, summary or "无")
             self.publish(dict(_job_public(job), type="job"))
             JOBS.pop(job["id"], None)
 
@@ -1290,12 +1358,15 @@ class Studia:
                                 papers=[{"id": _task_id(platform.id, item, category), "name": name}
                                         for (_, item, category), name in zip(selected, names)])
             done = 0
+            pname = platform.spec["name"]
+            course_name = job.get("course_name") or "未知课程"
             for (course, item, category), name in zip(selected, names):
                 if cancel.is_set():
                     break
                 try:
                     result = runner.run_paper(course, item, category)
-                except (CaptchaRequired, StudyTimeLimit):
+                except (CaptchaRequired, StudyTimeLimit) as exc:
+                    logger.warning("答题受阻 · %s · 课程「%s」· 试卷「%s」· %s", pname, course_name, name, exc)
                     self.progress_event(job, "result", name, status="waiting")
                     raise
                 except TaskUnavailableError as exc:
@@ -1305,6 +1376,10 @@ class Studia:
                 except ExamError as exc:
                     result = {"status": "error", "message": str(exc), "stop_queue": isinstance(exc, ExamServiceError)}
                 status = result["status"]
+                if status not in ("submitted", "saved", "preview"):
+                    log_paper = logger.error if status in ("error", "ai_error") else logger.warning
+                    log_paper("答题未完成 · %s · 课程「%s」· 试卷「%s」· 状态：%s · %s",
+                              pname, course_name, name, status, result.get("message") or "无详情")
                 if status == "ai_error":
                     self.store.save_ai_health(ai.config, "error", result.get("message", "AI 服务失败"))
                 # Before the event: the page reads the papers again on a handed-in one, and must get its new score.
@@ -2102,6 +2177,7 @@ def make_handler(access):
                         raise HttpError(405, "method not allowed")
                     return self._static(url.path, query)
                 ctx = access.authorize(self, method, query)
+                set_request_owner(ctx["app"].owner)
                 if method == "GET" and url.path == "/api/events":
                     return self._events(ctx)
                 result = access.private(self, method, url.path, query, body, ctx)
@@ -2113,18 +2189,25 @@ def make_handler(access):
                         return self._reply(handler(ctx["app"], match, query, body))
                 raise HttpError(404, "not found")
             except HttpError as exc:
+                if exc.status >= 500 or (exc.status >= 400 and url.path.startswith(("/api/platforms/", "/api/jobs")) and exc.status != 401):
+                    logger.warning("网页接口返回 %s · %s %s · %s", exc.status, method, url.path, exc)
                 self._send(exc.status, {"error": str(exc)})
             except (PlatformUnavailable, ZHSError) as exc:
+                logger.warning("网页接口平台异常 · %s %s · %s", method, url.path, exc)
                 self._send(502, {"error": str(exc) or "平台暂时无法访问"})
             except RequestRateLimited as exc:
+                logger.warning("网页接口限流 · %s %s · %s", method, url.path, exc)
                 self._send(503, {"error": str(exc)})
             except AIError as exc:  # e.g. drafting questions: the model timed out or the key was refused
+                logger.warning("网页接口 AI 异常 · %s %s · %s", method, url.path, exc)
                 self._send(502, {"error": str(exc)})
             except AuthenticationExpired:
                 self._send(401, {"error": "登录已过期，请重新登录"})
             except Exception:
-                logger.exception("网页接口出错：%s", url.path)
+                logger.exception("网页接口出错：%s %s", method, url.path)
                 self._send(500, {"error": "Studia 内部错误，详情见日志"})
+            finally:
+                set_request_owner(None)
 
         def do_GET(self):
             self._dispatch("GET")

@@ -23,6 +23,47 @@ def redact(message):
     return message
 
 
+_SENSITIVE_KEY = re.compile(r"(?i)token|cookie|password|secret|authorization|api_?key")
+
+
+def summarize_fields(data, keys=None, *, max_len=80, max_keys=24):
+    """Compact, redacted key=value summary of a platform dict for adaptation diagnostics."""
+    try:
+        if not isinstance(data, dict):
+            return type(data).__name__
+
+        def _fmt(val):
+            if isinstance(val, dict):
+                inner = [k for k in list(val.keys())[:8] if not _SENSITIVE_KEY.search(str(k))]
+                return "{%s}" % ",".join(str(k) for k in inner) if inner else "{}"
+            if isinstance(val, list):
+                return "[len=%d]" % len(val)
+            text = " ".join(str(val).split())
+            if len(text) > max_len:
+                text = text[:max_len] + "…"
+            return redact(text)
+
+        parts = []
+        shown = set()
+        for key in (keys or ()):
+            if key in data and data[key] not in (None, "") and not _SENSITIVE_KEY.search(str(key)):
+                parts.append("%s=%s" % (key, _fmt(data[key])))
+                shown.add(key)
+        extras = [str(k) for k in data.keys()
+                  if k not in shown and not str(k).startswith("_") and not _SENSITIVE_KEY.search(str(k))]
+        if not keys:
+            for key in extras[:max_keys]:
+                if data[key] not in (None, ""):
+                    parts.append("%s=%s" % (key, _fmt(data[key])))
+        elif extras:
+            shown_extras = extras[:max_keys]
+            suffix = "…" if len(extras) > max_keys else ""
+            parts.append("extra_keys=[%s%s]" % (",".join(shown_extras), suffix))
+        return ", ".join(parts) or "（空）"
+    except Exception:
+        return "（字段摘要失败）"
+
+
 class RedactFilter(logging.Filter):
     def filter(self, record):
         record.msg = redact(record.getMessage())

@@ -10,7 +10,7 @@ from core.auth import AuthenticationExpired
 from core.concurrency import INTERACTIVE_WORKERS, validate_workers
 from core.study import run_resources, check_study_response
 from core.reporting import Reporter
-from core.log import Logger
+from core.log import Logger, summarize_fields
 from mooc.api import AIMoocApi
 from mooc.activities import CourseActivities
 from core.util import parse_duration, get_mp3_duration
@@ -18,6 +18,12 @@ from core.util import parse_duration, get_mp3_duration
 # 作业、考试、测验在答题里做；子节点和文件夹无法展开。
 ANSWERED_TYPES = ("作业", "考试", "测验")
 SKIPPED_TYPES = ANSWERED_TYPES + ("子节点", "文件夹")
+KNOWN_FILE_TYPES = set(SKIPPED_TYPES) | {
+    "video", "audio", "ppt", "pptx", "img", "image", "图文", "pdf", "doc", "docx",
+    "xls", "xlsx", "txt", "mp4", "mp3", "document", "swf", "link", "网页",
+    "图片", "视频", "音频", "文档", "演示文稿", "office",
+}
+_mooc_logger = Logger(__name__).get_log()
 
 
 def course_units(client, course):
@@ -27,6 +33,7 @@ def course_units(client, course):
     every chapter's cells are requested at the same time (reads only). A list that cannot be read
     raises: taken as empty, the course showed no units (or lost a chapter) until the cache ran out."""
     info_id, course_id = course.get("id"), course.get("courseId")
+    course_name = course.get("courseName") or "未知课程"
     with ThreadPoolExecutor(INTERACTIVE_WORKERS) as pool:
         records = pool.submit(client.study_record_list, info_id, course_id)
         design = client.study_design_list(info_id, course_id)
@@ -38,13 +45,29 @@ def course_units(client, course):
             yield from leaves(node["children"]) if node.get("children") else (node,)
 
     # 测验、考试在「答题」里，不是学习单元：不画进格子，只剩它们的章节（期末考试）整章不要。
-    chapters = [{"name": chapter.get("name") or "未命名章节", "units": [{
-        "id": str(node.get("id")), "name": node.get("name") or "资源", "kind": node.get("fileType") or "",
-        "state": "done" if node.get("id") in done else
-                 "skipped" if node.get("fileType") in SKIPPED_TYPES else "queued",
-    } for node in leaves(chapter_cells) if node.get("fileType") not in ANSWERED_TYPES]}
-        for chapter, chapter_cells in zip(design, cells)]
-    return [chapter for chapter in chapters if chapter["units"]]
+    unknown_seen = set()
+    chapters = []
+    for chapter, chapter_cells in zip(design, cells):
+        units = []
+        for node in leaves(chapter_cells):
+            file_type = node.get("fileType") or ""
+            if file_type in ANSWERED_TYPES:
+                continue
+            if file_type and file_type.lower() not in KNOWN_FILE_TYPES and file_type not in unknown_seen:
+                unknown_seen.add(file_type)
+                _mooc_logger.warning(
+                    "MOOC · 课程「%s」发现未适配学习单元类型「%s」· 节点「%s」· 原始字段：%s",
+                    course_name, file_type, node.get("name") or "资源",
+                    summarize_fields(node, keys=("id", "name", "fileType", "cellType", "categoryName")),
+                )
+            units.append({
+                "id": str(node.get("id")), "name": node.get("name") or "资源", "kind": file_type,
+                "state": "done" if node.get("id") in done else
+                         "skipped" if file_type in SKIPPED_TYPES else "queued",
+            })
+        if units:
+            chapters.append({"name": chapter.get("name") or "未命名章节", "units": units})
+    return chapters
 
 
 class AIMoocHandler:
@@ -64,6 +87,7 @@ class AIMoocHandler:
         self.course_rows = course_rows
 
         self.logging = Logger(__name__).get_log()
+        self._current_course_name = "未知课程"
         self.progress = Reporter(on_progress)
         self.activities = (
             CourseActivities(self.client, activity_ai, cancel_event=self.cancel_event, log=self.logging,
@@ -106,12 +130,13 @@ class AIMoocHandler:
                 self.progress.result(course_name, status)
 
         except Exception as e:
-            self.logging.error(f"获取课程失败: {e}")
+            self.logging.error("MOOC · 课程「%s」获取或处理失败: %s", self._current_course_name, e)
             self.progress.result("读取或处理课程", "error")
 
     def process_course(self, course: Dict[str, Any]) -> None:
         """处理单个课程"""
         course_name = course.get("courseName", "未知课程")
+        self._current_course_name = course_name
         teacher = course.get("displayName", "未知教师")  # 适配新字段
         course_info_name = course.get("courseInfoName", "未知课程信息")
         study_speed = course.get("studySpeed", "未知")  # 适配新字段：学习进度
@@ -267,5 +292,9 @@ class AIMoocHandler:
             raise
         except Exception as e:
             self._course_failed = True
-            self.logging.error(f"处理资源失败: {e}")
+            self.logging.error(
+                "MOOC · 课程「%s」· 资源「%s」（类型：%s，ID：%s）处理失败：%s · 原始字段：%s",
+                self._current_course_name, resource_name, file_type, source_id, e,
+                summarize_fields(node, keys=("id", "name", "fileType", "cellType", "categoryName", "courseId", "courseInfoId")),
+            )
             return "error"

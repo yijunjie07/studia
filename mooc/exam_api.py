@@ -12,7 +12,10 @@ from urllib.parse import quote
 import requests
 
 from core.api_client import READ_PAUSES
+from core.log import Logger, summarize_fields
 from mooc.export_questions import unwrap_paper
+
+logger = Logger(__name__).get_log()
 
 DIGITS = {c: i for i, c in enumerate("零一二三四五六七八九")}
 
@@ -93,16 +96,22 @@ class ExamAPI:
                 raise _passing(ExamServiceError("连不上职教云（超时或连接断开）")) from None
             raise ExamServiceError("平台请求超时或连接失败；写入结果可能未知，请在网页核对，程序不会自动重试") from None
         if response.status_code >= 500:
+            logger.warning("MOOC 考试接口失败：%s %s · HTTP %s", method.upper(), endpoint, response.status_code)
             raise _passing(ExamServiceError("平台服务不可用（HTTP %s）" % response.status_code))
         if response.status_code in (401, 429):
+            logger.warning("MOOC 考试接口受限：%s %s · HTTP %s", method.upper(), endpoint, response.status_code)
             raise ExamServiceError("平台登录失效或请求受限（HTTP %s）" % response.status_code)
         if response.status_code != 200:
+            logger.warning("MOOC 考试接口失败：%s %s · HTTP %s", method.upper(), endpoint, response.status_code)
             raise ExamError("平台返回 HTTP %s" % response.status_code)
         try:
             payload = response.json()
         except ValueError:
+            logger.warning("MOOC 考试接口返回非 JSON：%s %s", method.upper(), endpoint)
             raise _passing(ExamError("平台返回非 JSON 数据")) from None
         if isinstance(payload, dict) and str(payload.get("code")) in ("401", "429"):
+            logger.warning("MOOC 考试接口受限：%s %s · code=%s · %s",
+                           method.upper(), endpoint, payload["code"], summarize_fields(payload, keys=("code", "msg")))
             raise ExamServiceError("平台登录失效或请求受限（code=%s）" % payload["code"])
         # Unlike catalog/history/write endpoints, the current paper endpoint
         # returns the paper directly, without a code/data envelope. Limit this
@@ -116,6 +125,9 @@ class ExamAPI:
         if not isinstance(payload, dict) or str(payload.get("code")) != "200":
             code = payload.get("code") if isinstance(payload, dict) else "unknown"
             msg = str(payload.get("msg") or "").strip()[:60] if isinstance(payload, dict) else ""
+            logger.warning("MOOC 考试接口异常：%s %s · code=%s · msg=%s · 响应字段：%s",
+                           method.upper(), endpoint, code, msg or "（空）",
+                           summarize_fields(payload, keys=("code", "msg")))
             if read:
                 # A list read is not refused over opening times; code 500 is the platform tripping over itself.
                 error = ExamError("职教云返回 code=%s%s" % (code, "（%s）" % msg if msg else ""))

@@ -106,7 +106,7 @@ class CourseActivities:
         except (AuthenticationExpired, RequestRateLimited):
             raise
         except Exception as error:
-            self.log.error('课程讨论目录读取失败：%s', error)
+            self.log.error('MOOC · 课程「%s」讨论目录读取失败：%s', course_name, error)
             summary['discussion_failed'] = 1
             return summary
         for row in discussions:
@@ -143,7 +143,7 @@ class CourseActivities:
             except (AuthenticationExpired, RequestRateLimited):
                 raise
             except Exception as error:
-                self.log.error('课程讨论未完成（%s）：%s；不自动重发', topic, error)
+                self.log.error('MOOC · 课程「%s」讨论未完成（%s）：%s；不自动重发', course_name, topic, error)
                 summary['discussion_failed'] += 1
             else:
                 summary['discussion_posted'] += 1

@@ -8,7 +8,7 @@ from datetime import date, timedelta
 
 from core.auth import AuthenticationExpired, PlatformUnavailable
 from core.concurrency import INTERACTIVE_WORKERS
-from core.log import Logger
+from core.log import Logger, summarize_fields
 from core.reporting import Reporter
 from zhs.api import (
     CaptchaRequired,
@@ -193,7 +193,10 @@ class ZHSHandler:
                 except Exception as error:
                     failed += 1
                     self.progress.unit(key, name, "failed")
-                    self.log.error("%s · %s：学习失败：%s", course, name, error)
+                    self.log.error(
+                        "智慧树 · %s · %s（lessonId=%s, videoId=%s）：学习失败：%s",
+                        course, name, video.get("lessonId"), video.get("id"), error,
+                    )
             completed = success + skipped + failed
             self.progress.resources(
                 f"{course} · {name} · 成功 {success} · 跳过 {skipped} · 失败 {failed}",
@@ -580,7 +583,13 @@ class ZHSHandler:
                 except Exception as error:
                     failed += 1
                     self.progress.unit(key, name, "failed")
-                    self.log.error("%s · %s：学习失败：%s", course, name, error)
+                    meta = dict(item, **detail) if isinstance(detail, dict) else dict(item)
+                    self.log.error(
+                        "智慧树 · %s · %s：学习失败：%s · 资源字段：%s",
+                        course, name, error,
+                        summarize_fields(meta, keys=("resourcesType", "resourcesDistributeType",
+                                                     "resourcesUid", "resourcesFileId", "studyStatus")),
+                    )
             completed = success + skipped + failed
             self.progress.resources(
                 f"{course} · {name} · 成功 {success} · 跳过 {skipped} · 失败 {failed}",

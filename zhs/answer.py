@@ -14,7 +14,7 @@ from mooc.export_questions import clean_html_text
 from ai.client import GUESS_RULE, AIError, AITransientServiceError
 from core.auth import AuthenticationExpired, PlatformUnavailable
 from core.concurrency import INTERACTIVE_WORKERS
-from core.log import Logger
+from core.log import Logger, summarize_fields
 from core.reporting import Reporter, child_thread_name
 from core.task_capabilities import task_availability
 from core.task_metrics import nonnegative_number
@@ -343,15 +343,20 @@ class ZHSAnswerRunner:
         self.batch_size = max(1, int(batch_size))
         self.max_workers = max(1, int(max_workers))
         self.cancel_event = cancel_event if cancel_event is not None else threading.Event()
+        self._course_name = ""
         self._heartbeat_stop = None
         self._heartbeat_thread = None
         self._heartbeat_error = None
+
+    def _label(self, name):
+        return "智慧树 · 课程「%s」· %s" % (self._course_name, name) if self._course_name else name
 
     # ------------------------------------------------------------------ 入口
 
     def run_paper(self, course, item, category):
         z = item.get("zhs") or {}
         cz = course.get("zhs") or {}
+        self._course_name = course.get("courseName") or ""
         name = item.get("name") or "未命名试卷"
         kind = z.get("kind")
         # Answers are shared between the papers of one course, never across courses.
@@ -585,7 +590,7 @@ class ZHSAnswerRunner:
         if total == 0:
             return self._result(name, "error", "答题卡为空")
         self.reporter.questions(name, 0, total)
-        logger.info("开始：%s（%d 题）", name, total)
+        logger.info("开始：%s（%d 题）", self._label(name), total)
         if heartbeat:
             self._start_heartbeat(test_id, paper_id)
         try:
@@ -599,6 +604,7 @@ class ZHSAnswerRunner:
                     if self.cancel_event.is_set():
                         raise KeyboardInterrupt
                     self._raise_heartbeat_error()
+                    raw = None
                     try:
                         if fetch is not None:
                             raw = fetch(entry)
@@ -612,6 +618,16 @@ class ZHSAnswerRunner:
                     except (CaptchaRequired, StudyTimeLimit, AuthenticationExpired, KeyboardInterrupt):
                         raise
                     except Exception as exc:
+                        extra = ""
+                        if isinstance(raw, dict):
+                            qt = raw.get("questionType")
+                            qt_name = qt.get("name") if isinstance(qt, dict) else raw.get("questionTypeName")
+                            qt_info = ("，题型名=%s" % qt_name) if qt_name else ""
+                            extra = " · 原始题目字段：%s%s" % (
+                                summarize_fields(raw, keys=("id", "eid", "questionType", "questionTypeName", "typeName")),
+                                qt_info,
+                            )
+                        logger.warning("%s · 第 %d 题解析失败：%s%s", self._label(name), index, exc, extra)
                         raise _FetchFailed("第 %d 题：%s" % (index, exc)) from exc
                     questions.append((entry, prepared))
                     yield entry, prepared
@@ -967,7 +983,7 @@ class ZHSAnswerRunner:
     def _result(self, name, status, message):
         result = {"paper": name, "status": status, "message": message}
         if status not in ("submitted", "preview"):
-            logger.warning("%s：%s（%s）", name, message, status)
+            logger.warning("%s：%s（%s）", self._label(name), message, status)
         return result
 
     # ---------------------------------------------------------------- 心跳
@@ -1025,6 +1041,7 @@ def catalog(client, course):
 def catalog_ai(client, course):
     """List knowledge-homework and exam papers for the AI course task picker."""
     z = course.get("zhs") or {}
+    course_name = course.get("courseName") or "未知课程"
     course_id = z.get("courseId")
     class_id = z.get("classId")
     entries = []
@@ -1053,12 +1070,13 @@ def catalog_ai(client, course):
             knowledge_id = point.get("knowledgeId")
             knowledge_name = point.get("knowledgeName") or point.get("name") or "知识点"
             if error is not None:
-                logger.warning("跳过知识点 %s 的作业：%s", knowledge_name, error)
+                logger.warning("智慧树 · 课程「%s」· 跳过知识点 %s 的作业：%s", course_name, knowledge_name, error)
                 continue
             test_id = _positive_int(info.get("examTestId"))
             paper_id = _positive_int(info.get("paperId"))
             if not test_id or not paper_id:
-                logger.warning("跳过缺少试卷标识的知识点：%s", knowledge_name)
+                logger.warning("智慧树 · 课程「%s」· 跳过缺少试卷标识的知识点：%s · 原始字段：%s",
+                               course_name, knowledge_name, summarize_fields(info))
                 continue
             score = info.get("highMasteryScore")
             best = nonnegative_number(score) or 0
@@ -1088,7 +1106,7 @@ def catalog_ai(client, course):
         raise
     except Exception as exc:
         homework_failed = True
-        logger.warning("读取智慧课程作业目录失败：%s", exc)
+        logger.warning("智慧树 · 课程「%s」· 读取智慧课程作业目录失败：%s", course_name, exc)
 
     try:
         tasks = client.ai_exam_tasks(course_id)
@@ -1098,7 +1116,8 @@ def catalog_ai(client, course):
             task_id = task.get("id")
             user_id = task.get("userId")
             if not test_id or not paper_id or task_id in (None, "") or user_id in (None, ""):
-                logger.warning("跳过缺少标识的考试任务：%s", task.get("taskName") or task_id)
+                logger.warning("智慧树 · 课程「%s」· 跳过缺少标识的考试任务：%s · 原始字段：%s",
+                               course_name, task.get("taskName") or task_id, summarize_fields(task))
                 continue
             item = {
                 "id": "exam-%s-%s-%s" % (task_id, test_id, paper_id),
@@ -1122,7 +1141,7 @@ def catalog_ai(client, course):
         raise
     except Exception as exc:
         exam_failed = True
-        logger.warning("读取智慧课程考试目录失败：%s", exc)
+        logger.warning("智慧树 · 课程「%s」· 读取智慧课程考试目录失败：%s", course_name, exc)
 
     if homework_failed and exam_failed:
         raise PlatformUnavailable("智慧树试卷目录读取失败，请稍后重试")
@@ -1330,6 +1349,7 @@ def exam_entry_check(client, item):
 def catalog_shared(client, course):
     """List shared-course homework and exams with their reasons for being unusable."""
     z = course.get("zhs") or {}
+    course_name = course.get("courseName") or "未知课程"
     recruit_id = z.get("recruitId")
     course_id = z.get("courseId")
     entries = []
@@ -1342,7 +1362,7 @@ def catalog_shared(client, course):
         raise
     except Exception as exc:
         homework_failed = True
-        logger.warning("读取共享课作业目录失败：%s", exc)
+        logger.warning("智慧树 · 课程「%s」· 读取共享课作业目录失败：%s", course_name, exc)
 
     try:
         listed = {(str(e["zhs"]["stuExamId"]), str(e["zhs"]["examId"])) for e in entries}
@@ -1351,7 +1371,7 @@ def catalog_shared(client, course):
         raise
     except Exception as exc:
         exam_failed = True
-        logger.warning("读取共享课考试目录失败：%s", exc)
+        logger.warning("智慧树 · 课程「%s」· 读取共享课考试目录失败：%s", course_name, exc)
 
     if homework_failed and exam_failed:
         raise PlatformUnavailable("智慧树试卷目录读取失败，请稍后重试")

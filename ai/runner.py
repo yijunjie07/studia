@@ -8,6 +8,7 @@ from pathlib import Path
 
 from mooc.exam_api import ExamError, ExamServiceError, TaskUnavailableError
 from mooc.export_questions import get_questions_from_paper, paper_display_name, paper_exam_id, safe_filename
+from core.log import Logger, summarize_fields
 from core.reporting import Reporter, child_thread_name, log_callback
 from ai.memory import learn as learn_answers, remembered_value, scope as answer_scope
 from ai.client import AIError, AIServiceError
@@ -15,6 +16,8 @@ from ai.concurrency import ParallelAnswers, prepared_items
 from core.concurrency import validate_workers
 from ai.questions import answer_record, model_question, question_fingerprint
 from core.task_capabilities import task_availability
+
+logger = Logger(__name__).get_log()
 
 
 
@@ -329,13 +332,28 @@ class AnswerRunner:
             if str(task_id) in submitted_task_ids or attempt_not_draft(records, task_id):
                 raise ExamError("平台未提供新的可作答记录，本次无法再次作答；请刷新任务状态")
             if str(paper.get("typeId")) == "3" or str(paper.get("questionSettingMethod")) == "3":
+                logger.warning(
+                    "MOOC · 课程「%s」· 试卷「%s」（exam_id=%s）· 附件或材料试卷暂不支持自动作答 · 原始字段：%s",
+                    report["course"], report["paper"], exam_id,
+                    summarize_fields(paper, keys=("id", "name", "typeId", "questionSettingMethod", "questionCount", "tjzt")),
+                )
                 raise ExamError("附件或材料试卷暂不支持自动作答")
             raw_questions = get_questions_from_paper(paper)
             if not raw_questions:
+                logger.warning(
+                    "MOOC · 课程「%s」· 试卷「%s」（exam_id=%s）· 试卷为空或结构不受支持 · 原始字段：%s",
+                    report["course"], report["paper"], exam_id,
+                    summarize_fields(paper, keys=("id", "name", "typeId", "questionSettingMethod", "questionCount")),
+                )
                 raise ExamError("试卷为空或结构不受支持")
             # Do not submit a parsed subset of a paper.
             count = paper.get("questionCount")
             if count is not None and int(count) != len(raw_questions):
+                logger.warning(
+                    "MOOC · 课程「%s」· 试卷「%s」（exam_id=%s）· 声明题数 %s 与解析题数 %s 不一致 · 原始字段：%s",
+                    report["course"], report["paper"], exam_id, count, len(raw_questions),
+                    summarize_fields(paper, keys=("id", "name", "typeId", "questionSettingMethod", "questionCount")),
+                )
                 raise ExamError("试卷声明题数与解析题数不一致")
             remaining = paper.get("surplusSecond")
             if remaining is not None:
@@ -495,6 +513,11 @@ class AnswerRunner:
                     item_report["question_fingerprint"] = question_fingerprint(q)
                 except (ValueError, TypeError, AIError) as exc:
                     item_report["error"] = str(exc)
+                    logger.warning(
+                        "MOOC · 课程「%s」· 试卷「%s」· 第 %s 题失败：%s · 原始题目字段：%s",
+                        report["course"], report["paper"], position + 1, exc,
+                        summarize_fields(value, keys=("id", "typeId", "typeName", "questionTypeName", "title", "answerNum")),
+                    )
                     if isinstance(exc, AIServiceError):
                         save_answer(position, item_report)
                         report.update(status="ai_error", message=str(exc))
@@ -657,4 +680,10 @@ class AnswerRunner:
             self.output("%s：%s%s" % (report["paper"], report["status"], report_location))
             if report.get("message"):
                 self.output("原因：%s" % report["message"])
+            if report["status"] not in ("submitted", "preview"):
+                logger.warning(
+                    "MOOC · 课程「%s」· 试卷「%s」（exam_id=%s）· 状态：%s · %s",
+                    report["course"], report["paper"], exam_id, report["status"],
+                    report.get("message") or "无详情",
+                )
         return report
