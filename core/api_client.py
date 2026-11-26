@@ -57,18 +57,18 @@ class BaseAPIClient:
             if response.status_code in (401, 403):
                 raise AuthenticationExpired('平台登录已过期或无权访问')
             if response.status_code != 200:
-                logger.error('平台返回 HTTP %s', response.status_code)
+                logger.error('平台返回 HTTP %s：%s %s', response.status_code, method.upper(), endpoint)
                 return None
             data = response.json()
             if isinstance(data, dict) and str(data.get('code')) == '429':
                 raise RequestRateLimited('平台请求过于频繁，请稍后重试')
             if isinstance(data, dict) and str(data.get('code')) in ('401', '403'):
                 raise AuthenticationExpired('平台登录已过期或无权访问')
-            return data if origin_response else parse_response(response)
+            return data if origin_response else parse_response(response, endpoint=endpoint)
         except (AuthenticationExpired, RequestRateLimited):
             raise
         except Exception as error:
-            logger.error('%s 请求失败: %s', method.upper(), error)
+            logger.error('%s %s 请求失败: %s', method.upper(), endpoint, error)
             return None
         finally:
             if response is not None:

@@ -16,13 +16,14 @@ def create_session():
     return session
 
 
-def parse_response(response):
+def parse_response(response, endpoint=""):
     """
     解析 API 响应：
     - 如果有 "code" 且为 200，返回 "data" 或完整 data
     - 如果没有 "code"，直接返回解析后的 JSON 数据
     - 解析失败时返回 None
     """
+    where = f"（{endpoint}）" if endpoint else ""
     try:
         data = response.json()
 
@@ -36,18 +37,18 @@ def parse_response(response):
                 if data["code"] == 200:
                     return data.get("data", data)  # 优先返回 data["data"]
                 else:
-                    logger.error(f"API 请求失败: {data.get('msg', '未知错误')}")
+                    logger.error(f"API 请求失败{where} code={data.get('code')}: {data.get('msg', '未知错误')}")
                     return None
             else:
                 # 没有 "code" 字段，直接返回整个 data
                 return data
 
         # 其他情况（如字符串、整数等），记录错误日志
-        logger.error(f"API 返回未知格式: {data}")
+        logger.error(f"API 返回未知格式{where}: {data}")
         return None
 
     except ValueError:
-        logger.error("解析 JSON 失败")
+        logger.error(f"解析 JSON 失败{where}")
         return None
 
 
