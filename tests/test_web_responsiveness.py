@@ -218,6 +218,20 @@ class WebResponsivenessTests(unittest.TestCase):
         lapsed.wait_for(timeout=3000)
         self.assertEqual(lapsed.locator("[data-qa-clock-num]").text_content(), "00:00:00")
 
+    def test_course_hero_and_qa_do_not_overflow_on_360px_phone(self):
+        self.page.set_viewport_size({"width": 360, "height": 780})
+        self.page.goto("http://127.0.0.1:%d/?mock#/course/zhs/shared-1/qa" % self.server.server_port,
+                       wait_until="domcontentloaded")
+        self.page.locator(".qa_clock").wait_for(timeout=3000)
+        overflow = self.page.evaluate("""() => {
+            const hero = document.querySelector('.hero');
+            const hr = hero.getBoundingClientRect();
+            const out = [...hero.querySelectorAll('.hero_stat')].filter((el) => el.getBoundingClientRect().right > hr.right + 1).length;
+            return { scrollW: document.documentElement.scrollWidth, innerW: window.innerWidth, heroOut: out };
+        }""")
+        self.assertLessEqual(overflow["scrollW"], overflow["innerW"])
+        self.assertEqual(overflow["heroOut"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
