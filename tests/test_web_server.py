@@ -299,6 +299,32 @@ class WebServerTest(unittest.TestCase):
             self.assertEqual(self.app._answer(platform, selected, True, job), "处理完成 2/2 份试卷")
         self.assertEqual(cached, [False, False])
 
+    def test_answer_propagates_cancel_and_handles_ai_service_error(self):
+        from ai.client import AIServiceError
+
+        platform = self.app.platforms["mooc"]
+        row = {"courseName": "英语", "courseId": "c1"}
+        platform.rows, platform.client = [row], Mock()
+        self.app._ai, self.app.mooc_memory = Mock(), Mock()
+        selected = [(row, {"id": "e1", "name": "第一单元作业"}, 1), (row, {"id": "e2", "name": "第二单元作业"}, 1)]
+
+        job = {"id": "j1", "course": "c1", "cancel": threading.Event()}
+        with patch("web.server.AnswerRunner") as runner, patch("web.server.ExamAPI"):
+            runner.return_value.run_paper.side_effect = KeyboardInterrupt
+            with self.assertRaises(KeyboardInterrupt):
+                self.app._answer(platform, selected, True, job)
+
+        events = []
+        with patch("web.server.AnswerRunner") as runner, patch("web.server.ExamAPI"), \
+                patch.object(self.app, "publish", side_effect=events.append), \
+                patch.object(self.app.store, "save_ai_health") as save_health:
+            runner.return_value.run_paper.side_effect = AIServiceError("AI 服务 401")
+            summary = self.app._answer(platform, selected, True, job)
+        self.assertEqual(summary, "处理完成 0/2 份试卷")
+        self.assertEqual(runner.return_value.run_paper.call_count, 1)
+        save_health.assert_called_once()
+        self.assertTrue(any(e.get("kind") == "result" and e.get("status") == "ai_error" for e in events))
+
     def test_a_list_with_an_exam_to_open_on_the_platform_is_kept_only_briefly(self):
         # 智慧树's exams open on the platform: coming back after opening one must not find the old list for 10 min.
         platform = self.app.platforms["mooc"]

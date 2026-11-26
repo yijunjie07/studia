@@ -721,6 +721,16 @@ class SharedExamApiTest(unittest.TestCase):
         self.assertEqual(client.shared_location_qr(3, "e1"), b"\x89PNG-qr")
         self.assertEqual(client.session.request.call_args.args[:2], ("GET", "https://img.zhihuishu.com/loc/qr.png"))
 
+    def test_exam_image_rejects_non_url_without_requesting_it(self):
+        for bad in ("0", "https://", "javascript:alert(1)"):
+            with self.subTest(url=bad):
+                client = make_api()
+                client.session.request.return_value = json_response({"status": "200", "rt": bad})
+                with self.assertRaises(PlatformUnavailable) as caught:
+                    client.shared_location_qr(3, "e1")
+                self.assertIn("返回格式异常", str(caught.exception))
+                self.assertEqual(client.session.request.call_count, 1)
+
     def test_shared_save_answer_explains_location_rejection(self):
         client = make_api()
         client.session.request.return_value = json_response({"status": "-1", "msg": "2"})

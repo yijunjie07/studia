@@ -30,7 +30,7 @@ from mooc.api import AIMoocApi
 from mooc.exam_api import ExamAPI, ExamError, ExamServiceError, TaskUnavailableError
 from mooc.export_questions import paper_display_name, paper_exam_id
 from mooc.main import AIMoocHandler, course_units as mooc_units
-from ai.client import AIClient, AIConfig, AIError
+from ai.client import AIClient, AIConfig, AIError, AIServiceError
 from ai.runner import AnswerRunner
 from core.api_client import RequestRateLimited
 from core.concurrency import INTERACTIVE_WORKERS
