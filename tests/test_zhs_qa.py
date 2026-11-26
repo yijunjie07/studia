@@ -356,6 +356,16 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(qa_room(25, 0, 20, 10), 0)
         self.assertEqual(qa_room(None, 3, 20, 10), 7)
 
+    def test_answer_room_has_no_total_cap_with_10_daily_before_full_and_5_after_full(self):
+        self.assertEqual(qa_room(0, 0, 20, 10, after_cap=5), 10)
+        self.assertEqual(qa_room(18, 0, 20, 10, after_cap=5), 10)
+        self.assertEqual(qa_room(18, 4, 20, 10, after_cap=5), 6)
+        self.assertEqual(qa_room(20, 0, 20, 10, after_cap=5), 5)
+        self.assertEqual(qa_room(20, 2, 20, 10, after_cap=5), 3)
+        self.assertEqual(qa_room(20, 5, 20, 10, after_cap=5), 0)
+        self.assertEqual(qa_room(35, 0, 20, 10, after_cap=5), 5)
+        self.assertEqual(qa_room(None, 3, 20, 10, after_cap=5), 7)
+
 
 if __name__ == "__main__":
     unittest.main()

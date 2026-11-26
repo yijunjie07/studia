@@ -199,6 +199,25 @@ class WebResponsivenessTests(unittest.TestCase):
         self.page.wait_for_function('() => !document.querySelector(\'.nav .nav_item[data-go="#/jobs"] .live\')', timeout=3000)
         self.assertEqual(mobile_badge.count(), 0)
 
+    def test_qa_clock_renders_dial_and_ticks_live(self):
+        self.page.goto("http://127.0.0.1:%d/?mock#/course/zhs/shared-1/qa" % self.server.server_port,
+                       wait_until="domcontentloaded")
+        clock = self.page.locator('.qa_clock[data-qa-clock="zhs"]')
+        clock.wait_for(timeout=3000)
+        self.assertEqual(clock.locator("svg.qa_dial").count(), 1)
+        first = clock.locator("[data-qa-clock-num]").text_content()
+        self.assertRegex(first, r"^\d{2}:\d{2}:\d{2}$")
+        self.page.wait_for_function(
+            "(prev) => document.querySelector('[data-qa-clock-num]')?.textContent !== prev",
+            arg=first, timeout=3000,
+        )
+
+        self.page.goto("http://127.0.0.1:%d/?mock&rescan#/course/zhs/shared-1/qa" % self.server.server_port,
+                       wait_until="domcontentloaded")
+        lapsed = self.page.locator('.qa_clock.lapsed[data-qa-clock="zhs"]')
+        lapsed.wait_for(timeout=3000)
+        self.assertEqual(lapsed.locator("[data-qa-clock-num]").text_content(), "00:00:00")
+
 
 if __name__ == "__main__":
     unittest.main()

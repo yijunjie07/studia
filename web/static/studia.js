@@ -240,13 +240,63 @@ const INITIAL = { mooc: "M", zhs: "智" };
 // The sign-in centre's ticket lapsed: studying carries on, the Q&A board waits for a fresh scan.
 const rescanLink = (p) => `#/login/${p.id}/again`;
 // It lasts eight hours from the scan (rescan_at); the last stretch is the time to finish today's Q&A or scan early.
+const QA_TTL = 8 * 3600;
 const QA_SOON = 90 * 60;
+const QA_RING_C = 2 * Math.PI * 14;
 const qaLeft = (p) => (p.rescan_at ? p.rescan_at - Date.now() / 1000 : null);
 const qaSoon = (p) => !p.rescan && qaLeft(p) !== null && qaLeft(p) < QA_SOON;
 const rescannable = (p) => p.rescan || Boolean(p.rescan_at);
 function hoursLeft(sec) {
   const min = Math.max(1, Math.ceil(sec / 60));
   return min < 60 ? `${min} 分钟` : `${Math.floor(min / 60)} 小时${min % 60 ? ` ${min % 60} 分` : ""}`;
+}
+function qaClockParts(sec) {
+  const total = Math.max(0, Math.floor(sec || 0));
+  const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), s = total % 60;
+  return {
+    total,
+    text: `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`,
+    ratio: Math.max(0, Math.min(1, total / QA_TTL)),
+    hDeg: ((h % 12) + m / 60) * 30,
+    mDeg: (m + s / 60) * 6,
+    sDeg: s * 6,
+  };
+}
+function qaUntil(ts) {
+  const d = new Date(ts * 1000);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+const QA_DIAL_TICKS = Array.from({ length: 12 }, (_, i) => {
+  const major = i % 3 === 0;
+  return `<line x1="18" y1="${major ? 5.2 : 5.8}" x2="18" y2="${major ? 7.4 : 7.2}" class="qa_tick${major ? " major" : ""}" transform="rotate(${i * 30} 18 18)"/>`;
+}).join("");
+function qaClock(p) {
+  const left = qaLeft(p);
+  const lapsed = Boolean(p.rescan) || (left !== null && left <= 0);
+  if (!lapsed && !(left > 0)) return "";
+  const soon = !lapsed && qaSoon(p);
+  const parts = qaClockParts(lapsed ? 0 : left);
+  const offset = (QA_RING_C * (1 - parts.ratio)).toFixed(2);
+  const stateClass = lapsed ? " lapsed" : soon ? " soon" : "";
+  const sub = lapsed ? "问答区已失效" : soon ? `即将到期 · 至 ${qaUntil(p.rescan_at)}` : `有效至 ${qaUntil(p.rescan_at)}`;
+  const title = lapsed ? "登录中心票据已失效，重新扫码后问答区可用 8 小时"
+    : `问答区有效倒计时（有效期 8 小时，至 ${qaUntil(p.rescan_at)}）`;
+  return `<div class="qa_clock${stateClass}" data-qa-clock="${p.id}" title="${title}" aria-label="问答区剩余 ${parts.text}，${sub}">
+    <svg class="qa_dial" viewBox="0 0 36 36" width="36" height="36" aria-hidden="true">
+      <circle class="qa_face" cx="18" cy="18" r="16.5"/>
+      <circle class="qa_track" cx="18" cy="18" r="14"/>
+      <circle class="qa_arc" data-qa-arc cx="18" cy="18" r="14" stroke-dasharray="${QA_RING_C.toFixed(2)}" stroke-dashoffset="${offset}" transform="rotate(-90 18 18)"/>
+      ${QA_DIAL_TICKS}
+      <line class="qa_hand qa_hand_h" data-qa-h x1="18" y1="18" x2="18" y2="11.4" transform="rotate(${parts.hDeg.toFixed(1)} 18 18)"/>
+      <line class="qa_hand qa_hand_m" data-qa-m x1="18" y1="18" x2="18" y2="8.8" transform="rotate(${parts.mDeg.toFixed(1)} 18 18)"/>
+      ${lapsed ? "" : `<line class="qa_hand qa_hand_s" data-qa-s x1="18" y1="20.4" x2="18" y2="7.8" transform="rotate(${parts.sDeg.toFixed(1)} 18 18)"/>`}
+      <circle class="qa_pin" cx="18" cy="18" r="1.5"/>
+    </svg>
+    <div class="qa_clock_meta">
+      <span class="qa_clock_num mono" data-qa-clock-num>${parts.text}</span>
+      <span class="qa_clock_sub">${sub}</span>
+    </div>
+  </div>`;
 }
 function currentPlatform() {
   return platformOf(state.current) || state.platforms.find((p) => p.logged_in) || state.platforms[state.platforms.length - 1];
@@ -1934,15 +1984,15 @@ function qaBody(p, c) {
   const texts = draft?.texts || [];
   const askBlock = blocker(p.id, c.id, "ask") || (room && !room.ask ? room.why.ask : "");
   const answerBlock = blocker(p.id, c.id, "qa") || (room && !room.answer ? room.why.answer : "");
-  const head = `<div class="qa_head"><span class="qa_score"><b>${earned ? pts(earned.interactive) : "—"}</b><span class="of">/${c.shares?.interactive || 10}</span> 分</span>
-    ${!p.rescan && !qaSoon(p) && qaLeft(p) > 0 ? `<span class="qa_time">问答区剩余 <span data-qa-left="${p.id}">${hoursLeft(qaLeft(p))}</span></span>` : ""}
-    <small class="sans">斜纹：今日发布</small></div>`;
+  const head = `<div class="qa_head"><div class="qa_head_main"><span class="qa_score"><b>${earned ? pts(earned.interactive) : "—"}</b><span class="of">/${c.shares?.interactive || 10}</span> 分</span>
+    <small class="sans">斜纹：今日发布</small></div>${qaClock(p)}</div>`;
   const ask = qaLane("ask", room, { title: "提问", valid: q?.questions, today: today.ask,
     reason: draft?.loading ? `正在出第 ${draft.loading}/${draft.total} 条…` : askBlock,
     note: draft?.error || `今天还能问 ${room ? room.ask : "—"} 条 · 收获回答 ${q?.received ?? "—"}`,
     button: (n, off) => `<button class="btn" data-qa-draft ${off ? "disabled" : ""}>${texts.length ? "换一批" : `出 ${n} 条题`}</button>`, off: p.rescan });
+  const answerFull = (q?.answers || 0) >= QA_LANES.answer.cap;
   const answer = qaLane("answer", room, { title: "回答", valid: q?.answers, today: today.answer, reason: answerBlock,
-    note: `今天还能答 ${room ? room.answer : "—"} 条`,
+    note: answerFull ? `回答数量分已满，今天还能再答 ${room ? room.answer : "—"} 条` : `今天还能答 ${room ? room.answer : "—"} 条`,
     button: (n, off) => `<button class="btn primary" data-qa-start ${off ? "disabled" : ""}>答 ${n} 条</button>`, off: p.rescan });
   const tooMany = room && texts.length > room.ask;
   const drafts = texts.map((t, i) => `<div class="model plain qa_draft"><textarea rows="2" data-qa-edit="${i}" maxlength="200">${esc(t)}</textarea>
@@ -2426,6 +2476,23 @@ setInterval(() => {
   document.querySelectorAll("[data-clock]").forEach((el) => { const j = byId(el.dataset.clock); if (j) el.firstChild.textContent = clock(elapsed(j)); });
   document.querySelectorAll("[data-elapsed]").forEach((el) => { const j = byId(el.dataset.elapsed); if (j) el.textContent = duration(elapsed(j)); });
   document.querySelectorAll("[data-qa-left]").forEach((el) => { const p = platformOf(el.dataset.qaLeft); if (p && qaLeft(p) > 0) el.textContent = hoursLeft(qaLeft(p)); });
+  document.querySelectorAll("[data-qa-clock]").forEach((el) => {
+    const p = platformOf(el.dataset.qaClock);
+    if (!p || p.rescan) return;
+    const left = qaLeft(p);
+    if (!(left > 0)) return;
+    const parts = qaClockParts(left);
+    const num = el.querySelector("[data-qa-clock-num]");
+    if (num) num.textContent = parts.text;
+    const arc = el.querySelector("[data-qa-arc]");
+    if (arc) arc.setAttribute("stroke-dashoffset", (QA_RING_C * (1 - parts.ratio)).toFixed(2));
+    const h = el.querySelector("[data-qa-h]");
+    if (h) h.setAttribute("transform", `rotate(${parts.hDeg.toFixed(1)} 18 18)`);
+    const m = el.querySelector("[data-qa-m]");
+    if (m) m.setAttribute("transform", `rotate(${parts.mDeg.toFixed(1)} 18 18)`);
+    const s = el.querySelector("[data-qa-s]");
+    if (s) s.setAttribute("transform", `rotate(${parts.sDeg.toFixed(1)} 18 18)`);
+  });
 }, 1000);
 
 /* ---------------------------------------------------------------- jobs */

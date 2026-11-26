@@ -325,7 +325,8 @@ def write_reply(ai, question, *, seen=(), voice=0, rng=random):
 # 合计再乘课程互动分占比。数据次日上午更新。封顶以后再发不加分，只多一分被判刷帖的风险。
 QUESTION_CAP, ANSWER_CAP = 10, 20
 # 每门课每天最多发这么多：规则说短时间内连发、同一句式连发会被删帖，第三方刷帖整学期禁言。
-DAILY_QUESTIONS, DAILY_ANSWERS = 5, 10
+# 回答不设总数封顶：数量分满（20 条）后仍可继续回答（例如帮同学互答或留余量），但每天收紧到 5 条。
+DAILY_QUESTIONS, DAILY_ANSWERS, DAILY_ANSWERS_FULL = 5, 10, 5
 
 # 让模型的「问答题」能力产出提问正文：它只需把问题写成答案，答卷格式不变。
 QUESTION_RULES = (
@@ -408,9 +409,14 @@ def worth_answering(items, now=None):
             and question_flaw(item.get("content")) is None]
 
 
-def qa_room(valid, posted_today, cap, daily):
-    """还能发几条：离封顶还差多少、今天还剩多少，取小的。valid 是平台记的有效数，次日才算上今天发的。"""
-    return max(0, min(cap - int(valid or 0) - posted_today, daily - posted_today))
+def qa_room(valid, posted_today, cap, daily, *, after_cap=0):
+    """还能发几条：默认受总数封顶和每日上限约束；若指定 after_cap，则不设总数封顶，
+    未达 cap 前每天最多 daily 条，达到 cap 后每天最多 after_cap 条。"""
+    count = int(valid or 0)
+    if after_cap > 0:
+        limit = after_cap if count >= cap else daily
+        return max(0, limit - posted_today)
+    return max(0, min(cap - count - posted_today, daily - posted_today))
 
 
 # 模型偶尔还是会在提问前加称呼、客套或序号，发之前去掉。「请问…」「老师好」这类整句客套直接去；

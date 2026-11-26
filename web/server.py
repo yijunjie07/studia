@@ -43,7 +43,7 @@ from zhs.answer import ZHSAnswerRunner, catalog, exam_entry_check
 from zhs.api import CaptchaRequired, StudyTimeLimit, ZHSApi, ZHSError, course_offers
 from zhs.main import ZHSHandler, course_units as zhs_units
 from zhs.memory import AnswerMemory
-from zhs.qa import ANSWER_CAP, ASK_PACE, DAILY_ANSWERS, DAILY_QUESTIONS, QA_PACE, QUESTION_CAP, REFERENCE_ANSWERS, \
+from zhs.qa import ANSWER_CAP, ASK_PACE, DAILY_ANSWERS, DAILY_ANSWERS_FULL, DAILY_QUESTIONS, QA_PACE, QUESTION_CAP, REFERENCE_ANSWERS, \
     MAX_QUESTION, QaBridge, _clean_question, answer_questions, publish_questions, qa_room, question_flaw, write_questions
 from ai.memory import MoocAnswerMemory
 
@@ -1468,13 +1468,18 @@ class Studia:
             counts = {}
         counts = counts if isinstance(counts, dict) else {}
         number = lambda value: value if isinstance(value, (int, float)) else 0
-        room, why = {}, {}
-        for kind, valid, cap, daily, word in (("ask", counts.get("questions"), QUESTION_CAP, DAILY_QUESTIONS, "问"),
-                                              ("answer", counts.get("answers"), ANSWER_CAP, DAILY_ANSWERS, "答")):
-            room[kind] = qa_room(number(valid), posted[kind], cap, daily)
-            why[kind] = (("提问数量分已达上限（含今日待统计）；有效提问获得 5 个有效回答仍可加分"
-                          if kind == "ask" else "回答数量分已达上限（含今日待统计）") if number(valid) + posted[kind] >= cap
-                         else "今天%s满了，明天再来" % word)
+        valid_questions = number(counts.get("questions"))
+        valid_answers = number(counts.get("answers"))
+        room = {
+            "ask": qa_room(valid_questions, posted["ask"], QUESTION_CAP, DAILY_QUESTIONS),
+            "answer": qa_room(valid_answers, posted["answer"], ANSWER_CAP, DAILY_ANSWERS, after_cap=DAILY_ANSWERS_FULL),
+        }
+        why = {
+            "ask": ("提问数量分已达上限（含今日待统计）；有效提问获得 5 个有效回答仍可加分"
+                    if valid_questions + posted["ask"] >= QUESTION_CAP else "今天问满了，明天再来"),
+            "answer": ("回答数量分已满，今天额外 %d 条已答满，明天再来" % DAILY_ANSWERS_FULL
+                       if valid_answers >= ANSWER_CAP else "今天答满了，明天再来"),
+        }
         return dict(room, posted=posted, why=why)
 
     def qa_draft(self, pid, body):

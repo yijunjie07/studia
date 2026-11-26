@@ -207,13 +207,26 @@ class WebQaTest(unittest.TestCase):
     def test_caps_explain_that_only_the_quantity_scores_are_full(self):
         self.app.platforms["zhs"].client.score_earned.return_value = {"qa": {"questions": 10, "answers": 20, "received": 31}}
         room = self.app.qa_posts("zhs", "shared-1000091138")["room"]
-        self.assertEqual((room["ask"], room["answer"]), (0, 0))
+        self.assertEqual((room["ask"], room["answer"]), (0, 5))
         self.assertIn("提问数量分", room["why"]["ask"])
         self.assertIn("有效回答", room["why"]["ask"])
         self.assertIn("回答数量分", room["why"]["answer"])
         with self.assertRaises(HttpError) as refused:
             self.app.start_job({"platform": "zhs", "course": "shared-1000091138", "type": "ask", "texts": [DRAFT]})
         self.assertIn("提问数量分", str(refused.exception))
+        # Once 5 answers are posted today after reaching full score, answering stops until tomorrow.
+        for n in range(5):
+            self.app._record_post(1000091138, "answer", "q", "a", 100 + n)
+        room_done = self.app.qa_posts("zhs", "shared-1000091138")["room"]
+        self.assertEqual(room_done["answer"], 0)
+        with self.assertRaises(HttpError) as refused_qa:
+            self.app.start_job({"platform": "zhs", "course": "shared-1000091138", "type": "qa", "limit": 1})
+        self.assertIn("明天再来", str(refused_qa.exception))
+
+    def test_answers_before_full_allow_10_daily_without_stopping_at_20(self):
+        self.app.platforms["zhs"].client.score_earned.return_value = {"qa": {"questions": 0, "answers": 18}}
+        room = self.app.qa_posts("zhs", "shared-1000091138")["room"]
+        self.assertEqual(room["answer"], 10)
 
     def test_drafting_waits_for_slow_models_without_testing_first(self):
         config = Mock(timeout=120, api_format="chat_completions")
