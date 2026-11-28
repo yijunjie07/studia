@@ -18,6 +18,7 @@ from zhs.api import (
     WatchPoints,
     encode_ev,
 )
+from zhs.rules import ai_resource_pair, resolve_zhs_ai_rule, resolve_zhs_course_rule
 
 
 def _to_int(value, default=0):
@@ -90,15 +91,24 @@ def shared_context(client, row, log):
 def course_units(client, row):
     """Chapters with their videos/resources and how far each one is, without studying."""
     kind = (row.get("zhs") or {}).get("kind")
-    if kind == "ai":
-        return [{"name": point.get("knowledgeName") or point.get("name") or "知识点", "units": [{
-            "id": _resource_key(item),
-            "name": (item.get("resourcesDetail") or {}).get("resourcesName") or item.get("resourcesName") or "资源",
-            "kind": "video" if ZHSHandler._is_video(item.get("resourcesDetail") or {}, item) else "doc",
-            "state": "done" if _to_int(item.get("studyStatus")) == 1 else "queued",
-        } for item in items]} for point, items in ai_groups(client, row)]
-    if kind != "shared":
+    if resolve_zhs_course_rule(kind) is None:
         return []
+    if kind == "ai":
+        chapters = []
+        for point, items in ai_groups(client, row):
+            units = []
+            for item in items:
+                detail = item.get("resourcesDetail") or {}
+                rule = resolve_zhs_ai_rule(detail, item)
+                units.append({
+                    "id": _resource_key(item),
+                    "name": detail.get("resourcesName") or item.get("resourcesName") or "资源",
+                    "kind": rule.unit_kind,
+                    "state": "done" if _to_int(item.get("studyStatus")) == 1 else
+                             "skipped" if rule.action == "unsupported" else "queued",
+                })
+            chapters.append({"name": point.get("knowledgeName") or point.get("name") or "知识点", "units": units})
+        return chapters
     prepared = shared_context(client, row, Logger(__name__).get_log())
     chapters = {}
     for video in prepared[1] if prepared else ():
@@ -141,14 +151,12 @@ class ZHSHandler:
             self.progress.detail(name)
             try:
                 kind = (row.get("zhs") or {}).get("kind")
-                if self.review_seconds:
-                    status = self.review_shared(row) if kind == "shared" else "skipped"
-                elif kind == "shared":
-                    status = self.study_shared(row)
-                elif kind == "ai":
-                    status = self.study_ai(row)
-                else:
+                course_rule = resolve_zhs_course_rule(kind)
+                if course_rule is None:
                     status = "skipped"
+                else:
+                    method_name = course_rule.review_method if self.review_seconds else course_rule.study_method
+                    status = getattr(self, method_name)(row) if method_name else "skipped"
             except (CaptchaRequired, StudyTimeLimit) as error:
                 self.log.warning("%s：%s；后续课程未执行", name, error)
                 self.progress.result(name, "waiting")
@@ -549,8 +557,10 @@ class ZHSHandler:
         self.progress.resources(f"{course} · 读取资源 · 成功 0 · 跳过 0 · 失败 0", 0, total)
         success = skipped = failed = 0
         # Instant resources first so visible progress is not stuck behind long videos.
-        ordered = sorted(((point, item) for point, items in groups for item in items),
-                         key=lambda pair: self._is_video(pair[1].get("resourcesDetail") or {}, pair[1]))
+        ordered = sorted(
+            ((point, item) for point, items in groups for item in items),
+            key=lambda pair: resolve_zhs_ai_rule(pair[1].get("resourcesDetail") or {}, pair[1]).action == "play_video",
+        )
         for point, item in ordered:
             if self.cancel_event.is_set():
                 raise KeyboardInterrupt
@@ -558,13 +568,25 @@ class ZHSHandler:
             name = detail.get("resourcesName") or item.get("resourcesName") or "资源"
             self.progress.detail(f"{course} · {name}")
             key = _resource_key(item)
+            rule = resolve_zhs_ai_rule(detail, item)
             if _to_int(item.get("studyStatus")) == 1:
                 skipped += 1
+            elif rule.action == "unsupported":
+                skipped += 1
+                self.progress.unit(key, name, "skipped")
+                rt, rdt = ai_resource_pair(detail, item)
+                meta = dict(item, **detail) if isinstance(detail, dict) else dict(item)
+                self.log.warning(
+                    "智慧树 · %s · %s：跳过未支持资源类型（%s/%s）· 资源字段：%s",
+                    course, name, rt, rdt,
+                    summarize_fields(meta, keys=("resourcesType", "resourcesDistributeType",
+                                                 "resourcesUid", "resourcesFileId", "studyStatus")),
+                )
             else:
                 self.progress.unit(key, name, "running")
                 self.sleep(self.rng.uniform(0.2, 2))
                 try:
-                    if self._is_video(detail, item):
+                    if rule.action == "play_video":
                         self.play_ai(
                             course_id, class_id, point["knowledgeId"],
                             detail["resourcesFileId"], _to_int(item.get("schedule")),
@@ -607,11 +629,7 @@ class ZHSHandler:
 
     @staticmethod
     def _is_video(detail, item):
-        pair = (
-            _to_int(detail.get("resourcesType", item.get("resourcesType"))),
-            _to_int(detail.get("resourcesDistributeType", item.get("resourcesDistributeType"))),
-        )
-        return pair in ((1, 3), (2, 2))
+        return resolve_zhs_ai_rule(detail, item).action == "play_video"
 
     def play_ai(self, course_id, class_id, knowledge_id, file_id, schedule,
                 course="", name=""):
