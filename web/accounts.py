@@ -27,6 +27,7 @@ SESSION_TTL = 7 * 86400
 INVITE_TTL = 7 * 86400
 RESET_TTL = 30 * 60
 ISSUE_REPORT_STATUSES = ("open", "resolved", "ignored")
+ISSUE_REPORT_SOURCES = ("auto", "manual")
 MAX_REPORT_REPORTERS = 50
 
 
@@ -101,6 +102,7 @@ class Accounts:
             job_kind TEXT NOT NULL,
             headline TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'open',
+            source TEXT NOT NULL DEFAULT 'manual',
             report_count INTEGER NOT NULL DEFAULT 1,
             reporters_json TEXT NOT NULL DEFAULT '[]',
             payload_json TEXT NOT NULL,
@@ -128,6 +130,9 @@ class Accounts:
                 # Verified by a mailed code; needed to change a password and to reset a forgotten one.
                 self.db.execute("ALTER TABLE users ADD COLUMN email TEXT")
             self.db.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users (email COLLATE NOCASE)")
+            report_cols = {row[1] for row in self.db.execute("PRAGMA table_info(issue_reports)")}
+            if "source" not in report_cols:
+                self.db.execute("ALTER TABLE issue_reports ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'")
         self._import_json()
 
     def _import_json(self):
@@ -482,14 +487,22 @@ class Accounts:
         reporters = cls._parse_json(row["reporters_json"], [])
         payload = cls._parse_json(row["payload_json"], {})
         distinct_uids = {entry.get("uid") or entry.get("username") for entry in reporters if isinstance(entry, dict)}
+        manual_uids = {
+            entry.get("uid") or entry.get("username")
+            for entry in reporters
+            if isinstance(entry, dict) and (entry.get("source") or "manual") == "manual"
+        }
         public_reporters = [
             {
                 "username": str(entry.get("username") or "成员"),
                 "at": entry.get("at"),
                 "note": str(entry.get("note") or ""),
+                "source": str(entry.get("source") or "manual"),
             }
             for entry in reporters if isinstance(entry, dict)
         ]
+        raw_source = row["source"] if "source" in row.keys() else None
+        source = raw_source if raw_source in ISSUE_REPORT_SOURCES else ("manual" if manual_uids else "auto")
         return {
             "id": row["id"],
             "fingerprint": row["fingerprint"],
@@ -501,6 +514,8 @@ class Accounts:
             "job_kind": row["job_kind"],
             "headline": row["headline"],
             "status": row["status"],
+            "source": source,
+            "manual_count": len(manual_uids),
             "report_count": int(row["report_count"] or 1),
             "reporter_count": max(1, len(distinct_uids)),
             "reporters": public_reporters,
@@ -509,10 +524,11 @@ class Accounts:
             "updated": row["updated"],
         }
 
-    def submit_issue_report(self, check, *, uid, username, note=""):
+    def submit_issue_report(self, check, *, uid, username, note="", source="manual"):
         """Upsert a sanitized course adaptation report grouped by its problem fingerprint."""
         if not isinstance(check, dict) or not check.get("fingerprint"):
             raise AccountError("上报内容无效")
+        source = source if source in ISSUE_REPORT_SOURCES else "manual"
         fingerprint = str(check["fingerprint"])[:64]
         platform = str(check.get("platform") or "")[:32]
         course_id = str(check.get("course_id") or "")[:128]
@@ -522,7 +538,7 @@ class Accounts:
         job_kind = str(check.get("job_kind") or "")[:32]
         job_id = str(check.get("job_id") or "")[:32]
         headline = str(check.get("headline") or "检测到未完成或跳过的课程内容")[:200]
-        clean_note = self._clean_note(note)
+        clean_note = self._clean_note(note) if source == "manual" else ""
         now = time.time()
         payload_json = json.dumps(check, ensure_ascii=False)
         entry = {
@@ -531,6 +547,7 @@ class Accounts:
             "job_id": job_id,
             "at": now,
             "note": clean_note,
+            "source": source,
         }
 
         with self.transaction():
@@ -541,11 +558,11 @@ class Accounts:
                 report_id = secrets.token_hex(8)
                 self.db.execute(
                     "INSERT INTO issue_reports (id, fingerprint, platform, course_id, course_name, "
-                    "course_type, course_kind, job_kind, headline, status, report_count, "
-                    "reporters_json, payload_json, created, updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "course_type, course_kind, job_kind, headline, status, source, report_count, "
+                    "reporters_json, payload_json, created, updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         report_id, fingerprint, platform, course_id, course_name, course_type,
-                        course_kind, job_kind, headline, "open", 1,
+                        course_kind, job_kind, headline, "open", source, 1,
                         json.dumps([entry], ensure_ascii=False), payload_json, now, now,
                     ),
                 )
@@ -556,6 +573,7 @@ class Accounts:
                     "report_count": 1,
                     "reporter_count": 1,
                     "status": "open",
+                    "source": source,
                 }
 
             reporters = [r for r in self._parse_json(existing["reporters_json"], []) if isinstance(r, dict)]
@@ -567,25 +585,51 @@ class Accounts:
             )
             report_count = int(existing["report_count"] or 1)
             status = existing["status"]
+            row_source = existing["source"] if existing["source"] in ISSUE_REPORT_SOURCES else "manual"
             if dup is not None:
-                if clean_note:
-                    dup["note"] = clean_note
+                dup_source = dup.get("source") or "manual"
+                if source == "manual" and dup_source == "auto":
+                    dup["source"] = "manual"
                     dup["at"] = now
-                already_reported = True
+                    if clean_note:
+                        dup["note"] = clean_note
+                    reporters.remove(dup)
+                    reporters.insert(0, dup)
+                    row_source = "manual"
+                    if status == "resolved":
+                        status = "open"
+                    already_reported = False
+                else:
+                    if source == "manual" and clean_note:
+                        dup["note"] = clean_note
+                        dup["at"] = now
+                    already_reported = True
             else:
-                reporters.insert(0, entry)
-                del reporters[MAX_REPORT_REPORTERS:]
                 report_count += 1
                 already_reported = False
                 if status == "resolved":
                     status = "open"
+                if source == "manual":
+                    row_source = "manual"
+                    reporters.insert(0, entry)
+                    del reporters[MAX_REPORT_REPORTERS:]
+                else:
+                    # Keep at most one auto-detected row per user so retries increment hit counts without flooding.
+                    prior_auto = next(
+                        (r for r in reporters if r.get("uid") == entry["uid"] and r.get("source") == "auto"),
+                        None,
+                    )
+                    if prior_auto is not None:
+                        reporters.remove(prior_auto)
+                    reporters.insert(0, entry)
+                    del reporters[MAX_REPORT_REPORTERS:]
             distinct_uids = {r.get("uid") or r.get("username") for r in reporters}
             self.db.execute(
                 "UPDATE issue_reports SET course_name = ?, course_type = ?, course_kind = ?, "
-                "headline = ?, status = ?, report_count = ?, reporters_json = ?, payload_json = ?, updated = ? "
+                "headline = ?, status = ?, source = ?, report_count = ?, reporters_json = ?, payload_json = ?, updated = ? "
                 "WHERE id = ?",
                 (
-                    course_name, course_type, course_kind, headline, status, report_count,
+                    course_name, course_type, course_kind, headline, status, row_source, report_count,
                     json.dumps(reporters, ensure_ascii=False), payload_json, now, existing["id"],
                 ),
             )
@@ -596,6 +640,7 @@ class Accounts:
                 "report_count": report_count,
                 "reporter_count": max(1, len(distinct_uids)),
                 "status": status,
+                "source": row_source,
             }
 
     def issue_reports(self):
@@ -603,7 +648,13 @@ class Accounts:
             rows = self.db.execute("SELECT * FROM issue_reports ORDER BY updated DESC").fetchall()
         items = [self._report_public(row) for row in rows]
         rank = {"open": 0, "resolved": 1, "ignored": 2}
-        items.sort(key=lambda r: (rank.get(r["status"], 3), -r["reporter_count"], -r["report_count"], -float(r["updated"] or 0)))
+        items.sort(key=lambda r: (
+            rank.get(r["status"], 3),
+            -r["reporter_count"],
+            0 if r["source"] == "manual" else 1,
+            -r["report_count"],
+            -float(r["updated"] or 0),
+        ))
         return items
 
     def set_issue_report_status(self, report_id, status):

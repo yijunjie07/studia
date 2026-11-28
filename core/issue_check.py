@@ -229,3 +229,97 @@ def format_issue_markdown(check, *, note=""):
             prefix = "[%s] " % row["time"] if row.get("time") else ""
             lines.append("- %s%s" % (prefix, row.get("text") or ""))
     return "\n".join(lines)
+
+
+def summarize_issue_gaps(reports, *, limit=8):
+    """Aggregate open adaptation reports across courses by (platform, code, kind) to surface top gaps."""
+    groups = {}
+    for report in reports or ():
+        if not isinstance(report, dict) or report.get("status") != "open":
+            continue
+        platform = str(report.get("platform") or "")
+        payload = report.get("payload") if isinstance(report.get("payload"), dict) else {}
+        items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        if not items:
+            continue
+        course_key = (platform, str(report.get("course_id") or report.get("course_name") or ""))
+        course_name = str(report.get("course_name") or "未知课程")
+        updated = float(report.get("updated") or 0)
+        hit_count = int(report.get("report_count") or 1)
+        reporter_count = int(report.get("reporter_count") or 1)
+        is_manual = (report.get("source") or "manual") == "manual"
+        usernames = {
+            str(u.get("username") or "").strip()
+            for u in (report.get("reporters") or ())
+            if isinstance(u, dict) and str(u.get("username") or "").strip()
+        }
+
+        seen_keys = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get("code") or "job_error")
+            kind = str(item.get("kind") or "")
+            gap_key = "%s|%s|%s" % (platform, code, kind)
+            if gap_key in seen_keys:
+                continue
+            seen_keys.add(gap_key)
+            default_label, default_bucket = FINDING_META.get(code, ("未完成项", "failed"))
+            bucket = str(item.get("bucket") or default_bucket)
+            label = str(item.get("label") or default_label)
+            group = groups.get(gap_key)
+            if group is None:
+                group = {
+                    "key": gap_key,
+                    "platform": platform,
+                    "platform_name": PLATFORM_NAMES.get(platform, platform or "未知平台"),
+                    "code": code,
+                    "bucket": bucket,
+                    "label": label,
+                    "kind": kind,
+                    "courses": set(),
+                    "users": set(),
+                    "max_reporter_count": 0,
+                    "report_count": 0,
+                    "hit_count": 0,
+                    "manual_count": 0,
+                    "auto_count": 0,
+                    "latest": 0.0,
+                    "sample_course": course_name,
+                }
+                groups[gap_key] = group
+            group["courses"].add(course_key)
+            group["users"].update(usernames)
+            group["max_reporter_count"] = max(group["max_reporter_count"], reporter_count)
+            group["report_count"] += 1
+            group["hit_count"] += hit_count
+            if is_manual:
+                group["manual_count"] += 1
+            else:
+                group["auto_count"] += 1
+            if updated >= group["latest"]:
+                group["latest"] = updated
+                group["sample_course"] = course_name
+
+    summary = []
+    for group in groups.values():
+        user_count = max(len(group["users"]), group["max_reporter_count"])
+        summary.append({
+            "key": group["key"],
+            "platform": group["platform"],
+            "platform_name": group["platform_name"],
+            "code": group["code"],
+            "bucket": group["bucket"],
+            "label": group["label"],
+            "kind": group["kind"],
+            "course_count": len(group["courses"]),
+            "report_count": group["report_count"],
+            "user_count": user_count,
+            "hit_count": group["hit_count"],
+            "manual_count": group["manual_count"],
+            "auto_count": group["auto_count"],
+            "latest": group["latest"],
+            "sample_course": group["sample_course"],
+        })
+    summary.sort(key=lambda g: (-g["user_count"], -g["course_count"], -g["hit_count"], -g["latest"]))
+    return summary[:limit] if limit else summary
