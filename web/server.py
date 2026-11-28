@@ -2035,7 +2035,11 @@ def make_handler(access):
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
             for key, value in headers.items():
-                self.send_header(key, value)
+                if isinstance(value, (list, tuple)):
+                    for item in value:
+                        self.send_header(key, item)
+                else:
+                    self.send_header(key, value)
             self.end_headers()
             self.wfile.write(data)
 

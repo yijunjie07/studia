@@ -5,8 +5,9 @@ const BUILD = new URL(import.meta.url).searchParams.get("v");
 // A mailed password link: /#/reset/<token>. The token stays in the fragment, so it never reaches a server log.
 const RESET = location.hash.match(/^#\/reset\/([\w-]+)$/)?.[1] || "";
 const TOKEN = params.get("t") || sessionStorage.getItem("studia-token") || "";
-if (params.get("t")) {
-  sessionStorage.setItem("studia-token", TOKEN);
+const OAUTH_NOTICE = params.get("oauth") || "";
+if (params.get("t") || OAUTH_NOTICE) {
+  if (params.get("t")) sessionStorage.setItem("studia-token", TOKEN);
   history.replaceState(null, "", location.pathname + (MOCK ? "?mock" : "") + location.hash);
 }
 
@@ -43,6 +44,7 @@ const ICON = {
   moon: svg('<path d="M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5z"/>', 15),
   sun: svg('<circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M3.4 12.6l1-1M11.6 4.4l1-1"/>', 15),
   logout: svg('<path d="M6.5 2.5h-3v11h3M10 5l3 3-3 3M13 8H6"/>', 15),
+  user: svg('<circle cx="8" cy="5.5" r="2.7"/><path d="M3 13.5c.8-2.6 2.8-3.8 5-3.8s4.2 1.2 5 3.8"/>', 15),
   key: svg('<circle cx="5.5" cy="10.5" r="3"/><path d="m7.6 8.4 5.9-5.9M11 5l1.5 1.5"/>', 15),
   shield: svg('<path d="M8 1.8 13 3.6v4c0 3.2-2.1 5.4-5 6.6-2.9-1.2-5-3.4-5-6.6v-4z"/>', 15),
   login: svg('<path d="M9.5 2.5h3v11h-3M3 8h7M7.5 5l3 3-3 3"/>', 15),
@@ -70,7 +72,7 @@ ICON.paused = ICON.stopped;
 
 // local: one person, token from the terminal URL; hosted: cookie session + CSRF header.
 // register: who may sign up ({open, invite, email}), from /api/mode; null before it answers or on a local server.
-const session = { mode: "local", user: null, csrf: "", register: null };
+const session = { mode: "local", user: null, csrf: "", register: null, oauth: null };
 let mockModule = null;
 async function api(path, { method = "GET", body } = {}) {
   if (MOCK) {
@@ -364,10 +366,11 @@ function renderSidebar() {
   const role = me ? (me.role === "admin" ? "管理员" : "成员") : "只有这台电脑能访问";
   const admin = me?.role === "admin";
   const under = (...prefixes) => prefixes.some((x) => view.startsWith(x));
-  patch($(".side_foot"), `<button class="me" data-me aria-haspopup="menu" aria-expanded="${state.meOpen}" aria-current="${under("#/me", "#/settings", "#/admin")}">
+  patch($(".side_foot"), `<button class="me" data-me aria-haspopup="menu" aria-expanded="${state.meOpen}" aria-current="${under("#/me", "#/profile", "#/settings", "#/admin")}">
       <span class="avatar">${esc(initial)}</span><span class="who"><b>${esc(name)}</b><small>${role}</small></span>
       <span class="chev">${ICON.updown}</span></button>
     ${state.meOpen ? `<div class="menu me_menu" role="menu">
+      ${me ? `<button class="menu_row" role="menuitem" data-go="#/profile">${ICON.user}<span class="grow">个人资料</span></button>` : ""}
       <button class="menu_row" role="menuitem" data-go="#/settings">${ICON.gear}<span class="grow">设置</span><span class="kbd">⌘,</span></button>
       ${admin ? `<button class="menu_row" role="menuitem" data-go="#/admin">${ICON.shield}<span class="grow">管理后台</span></button>` : ""}
       <div class="psep"></div>
@@ -377,14 +380,14 @@ function renderSidebar() {
 
   // Phones: three tabs at the bottom; a page one level down (a course, a settings tab) gets a back
   // button in the top bar instead of the logo. The platform switch only sits on the overview.
-  const back = under("#/course") ? ["#/home", "课程"] : under("#/settings", "#/admin") ? ["#/me", "我的"] : null;
+  const back = under("#/course") ? ["#/home", "课程"] : under("#/profile", "#/settings", "#/admin") ? ["#/me", "我的"] : null;
   patch($(".mbar"), back ? `<button class="mback" data-go="${back[0]}">${ICON.back}<span>${back[1]}</span></button><span class="grow"></span>`
     : `<img class="mark" src="icon.svg" alt=""><b>Studia</b><span class="grow"></span>${under("#/home", "#/login") ? platforms : ""}`);
   const jobsBadge = state.jobs.length + (admin ? siteCount() : 0);
   patch($(".mtabs"), `
     <button class="mtab" data-go="#/home" aria-current="${under("#/home", "#/course", "#/login")}">${ICON.cells}<span>课程</span></button>
     <button class="mtab" data-go="#/jobs" aria-current="${view === "#/jobs"}">${ICON.pulse}<span>任务</span>${jobsBadge ? `<b class="badge">${jobsBadge}</b>` : ""}</button>
-    <button class="mtab" data-go="#/me" aria-current="${under("#/me", "#/settings", "#/admin")}"><span class="avatar">${esc(initial)}</span><span>我的</span></button>`);
+    <button class="mtab" data-go="#/me" aria-current="${under("#/me", "#/profile", "#/settings", "#/admin")}"><span class="avatar">${esc(initial)}</span><span>我的</span></button>`);
   placeInk();
 }
 // The account menu fades down before it is gone; a second close while it fades does nothing.
@@ -731,7 +734,7 @@ document.addEventListener("mouseover", (event) => {
 
 /* ---------------------------------------------------------------- views */
 
-const ADMIN_TABS = [["people", "用户"], ["invites", "邀请码"], ["site", "站点"], ["logs", "日志"]];
+const ADMIN_TABS = [["people", "用户"], ["invites", "邀请码"], ["oauth", "OAuth"], ["site", "站点"], ["logs", "日志"]];
 /* 用户 and 邀请码 grow with the site, so each is a list that pages, filters and searches. What a list is
    showing stays while the console is open; the page size is remembered in the browser. */
 const PAGE_SIZES = [10, 20, 50, 100];
@@ -795,7 +798,7 @@ function pagerHtml(kind, total, unit) {
       <span class="mono">${list.page} / ${pages}</span>
       <button class="btn small" data-list-page="${list.page + 1}" ${list.page >= pages ? "disabled" : ""}>下一页</button></span></div>`;
 }
-const SETTINGS_TABS = [["account", "账号"], ["models", "AI 模型"], ["study", "偏好"]];
+const SETTINGS_TABS = [["account", "平台账号"], ["models", "AI 模型"], ["study", "偏好"]];
 function pageHead(title, sub, base, tabs, active) {
   return `<h1 class="title">${title}</h1>${sub ? `<p class="sub">${sub}</p>` : ""}
     <div class="tabs" role="tablist">${tabs.map(([k, label]) => `<button class="tab" role="tab" aria-selected="${k === active}" data-go="${base}/${k}">${label}</button>`).join("")}</div>`;
@@ -971,7 +974,7 @@ const VIEWS = {
         quiet = false;
       }
     }
-    const need = { people: ["users"], invites: ["invites", "users"], site: ["settings", "memory"], logs: [] }[tab];
+    const need = { people: ["users"], invites: ["invites", "users"], oauth: ["settings"], site: ["settings", "memory"], logs: [] }[tab];
     let data;
     // "local": the same lists drawn again (a search, a filter, another page), without reading them again.
     if (refresh === "local" && adminData?.tab === tab) data = adminData.data;
@@ -997,19 +1000,19 @@ const VIEWS = {
         ["jobs", "任务", [["running", "学习中", running], ["queued", "排队中", queued],
           ["paused", "已暂停", (u) => u.jobs?.length > 0 && !running(u) && !queued(u)], ["none", "没有任务", (u) => !u.jobs?.length]]],
       ];
-      const found = users.filter((u) => !q || `${u.username} ${u.email || ""}`.toLowerCase().includes(q))
+      const found = users.filter((u) => !q || `${u.username} ${u.email || ""} ${u.linuxdo?.username || ""}`.toLowerCase().includes(q))
         .sort((a, b) => rank(a) - rank(b) || seen(b) - seen(a));
       const { rows, counts } = facetFilter("people", found, FACETS);
       const userRow = (u) => `<div class="model user_row ${state.adminOpen === u.id ? "open" : ""}" data-key="${esc(u.id)}" data-user-row="${esc(u.id)}">
             <span class="avatar big">${esc(u.username.slice(0, 1).toUpperCase())}</span>
-            <span class="m1"><b>${esc(u.username)}</b>${u.role === "admin" ? '<span class="pill blue">管理员</span>' : ""}${u.disabled ? '<span class="pill red">已停用</span>' : ""}${u.max_jobs ? `<span class="pill">同时 ${u.max_jobs} 个</span>` : ""}
-            <small class="sans">${u.jobs?.some((j) => j.state === "running") ? "学习中" : u.jobs?.some((j) => j.state === "queued") ? "排队中" : u.jobs?.length ? "已暂停" : u.last_login ? `上次在线 ${ago(u.last_login)}` : "还没登录过"}${u.email ? ` · ${esc(u.email)}` : ""}</small></span>
+            <span class="m1"><b>${esc(u.username)}</b>${u.role === "admin" ? '<span class="pill blue">管理员</span>' : ""}${u.linuxdo ? '<span class="pill">Linux DO</span>' : ""}${u.disabled ? '<span class="pill red">已停用</span>' : ""}${u.max_jobs ? `<span class="pill">同时 ${u.max_jobs} 个</span>` : ""}
+            <small class="sans">${u.jobs?.some((j) => j.state === "running") ? "学习中" : u.jobs?.some((j) => j.state === "queued") ? "排队中" : u.jobs?.length ? "已暂停" : u.last_login ? `上次在线 ${ago(u.last_login)}` : "还没登录过"}${u.email ? ` · ${esc(u.email)}` : ""}${u.linuxdo ? ` · Linux DO @${esc(u.linuxdo.username || u.linuxdo.id)}${u.linuxdo.trust_level != null ? ` (${u.linuxdo.trust_level} 级)` : ""}` : ""}</small></span>
             <button class="btn small row_more" data-user-more="${esc(u.id)}" aria-expanded="${state.adminOpen === u.id}">管理</button>
             <span class="row_btns">${u.jobs?.length ? `<button class="btn small danger" data-stop-user="${u.id}" data-confirm="确认全部停止">停止全部任务</button>` : ""}
               <button class="btn small" data-row-edit="limit" data-uid="${u.id}">任务上限</button>
-              <button class="btn small" data-row-edit="password" data-uid="${u.id}">重置密码</button>
+              <button class="btn small" data-row-edit="password" data-uid="${u.id}">${u.has_password === false ? "设置密码" : "重置密码"}</button>
               ${u.id === session.user.id ? "" : u.disabled ? `<button class="btn small" data-enable="${u.id}">启用</button>` : `<button class="btn small danger" data-disable="${u.id}" data-confirm="确认停用">停用</button>`}</span></div>`;
-      body = `${listTools("people", "搜索用户名或邮箱", FACETS, counts)}
+      body = `${listTools("people", "搜索用户名、邮箱或 Linux DO", FACETS, counts)}
         <div class="models">${pageOf("people", rows).map(userRow).join("")
           || `<div class="model plain"><span class="m1"><small class="sans">${users.length ? "没有符合条件的用户" : "还没有用户"}</small></span></div>`}</div>
         ${pagerHtml("people", rows.length, "人")}`;
@@ -1033,6 +1036,33 @@ const VIEWS = {
         <div class="models">${pageOf("invites", rows).map(inviteRow).join("")
           || `<div class="model plain"><span class="m1"><small class="sans">${invites.length ? "没有符合条件的邀请码" : "还没有邀请码"}</small></span></div>`}</div>
         ${pagerHtml("invites", rows.length, "个")}`;
+    } else if (tab === "oauth") {
+      const oauth = data.settings.oauth || {
+        enabled: false,
+        callback_url: `${location.origin}/auth/linuxdo/callback`,
+        icon_url: `${location.origin}/icon-512.png`,
+        linuxdo: null,
+      };
+      const ld = oauth.linuxdo;
+      const oauthChoice = (value, label, attrs = "") =>
+        `<button class="btn small" data-oauth-enabled="${value ? 1 : 0}" aria-pressed="${Boolean(oauth.enabled) === value}" ${attrs}>${label}</button>`;
+      const ldRow = ld
+        ? `<div class="model plain"><span class="m1"><b>Linux DO</b><span class="pill blue">已配置</span>
+            <small>Client ID：${esc(ld.client_id)} · Secret：${esc(ld.secret_hint)}</small></span>
+          <span class="row_btns"><button class="btn small" data-linuxdo-edit>编辑</button>
+            <button class="btn small danger" data-linuxdo-clear data-confirm="确认清除">清除</button></span></div>`
+        : `<div class="model plain"><span class="m1"><b>Linux DO</b><small class="sans">未配置 · 在 connect.linux.do/dash/sso 创建应用后填写凭证</small></span>
+          <span class="row_btns"><button class="btn small primary" data-linuxdo-edit>配置</button></span></div>`;
+      body = `<div class="section"><h2>OAuth 总开关</h2></div>
+        <div class="models"><div class="model plain stepper_row"><span class="m1"><b>允许 OAuth 登录</b>
+          <small class="sans">${!ld ? "先配置下方 Linux DO 应用" : oauth.enabled ? "独立于站点注册规则，首次登录自动创建账号" : "已关闭，登录页不显示第三方登录入口"}</small></span>
+          <span class="row_btns">${oauthChoice(false, "关闭")}${oauthChoice(true, "开启", ld ? "" : "disabled")}</span></div></div>
+        <div class="section"><h2>Linux DO Connect</h2><span class="aside">connect.linux.do</span></div>
+        <div class="models">${ldRow}
+          <div class="model plain"><span class="m1"><b>回调地址</b><small>${esc(oauth.callback_url)}</small></span>
+            <span class="row_btns"><button class="btn small" data-copy="${esc(oauth.callback_url)}">复制</button></span></div>
+          <div class="model plain"><span class="m1"><b>应用图标</b><small>${esc(oauth.icon_url)}</small></span>
+            <span class="row_btns"><button class="btn small" data-copy="${esc(oauth.icon_url)}">复制</button></span></div></div>`;
     } else if (tab === "site") {
       const settings = data.settings;
       const current = settings.default_model;
@@ -1117,6 +1147,28 @@ const VIEWS = {
       if (state.view === "#/admin" && state.adminTab === tab) VIEWS.admin(true, tab);
     }));
     on("[data-smtp-clear]", () => { session.mail = false; act("/api/admin/settings", { smtp: null }, "已清除邮件服务"); });
+    on("[data-oauth-enabled]", async (el) => {
+      if (el.getAttribute("aria-pressed") === "true") return;
+      const enabled = el.dataset.oauthEnabled === "1";
+      try {
+        const res = await api("/api/admin/settings", { method: "POST", body: { oauth: { enabled } } });
+        session.oauth = { enabled: Boolean(res.oauth?.enabled), linuxdo: Boolean(res.oauth?.enabled && res.oauth?.linuxdo) };
+        toast(enabled ? "已开启 OAuth 登录" : "已关闭 OAuth 登录");
+        VIEWS.admin(true, tab);
+      } catch (e) { toast(e.message); }
+    });
+    on("[data-linuxdo-edit]", () => openLinuxdoModal(data.settings.oauth, (res) => {
+      session.oauth = { enabled: Boolean(res.oauth?.enabled), linuxdo: Boolean(res.oauth?.enabled && res.oauth?.linuxdo) };
+      if (state.view === "#/admin" && state.adminTab === tab) VIEWS.admin(true, tab);
+    }));
+    on("[data-linuxdo-clear]", async () => {
+      try {
+        const res = await api("/api/admin/settings", { method: "POST", body: { oauth: { linuxdo: null } } });
+        session.oauth = { enabled: Boolean(res.oauth?.enabled), linuxdo: Boolean(res.oauth?.enabled && res.oauth?.linuxdo) };
+        toast("已清除 Linux DO 配置");
+        VIEWS.admin(true, tab);
+      } catch (e) { toast(e.message); }
+    });
     on("[data-default-edit]", () => openDefaultModelModal(data.settings.default_model, () => {
       state.settings = null;
       if (state.view === "#/admin" && state.adminTab === tab) VIEWS.admin(true, tab);
@@ -1318,7 +1370,7 @@ const VIEWS = {
         `<span class="plat ${p.id}">${INITIAL[p.id]}</span>`, p.name, platformStatus(p),
         p.rescan || qaSoon(p) ? '<span class="lrow_go">扫码</span>' : p.logged_in ? ICON.chev : '<span class="lrow_go">登录</span>')).join("")}</div>
       <div class="section"><h2>设置</h2></div>
-      <div class="lrows">${row('data-go="#/settings/account"', ICON.key, "账号")}${row('data-go="#/settings/models"', ICON.spark, "AI 模型")}
+      <div class="lrows">${me ? row('data-go="#/profile"', ICON.user, "个人资料") : ""}${row('data-go="#/settings/account"', ICON.key, "平台账号")}${row('data-go="#/settings/models"', ICON.spark, "AI 模型")}
         ${row('data-go="#/settings/study"', ICON.gear, "偏好")}${me?.role === "admin" ? row('data-go="#/admin"', ICON.shield, "管理后台") : ""}</div>
       <div class="lrows" style="margin-top:14px">${row("data-toggle-theme", ICON.moon, "夜读模式", "", '<span class="switch" aria-hidden="true"></span>')}</div>
       ${me ? '<button class="btn danger me_out" data-signout>退出 Studia</button>' : ""}`);
@@ -1354,25 +1406,63 @@ const VIEWS = {
     renderCourse(p, c, courseTab(c, tab), true);
   },
 
+  profile() {
+    const me = session.user;
+    if (!me) return go("#/settings");
+    const admin = me.role === "admin", hasPassword = me.has_password !== false, ld = me.linuxdo;
+    const nameRow = `<div class="model plain"><span class="account_who"><span class="avatar big">${esc(me.username.slice(0, 1).toUpperCase())}</span>
+          <span class="m1"><b>${esc(me.username)}</b><span class="pill ${admin ? "blue" : ""}">${admin ? "管理员" : "成员"}</span>
+          <small class="sans">${me.created ? `${new Date(me.created * 1000).toLocaleDateString()} 加入` : ""}</small></span></span>
+          <span class="row_btns"><button class="btn small" data-account-edit="username">修改用户名</button></span></div>`;
+    const linuxdoRow = (ld || session.oauth?.linuxdo) ? `<div class="model plain"><span class="m1"><b>Linux DO</b><small class="sans">${ld
+          ? `@${esc(ld.username || ld.id)}${ld.trust_level != null ? ` · ${ld.trust_level} 级` : ""}${hasPassword ? "" : " · 通过 Linux DO 登录"}`
+          : "未绑定 · 绑定后可用 Linux DO 一键登录"}</small></span>
+          <span class="row_btns">${ld
+            ? (hasPassword ? '<button class="btn small danger" data-linuxdo-unbind data-confirm="确认解绑">解绑</button>' : "")
+            : '<button class="btn small primary" data-linuxdo-bind>绑定</button>'}</span></div>` : "";
+    const emailRow = hasPassword ? `<div class="model plain"><span class="m1"><b>邮箱</b><small class="sans">${me.email ? esc(me.email)
+          : session.mail ? "未绑定" : "管理员未配置邮件服务"}</small></span>
+          <span class="row_btns">${session.mail ? `<button class="btn small ${me.email ? "" : "primary"}" data-account-edit="email">${me.email ? "更换" : "绑定邮箱"}</button>`
+            : admin ? '<button class="btn small" data-go="#/admin/site">去配置</button>' : ""}</span></div>` : "";
+    const passwordRow = hasPassword ? `<div class="model plain"><span class="m1"><b>密码</b><small class="sans">${me.email && session.mail
+          ? "通过邮箱重置链接修改密码" : "绑定邮箱并配置邮件服务后可修改"}</small></span>
+          <span class="row_btns"><button class="btn small" data-account-edit="password" ${me.email && session.mail ? "" : "disabled"}>修改密码</button></span></div>` : "";
+    setPage(`<h1 class="title">个人资料</h1>
+      <div class="models">${nameRow}${linuxdoRow}${emailRow}${passwordRow}</div>`);
+    page.querySelectorAll("[data-account-edit]").forEach((el) => (el.onclick = () => {
+      const kind = el.dataset.accountEdit;
+      if (kind === "username") openUsernameModal();
+      else if (kind === "email") openEmailModal();
+      else if (kind === "password") openPasswordModal();
+    }));
+    const bindBtn = $("[data-linuxdo-bind]", page);
+    if (bindBtn) bindBtn.onclick = async () => {
+      bindBtn.disabled = true;
+      bindBtn.textContent = "跳转中…";
+      try {
+        const { url } = await api("/api/auth/linuxdo/bind", { method: "POST" });
+        location.href = url;
+      } catch (e) {
+        toast(e.message);
+        bindBtn.disabled = false;
+        bindBtn.textContent = "绑定";
+      }
+    };
+    const unbindBtn = $("[data-linuxdo-unbind]", page);
+    if (unbindBtn) unbindBtn.onclick = async () => {
+      try {
+        ({ user: session.user } = await api("/api/auth/linuxdo/unbind", { method: "POST" }));
+        toast("已解绑 Linux DO");
+        VIEWS.profile();
+      } catch (e) { toast(e.message); }
+    };
+  },
+
   async settings(tab = SETTINGS_TABS[0][0]) {
     tab = SETTINGS_TABS.some(([k]) => k === tab) ? tab : SETTINGS_TABS[0][0];
     const head = settingsHead(tab, "");
     if (tab === "account") {
-      const me = session.user, admin = me?.role === "admin";
-      const nameRow = `<div class="model plain"><span class="account_who"><span class="avatar big">${esc(me?.username.slice(0, 1).toUpperCase())}</span>
-            <span class="m1"><b>${esc(me?.username)}</b><span class="pill ${admin ? "blue" : ""}">${admin ? "管理员" : "成员"}</span>
-            <small class="sans">${me?.created ? `${new Date(me.created * 1000).toLocaleDateString()} 加入` : ""}</small></span></span>
-            <span class="row_btns"><button class="btn small" data-account-edit="username">修改用户名</button></span></div>`;
-      const emailRow = `<div class="model plain"><span class="m1"><b>邮箱</b><small class="sans">${me?.email ? esc(me.email)
-            : session.mail ? "未绑定" : "管理员未配置邮件服务"}</small></span>
-            <span class="row_btns">${session.mail ? `<button class="btn small ${me?.email ? "" : "primary"}" data-account-edit="email">${me?.email ? "更换" : "绑定邮箱"}</button>`
-              : admin ? '<button class="btn small" data-go="#/admin/site">去配置</button>' : ""}</span></div>`;
-      const passwordRow = `<div class="model plain"><span class="m1"><b>密码</b><small class="sans">${me?.email && session.mail
-            ? "通过邮箱重置链接修改密码" : "绑定邮箱并配置邮件服务后可修改"}</small></span>
-            <span class="row_btns"><button class="btn small" data-account-edit="password" ${me?.email && session.mail ? "" : "disabled"}>修改密码</button></span></div>`;
-      const studia = me ? `<div class="section"><h2>Studia 账号</h2></div>
-        <div class="models">${nameRow}${emailRow}${passwordRow}</div>` : "";
-      setPage(`${head}${studia}<div class="section"><h2>平台账号</h2></div>
+      setPage(`${head}<div class="section"><h2>平台账号</h2></div>
         <div class="models">${state.platforms.map((p) => `<div class="model"><span class="plat ${p.id}">${INITIAL[p.id]}</span>
           <span class="m1"><b>${esc(p.name)}</b><small class="sans">${esc(platformStatus(p))} · ${p.login === "qr" ? "App 扫码登录" : "职教云浏览器授权"}</small></span><span></span>
           <span class="row_btns">${p.rescan || qaSoon(p) ? `<button class="btn small primary" data-go="${rescanLink(p)}">重新扫码</button>` : ""}${p.logged_in ? `<button class="btn small danger" data-logout="${p.id}" data-confirm="确认退出">退出</button>` : `<button class="btn small primary" data-go="#/login/${p.id}">登录</button>`}</span></div>`).join("")}</div>`);
@@ -1381,12 +1471,6 @@ const VIEWS = {
         await refreshState();
         toast("已退出登录");
         VIEWS.settings("account");
-      }));
-      page.querySelectorAll("[data-account-edit]").forEach((el) => (el.onclick = () => {
-        const kind = el.dataset.accountEdit;
-        if (kind === "username") openUsernameModal();
-        else if (kind === "email") openEmailModal();
-        else if (kind === "password") openPasswordModal();
       }));
       return;
     }
@@ -1474,7 +1558,7 @@ function openUsernameModal() {
       closeModal(dialog);
       renderSidebar();
       toast("用户名已修改");
-      VIEWS.settings("account");
+      if (state.view === "#/profile") VIEWS.profile();
     } catch (e) { msg.textContent = e.message; ok.disabled = false; ok.textContent = "保存"; }
   };
   dialog.showModal();
@@ -1495,7 +1579,7 @@ function openEmailModal() {
   dialog.addEventListener("cancel", (e) => { e.preventDefault(); closeModal(dialog); });
   dialog.addEventListener("close", () => dialog.remove());
   $("[data-cancel]", dialog).onclick = () => closeModal(dialog);
-  wireEmailForm($("form", dialog), () => { closeModal(dialog); toast("邮箱已绑定"); VIEWS.settings("account"); });
+  wireEmailForm($("form", dialog), () => { closeModal(dialog); toast("邮箱已绑定"); if (state.view === "#/profile") VIEWS.profile(); });
   dialog.showModal();
   if (!TOUCH) $("input", dialog)?.focus();
 }
@@ -1551,7 +1635,7 @@ function closeModal(dialog) {
 }
 function promptEmail() {
   const me = session.user, later = `studia-email-later:${me?.id}`;
-  if (session.mode !== "hosted" || !me || me.email || !session.mail || store.get(later, "") === new Date().toDateString()) return;
+  if (session.mode !== "hosted" || !me || me.email || me.has_password === false || !session.mail || store.get(later, "") === new Date().toDateString()) return;
   const dialog = document.createElement("dialog");
   dialog.className = "modal";
   dialog.setAttribute("aria-labelledby", "email-prompt");
@@ -1566,7 +1650,7 @@ function promptEmail() {
   dialog.addEventListener("close", () => dialog.remove());
   $("[data-skip]", dialog).onclick = () => closeModal(dialog);
   $("[data-later]", dialog).onclick = () => { store.set(later, new Date().toDateString()); closeModal(dialog); };
-  wireEmailForm($("form", dialog), () => { closeModal(dialog); toast("邮箱已绑定"); });
+  wireEmailForm($("form", dialog), () => { closeModal(dialog); toast("邮箱已绑定"); if (state.view === "#/profile") VIEWS.profile(); });
   dialog.showModal();
 }
 
@@ -1830,6 +1914,52 @@ function openSmtpModal(smtp, onDone) {
   if (!TOUCH) form.elements.host.focus();
 }
 
+function openLinuxdoModal(oauth, onDone) {
+  const saved = oauth?.linuxdo || null;
+  const dialog = document.createElement("dialog");
+  dialog.className = "modal model_modal";
+  dialog.setAttribute("aria-labelledby", "linuxdo-modal-title");
+  dialog.innerHTML = `<form data-linuxdo>
+      <h3 id="linuxdo-modal-title" tabindex="-1" autofocus>${saved ? "编辑 Linux DO" : "配置 Linux DO"}</h3>
+      <p class="sub">在 <b>connect.linux.do/dash/sso</b> 创建应用，将回调地址设为 <code>${esc(oauth?.callback_url || `${location.origin}/auth/linuxdo/callback`)}</code>，再填写凭证。</p>
+      <label class="auth_field"><span>Client ID</span>
+        <input class="mono_in" name="client_id" value="${esc(saved?.client_id || "")}" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
+      <label class="auth_field"><span>Client Secret</span>
+        <span class="pw"><input class="mono_in" name="client_secret" type="password" autocomplete="new-password" spellcheck="false">
+          <button type="button" class="pw_eye" data-reveal aria-label="显示密钥">显示</button></span></label>
+      <p class="form_msg" role="alert"></p>
+      <div class="modal_btns"><span class="grow"></span>
+        <button type="button" class="btn" data-cancel>取消</button>
+        <button class="btn primary">保存</button></div>
+    </form>`;
+  document.body.appendChild(dialog);
+  const form = $("form", dialog), msg = $(".form_msg", dialog), ok = $("button.primary", dialog);
+  const { client_id, client_secret } = form.elements;
+  const sameId = () => Boolean(saved && client_id.value.trim() === saved.client_id);
+  const secretRule = () => {
+    client_secret.required = !sameId();
+    client_secret.placeholder = !saved ? "应用密钥" : sameId() ? `留空不修改（${saved.secret_hint}）` : "更换 Client ID 时请重新填写";
+  };
+  wireReveal(dialog);
+  client_id.oninput = secretRule;
+  secretRule();
+  dialog.addEventListener("cancel", (e) => { e.preventDefault(); closeModal(dialog); });
+  dialog.addEventListener("close", () => dialog.remove());
+  $("[data-cancel]", dialog).onclick = () => closeModal(dialog);
+  form.oninput = () => (msg.textContent = "");
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    msg.textContent = "";
+    ok.disabled = true; ok.textContent = "保存中…";
+    try {
+      const res = await api("/api/admin/settings", { method: "POST", body: { oauth: { linuxdo: Object.fromEntries(new FormData(form)) } } });
+      closeModal(dialog); toast("已保存"); onDone(res);
+    } catch (e) { msg.textContent = e.message; ok.disabled = false; ok.textContent = "保存"; }
+  };
+  dialog.showModal();
+  if (!TOUCH) client_id.focus();
+}
+
 function openUserLimitModal(u, onDone) {
   const dialog = document.createElement("dialog");
   dialog.className = "modal";
@@ -1863,11 +1993,12 @@ function openUserLimitModal(u, onDone) {
 }
 
 function openUserPasswordModal(u, onDone) {
+  const first = u.has_password === false;
   const dialog = document.createElement("dialog");
   dialog.className = "modal";
   dialog.setAttribute("aria-labelledby", "user-pw-title");
   dialog.innerHTML = `<form novalidate>
-      <h3 id="user-pw-title" tabindex="-1" autofocus>重置成员密码</h3>
+      <h3 id="user-pw-title" tabindex="-1" autofocus>${first ? "设置成员密码" : "重置成员密码"}</h3>
       <p class="sub">为 <b>${esc(u.username)}</b> 设置新的登录密码（至少 8 位），保存后立即生效。</p>
       <label class="auth_field"><span>新密码</span>
         <span class="pw"><input name="value" type="password" minlength="8" autocomplete="new-password" placeholder="至少 8 位" required>
@@ -1875,7 +2006,7 @@ function openUserPasswordModal(u, onDone) {
       <p class="form_msg" role="alert"></p>
       <div class="modal_btns"><span class="grow"></span>
         <button type="button" class="btn" data-cancel>取消</button>
-        <button class="btn primary">重置密码</button></div>
+        <button class="btn primary">${first ? "设置密码" : "重置密码"}</button></div>
     </form>`;
   document.body.appendChild(dialog);
   const form = $("form", dialog), msg = $(".form_msg", dialog), ok = $("button.primary", dialog);
@@ -3168,6 +3299,7 @@ function route(event) {
   scrollTo({ top: 0, behavior: "instant" });
   if (name === "admin") { if (session.user?.role === "admin") VIEWS.admin(false, a); else go("#/settings"); }
   else if (name === "jobs") { VIEWS.jobs(a); if (a === "all" && session.user?.role === "admin") loadSiteJobs(); }
+  else if (name === "profile") { state.accountEdit = state.passwordSent = null; VIEWS.profile(); }
   else if (name === "settings") { state.accountEdit = state.passwordSent = null; VIEWS.settings(a); }
   else if (name === "course") { VIEWS.course(a, decodeURIComponent(b || ""), c); recheckWaiting(); }
   else if (name === "login") VIEWS.login(a, b === "again");
@@ -3260,6 +3392,7 @@ function showAuth(mode = "login") {
         ${mode === "setup" || mode === "reset" ? field("again", "再输一次密码", 'type="password" required autocomplete="new-password" minlength="8"') : ""}
         <p class="auth_error" role="alert"></p>
         <button class="btn primary auth_submit">${esc(text.button)}</button>
+        ${mode === "login" && session.oauth?.linuxdo ? '<div class="auth_or"><span>或</span></div><a class="btn auth_oauth" href="/auth/linuxdo/start">使用 Linux DO 登录</a>' : ""}
         ${text.switch ? `<p class="auth_note">${text.switch[0]}<button type="button" class="link" data-auth-mode="${text.switch[2]}">${text.switch[1]}</button></p>` : ""}
       </form>
     </section>`;
@@ -3342,14 +3475,14 @@ async function signOut() {
 async function loadMe() {
   try {
     const me = await api("/api/auth/me");
-    Object.assign(session, { user: me.user, csrf: me.csrf, mail: Boolean(me.mail) });
+    Object.assign(session, { user: me.user, csrf: me.csrf, mail: Boolean(me.mail), oauth: me.oauth || session.oauth });
     return true;
   } catch { return false; }
 }
 
 (async function boot() {
   let setup = false, speed = 1;
-  if (!MOCK) { try { ({ mode: session.mode, setup, register: session.register = null, speed = 1 } = await api("/api/mode")); } catch { /* old server: local */ } }
+  if (!MOCK) { try { ({ mode: session.mode, setup, register: session.register = null, oauth: session.oauth = null, speed = 1 } = await api("/api/mode")); } catch { /* old server: local */ } }
   applySpeed(speed);
   if (MOCK && params.has("auth")) { showAuth(params.get("auth") || "login"); return; }
   if (MOCK && params.has("hosted")) session.mode = "hosted";  // ?mock&hosted previews what a hosted site shows
@@ -3369,4 +3502,5 @@ async function loadMe() {
     if (location.hash) return;  // navigation already rendered the page the user chose
   }
   route();
+  if (OAUTH_NOTICE === "bound") toast("已绑定 Linux DO");
 })();
