@@ -91,11 +91,14 @@ const mockReports = [
     job_kind: "study",
     headline: "发现 2 项未适配或提交后仍未完成的内容",
     status: "open",
+    source: "manual",
+    manual_count: 2,
     report_count: 5,
     reporter_count: 3,
     reporters: [
-      { username: "alice", at: Date.now() / 1000 - 1800, note: "第三章虚拟仿真实验跑完还是未完成" },
-      { username: "bob", at: Date.now() / 1000 - 7200, note: "同样卡在这个环节" },
+      { username: "alice", at: Date.now() / 1000 - 1800, note: "第三章虚拟仿真实验跑完还是未完成", source: "manual" },
+      { username: "bob", at: Date.now() / 1000 - 7200, note: "同样卡在这个环节", source: "manual" },
+      { username: "carol", at: Date.now() / 1000 - 10800, note: "", source: "auto" },
     ],
     payload: {
       platform: "mooc",
@@ -120,7 +123,122 @@ const mockReports = [
     created: Date.now() / 1000 - 86400,
     updated: Date.now() / 1000 - 1800,
   },
+  {
+    id: "rep2",
+    fingerprint: "b2c3d4e5f6070819",
+    platform: "mooc",
+    course_id: "m2",
+    course_name: "中外音乐与民族技艺实践",
+    course_type: "第 3 期开课",
+    course_kind: "mooc",
+    job_kind: "study",
+    headline: "发现 1 项暂未适配的课程内容",
+    status: "open",
+    source: "auto",
+    manual_count: 0,
+    report_count: 2,
+    reporter_count: 2,
+    reporters: [
+      { username: "dave", at: Date.now() / 1000 - 3600, note: "", source: "auto" },
+      { username: "bob", at: Date.now() / 1000 - 9600, note: "", source: "auto" },
+    ],
+    payload: {
+      platform: "mooc",
+      platform_name: "MOOC",
+      course_id: "m2",
+      course_name: "中外音乐与民族技艺实践",
+      course_type: "第 3 期开课",
+      course_kind: "mooc",
+      progress: 88,
+      job_id: "h9",
+      job_kind: "study",
+      job_title: "自动学习",
+      job_state: "done",
+      job_summary: "学习完成",
+      headline: "发现 1 项暂未适配的课程内容",
+      items: [
+        { code: "unknown_type", bucket: "unknown", label: "未适配资源类型", name: "4.1 沉浸式乐器体验", kind: "vr_lab", detail: "未在已知学习单元类型列表中", fields: "id=u41, fileType=vr_lab" },
+      ],
+      logs: [{ time: "13:05", level: "warn", text: "MOOC · 课程「中外音乐与民族技艺实践」发现未适配学习单元类型「vr_lab」" }],
+    },
+    created: Date.now() / 1000 - 50000,
+    updated: Date.now() / 1000 - 3600,
+  },
+  {
+    id: "rep3",
+    fingerprint: "c3d4e5f60708192a",
+    platform: "zhs",
+    course_id: "ai-1",
+    course_name: "通信基础与计算机网络2026年秋冬学期",
+    course_type: "智慧课程",
+    course_kind: "ai",
+    job_kind: "study",
+    headline: "有 1 项提交后平台仍未标记完成",
+    status: "open",
+    source: "auto",
+    manual_count: 0,
+    report_count: 3,
+    reporter_count: 2,
+    reporters: [
+      { username: "eve", at: Date.now() / 1000 - 5400, note: "", source: "auto" },
+      { username: "alice", at: Date.now() / 1000 - 14400, note: "", source: "auto" },
+    ],
+    payload: {
+      platform: "zhs",
+      platform_name: "智慧树",
+      course_id: "ai-1",
+      course_name: "通信基础与计算机网络2026年秋冬学期",
+      course_type: "智慧课程",
+      course_kind: "ai",
+      progress: 84,
+      job_id: "h8",
+      job_kind: "study",
+      job_title: "自动学习",
+      job_state: "error",
+      job_summary: "学习未全部完成",
+      headline: "有 1 项提交后平台仍未标记完成",
+      items: [
+        { code: "unverified_unit", bucket: "unverified", label: "提交后平台未标记完成", name: "知识图谱互动测验", kind: "9/7", detail: "提交完成接口后回查 studyStatus 仍未变为 1", fields: "resourcesType=9, resourcesDistributeType=7, studyStatus=0" },
+      ],
+      logs: [{ time: "12:18", level: "warn", text: "智慧树 · 通信基础与计算机网络2026年秋冬学期 · 知识图谱互动测验：提交后回查仍未完成" }],
+    },
+    created: Date.now() / 1000 - 40000,
+    updated: Date.now() / 1000 - 5400,
+  },
 ];
+function summarizeMockGaps(reports) {
+  const groups = new Map();
+  for (const r of reports) {
+    if (r.status !== "open") continue;
+    const seen = new Set();
+    const users = new Set((r.reporters || []).map((u) => u.username).filter(Boolean));
+    for (const it of r.payload?.items || []) {
+      const code = it.code || "job_error", kind = it.kind || "", gapKey = `${r.platform}|${code}|${kind}`;
+      if (seen.has(gapKey)) continue;
+      seen.add(gapKey);
+      let g = groups.get(gapKey);
+      if (!g) {
+        g = { key: gapKey, platform: r.platform, platform_name: r.platform === "zhs" ? "智慧树" : "MOOC",
+          code, bucket: it.bucket || "failed", label: it.label || code, kind,
+          courses: new Set(), users: new Set(), maxReporters: 0, report_count: 0, hit_count: 0, manual_count: 0, auto_count: 0, latest: 0, sample_course: r.course_name };
+        groups.set(gapKey, g);
+      }
+      g.courses.add(`${r.platform}:${r.course_id || r.course_name}`);
+      users.forEach((u) => g.users.add(u));
+      g.maxReporters = Math.max(g.maxReporters, r.reporter_count || 1);
+      g.report_count += 1;
+      g.hit_count += r.report_count || 1;
+      if ((r.source || "manual") === "manual") g.manual_count += 1; else g.auto_count += 1;
+      if ((r.updated || 0) >= g.latest) { g.latest = r.updated || 0; g.sample_course = r.course_name; }
+    }
+  }
+  return [...groups.values()]
+    .map((g) => ({ key: g.key, platform: g.platform, platform_name: g.platform_name, code: g.code, bucket: g.bucket, label: g.label, kind: g.kind,
+      course_count: g.courses.size, report_count: g.report_count, user_count: Math.max(g.users.size, g.maxReporters), hit_count: g.hit_count,
+      manual_count: g.manual_count, auto_count: g.auto_count, latest: g.latest, sample_course: g.sample_course }))
+    .sort((a, b) => (b.user_count - a.user_count) || (b.course_count - a.course_count) || (b.hit_count - a.hit_count) || (b.latest - a.latest))
+    .slice(0, 8);
+}
 const qaPosts = [{ kind: "answer", question: "云计算的三种服务模式有什么区别？", text: "IaaS 提供虚拟机等基础设施，PaaS 提供运行平台，SaaS 直接提供软件。", at: Date.now() / 1000 - 7200 }];
 function fakeJob(body) {
   const course = courses[body.platform].find((c) => c.id === body.course);
@@ -215,7 +333,7 @@ export async function request(path, method, body) {
     if (!issueReportOn) throw new Error("管理员已关闭课程适配上报");
     return { ok: true, id: "rep_mock", already_reported: false, report_count: 1, reporter_count: 1 };
   }
-  if (path === "/api/admin/reports") return { reports: mockReports, enabled: issueReportOn };
+  if (path === "/api/admin/reports") return { reports: mockReports, gaps: summarizeMockGaps(mockReports), enabled: issueReportOn };
   if ((m = path.match(/^\/api\/admin\/reports\/([\w-]+)\/status$/)) && method === "POST") {
     const row = mockReports.find((x) => x.id === m[1]);
     if (row) row.status = body.status;

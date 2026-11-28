@@ -169,7 +169,7 @@ class Studia:
     """All state behind the web UI; one running job at a time across platforms."""
 
     def __init__(self, store=None, oauth=oauth_login, *, reports_dir="ai_results", oauth_url=None, memory=None, mooc_memory=None,
-                 job_limit=None, zhs_parallel=None, answer_pace=None, issue_report=None, peers=None, on_job=None):
+                 job_limit=None, zhs_parallel=None, answer_pace=None, issue_report=None, on_issue_check=None, peers=None, on_job=None):
         self.store = store or SettingsStore()
         self.token = secrets.token_urlsafe(24)
         self.lock = threading.RLock()
@@ -189,6 +189,8 @@ class Studia:
         # Hosted mode: the admin controls post-task issue checks & reporting site-wide; locally it is in 偏好.
         self.issue_report = issue_report or self.store.issue_report
         self.issue_report_locked = issue_report is not None
+        # Hosted mode: silently feed post-task adaptation findings into the site-wide radar.
+        self.on_issue_check = on_issue_check
         # Hosted mode: questions other people on this site asked in the same class, answered first (Hub.peer_questions).
         self.peers = peers or (lambda course_id, recruit_id: [])
         self.on_job = on_job
@@ -1180,6 +1182,11 @@ class Studia:
                 self._remember(job)
                 self.jobs.pop(job["id"], None)
                 self._save()
+            if issue_check is not None and callable(self.on_issue_check):
+                try:
+                    self.on_issue_check(dict(issue_check))
+                except Exception:
+                    logger.debug("自动记录适配检查结果失败", exc_info=True)
             log_end = logger.error if state == "error" else logger.warning if state == "waiting" else logger.info
             log_end("任务结束 · %s · 课程「%s」（%s）· %s · 状态：%s · %s",
                     pname, course_name, course_id, title, state, summary or "无")

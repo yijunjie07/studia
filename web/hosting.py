@@ -29,6 +29,7 @@ from urllib.parse import urlencode, urlsplit
 import requests
 from Crypto.Cipher import AES
 
+from core.issue_check import summarize_issue_gaps
 from core.log import Logger
 from mooc.oauth_login import SSO_AUTH_URL, SSO_SOURCE
 from zhs.memory import DatabaseAnswerMemory
@@ -315,6 +316,7 @@ class Hub:
                              zhs_parallel=lambda: bool(self.accounts.setting("zhs_parallel_study", False)),
                              answer_pace=self.answer_pace,
                              issue_report=self.issue_report,
+                             on_issue_check=lambda check, uid=uid: self.record_issue_check(uid, check),
                              peers=lambda course_id, recruit_id, uid=uid: self.peer_questions(uid, course_id, recruit_id),
                              on_job=self.notify_site_jobs)
                 app.owner = (self.accounts.user(uid) or {}).get("username", uid)
@@ -657,6 +659,14 @@ class Hub:
         """Whether post-task adaptation checks and one-click member issue reporting are enabled site-wide."""
         saved = self.accounts.setting("issue_report", True)
         return saved if isinstance(saved, bool) else True
+
+    def record_issue_check(self, uid, check):
+        """Silently aggregate post-task adaptation findings into the site-wide radar when enabled."""
+        if not self.issue_report() or not isinstance(check, dict):
+            return
+        user = self.accounts.user(uid) or {}
+        username = user.get("username") or uid
+        self.accounts.submit_issue_report(check, uid=uid, username=username, source="auto")
 
     def smtp(self):
         return self.site_store.get("smtp")
@@ -1246,7 +1256,8 @@ class HostedAccess:
         if method == "GET" and path == "/api/admin/jobs":
             return {"people": hub.all_jobs()}
         if method == "GET" and path == "/api/admin/reports":
-            return {"reports": hub.accounts.issue_reports(), "enabled": hub.issue_report()}
+            reports = hub.accounts.issue_reports()
+            return {"reports": reports, "gaps": summarize_issue_gaps(reports), "enabled": hub.issue_report()}
         match = re.fullmatch(r"/api/admin/reports/([\w-]+)/status", path)
         if method == "POST" and match:
             hub.accounts.set_issue_report_status(match[1], str(body.get("status") or ""))

@@ -4,7 +4,7 @@ import threading
 import unittest
 from unittest.mock import Mock
 
-from core.issue_check import build_issue_check, format_issue_markdown, make_finding
+from core.issue_check import build_issue_check, format_issue_markdown, make_finding, summarize_issue_gaps
 from core.settings import SettingsError, SettingsStore
 from mooc.main import AIMoocHandler
 from web.accounts import AccountError, Accounts
@@ -79,6 +79,89 @@ class IssueCheckCoreTest(unittest.TestCase):
         self.assertIn("h5_lab", md)
         self.assertIn("第三章卡住了", md)
         self.assertNotIn("top-secret-value", md)
+
+    def test_summarize_issue_gaps_aggregates_open_reports_across_courses(self):
+        reports = [
+            {
+                "id": "r1",
+                "platform": "mooc",
+                "course_id": "m1",
+                "course_name": "大学英语（二）",
+                "status": "open",
+                "source": "manual",
+                "report_count": 3,
+                "reporter_count": 2,
+                "reporters": [{"username": "alice"}, {"username": "bob"}],
+                "updated": 100.0,
+                "payload": {
+                    "items": [
+                        {"code": "unknown_type", "bucket": "unknown", "label": "未适配资源类型", "kind": "vr_lab"},
+                        {"code": "unknown_type", "bucket": "unknown", "label": "未适配资源类型", "kind": "vr_lab"},
+                    ]
+                },
+            },
+            {
+                "id": "r2",
+                "platform": "mooc",
+                "course_id": "m2",
+                "course_name": "智能制造导论",
+                "status": "open",
+                "source": "auto",
+                "report_count": 2,
+                "reporter_count": 2,
+                "reporters": [{"username": "bob"}, {"username": "carol"}],
+                "updated": 200.0,
+                "payload": {
+                    "items": [
+                        {"code": "unknown_type", "bucket": "unknown", "label": "未适配资源类型", "kind": "vr_lab"},
+                    ]
+                },
+            },
+            {
+                "id": "r3",
+                "platform": "zhs",
+                "course_id": "z1",
+                "course_name": "人工智能智慧课",
+                "status": "open",
+                "source": "auto",
+                "report_count": 4,
+                "reporter_count": 1,
+                "reporters": [{"username": "dave"}],
+                "updated": 300.0,
+                "payload": {
+                    "items": [
+                        {"code": "unverified_unit", "bucket": "unverified", "label": "提交后平台未标记完成", "kind": "9/7"},
+                    ]
+                },
+            },
+            {
+                "id": "r4",
+                "platform": "mooc",
+                "course_id": "m3",
+                "course_name": "已解决课程",
+                "status": "resolved",
+                "source": "manual",
+                "report_count": 10,
+                "reporter_count": 9,
+                "reporters": [{"username": "eve"}],
+                "updated": 400.0,
+                "payload": {
+                    "items": [
+                        {"code": "unknown_type", "bucket": "unknown", "label": "未适配资源类型", "kind": "vr_lab"},
+                    ]
+                },
+            },
+        ]
+        gaps = summarize_issue_gaps(reports)
+        self.assertEqual([g["key"] for g in gaps], ["mooc|unknown_type|vr_lab", "zhs|unverified_unit|9/7"])
+        top = gaps[0]
+        self.assertEqual(top["course_count"], 2)
+        self.assertEqual(top["report_count"], 2)
+        self.assertEqual(top["user_count"], 3)
+        self.assertEqual(top["hit_count"], 5)
+        self.assertEqual(top["manual_count"], 1)
+        self.assertEqual(top["auto_count"], 1)
+        self.assertEqual(top["sample_course"], "智能制造导论")
 
 
 class MoocStudyCheckTest(unittest.TestCase):
@@ -239,6 +322,54 @@ class IssueReportStorageAndSettingsTest(unittest.TestCase):
             with self.assertRaises(AccountError):
                 accounts.delete_issue_report(res1["id"])
 
+    def test_accounts_auto_collection_upgrades_to_manual_without_double_counting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            accounts = Accounts(directory)
+            check1 = self._sample_check(job_id="j1")
+
+            auto1 = accounts.submit_issue_report(check1, uid="u1", username="alice", source="auto")
+            self.assertFalse(auto1["already_reported"])
+            self.assertEqual(auto1["source"], "auto")
+            self.assertEqual(auto1["report_count"], 1)
+            row = accounts.issue_reports()[0]
+            self.assertEqual(row["source"], "auto")
+            self.assertEqual(row["manual_count"], 0)
+            self.assertEqual(row["reporters"][0]["source"], "auto")
+
+            # Same user manually confirms the exact same job with a note -> upgrades without double-counting
+            manual1 = accounts.submit_issue_report(check1, uid="u1", username="alice", note="第三章白屏", source="manual")
+            self.assertFalse(manual1["already_reported"])
+            self.assertEqual(manual1["source"], "manual")
+            self.assertEqual(manual1["report_count"], 1)
+            row = accounts.issue_reports()[0]
+            self.assertEqual(row["source"], "manual")
+            self.assertEqual(row["manual_count"], 1)
+            self.assertEqual(row["reporters"][0]["note"], "第三章白屏")
+            self.assertEqual(row["reporters"][0]["source"], "manual")
+
+            # Re-submitting manually on the same job is idempotent
+            manual_dup = accounts.submit_issue_report(check1, uid="u1", username="alice", note="更新备注", source="manual")
+            self.assertTrue(manual_dup["already_reported"])
+            self.assertEqual(manual_dup["report_count"], 1)
+
+            # Another user retries 3 times automatically -> hit count increments, reporters list stays compact
+            for jid in ("j2", "j3", "j4"):
+                accounts.submit_issue_report(self._sample_check(job_id=jid), uid="u2", username="bob", source="auto")
+            row = accounts.issue_reports()[0]
+            self.assertEqual(row["report_count"], 4)
+            self.assertEqual(row["reporter_count"], 2)
+            self.assertEqual(len(row["reporters"]), 2)
+            self.assertEqual({r["username"]: r["source"] for r in row["reporters"]}, {"alice": "manual", "bob": "auto"})
+
+            # Resolved issue hit again automatically reopens; ignored stays ignored
+            accounts.set_issue_report_status(auto1["id"], "resolved")
+            accounts.submit_issue_report(self._sample_check(job_id="j5"), uid="u3", username="carol", source="auto")
+            self.assertEqual(accounts.issue_reports()[0]["status"], "open")
+
+            accounts.set_issue_report_status(auto1["id"], "ignored")
+            accounts.submit_issue_report(self._sample_check(job_id="j6"), uid="u4", username="dave", source="auto")
+            self.assertEqual(accounts.issue_reports()[0]["status"], "ignored")
+
 
 class StudiaJobCheckAndHostedFlowTest(unittest.TestCase):
     def _run_stub_job(self, app, target, *, findings=None, state_cancel=False):
@@ -364,6 +495,81 @@ class StudiaJobCheckAndHostedFlowTest(unittest.TestCase):
 
             access.private(req, "POST", "/api/admin/reports/%s/delete" % res["id"], {}, {}, ctx_admin)
             self.assertEqual(access.private(req, "GET", "/api/admin/reports", {}, {}, ctx_admin)["reports"], [])
+
+    def test_hosted_silent_auto_collection_and_cross_course_radar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            hub = Hub(directory, "http://127.0.0.1:8080", key=os.urandom(32))
+            access = HostedAccess(hub, 8080)
+            req = Mock(headers={}, client_address=("127.0.0.1", 12345))
+
+            admin_id = hub.accounts.create_user("admin", "admin-password", role="admin")
+            alice_id = hub.accounts.create_user("alice", "alice-password")
+            bob_id = hub.accounts.create_user("bob", "bob-password")
+            ctx_admin = {"app": hub.app(admin_id), "user": hub.accounts.user(admin_id), "session": {"csrf": "c"}, "token": "t"}
+            ctx_alice = {"app": hub.app(alice_id), "user": hub.accounts.user(alice_id), "session": {"csrf": "c"}, "token": "t"}
+
+            finding = make_finding("unknown_type", name="互动实验", kind="vr_lab", detail="未适配")
+
+            # Alice finishes a job on course c1 and NEVER clicks submit -> already aggregated silently
+            alice_app = hub.app(alice_id)
+            alice_job, _ = self._run_stub_job(alice_app, lambda: "学习完成", findings=[finding])
+            self.assertFalse(alice_app.issue_check_for(alice_job["id"]).get("reported"))
+
+            listed = access.private(req, "GET", "/api/admin/reports", {}, {}, ctx_admin)
+            self.assertEqual(len(listed["reports"]), 1)
+            self.assertEqual(listed["reports"][0]["source"], "auto")
+            self.assertEqual(listed["reports"][0]["report_count"], 1)
+            self.assertEqual(len(listed["gaps"]), 1)
+            self.assertEqual(listed["gaps"][0]["key"], "mooc|unknown_type|vr_lab")
+            self.assertEqual(listed["gaps"][0]["course_count"], 1)
+
+            # Bob hits the same vr_lab gap on a DIFFERENT course c2 without clicking submit
+            bob_app = hub.app(bob_id)
+            bob_job = {
+                "id": "job002",
+                "kind": "study",
+                "title": "自动学习",
+                "course": "c2",
+                "course_name": "机械制图",
+                "platform": "mooc",
+                "cancel": threading.Event(),
+                "state": "running",
+                "summary": "",
+                "started": 200.0,
+                "ended": None,
+                "lines": [],
+                "progress": {},
+                "findings": [finding],
+                "_course_meta": {"type": "第 2 期开课", "kind": "mooc", "progress": 40, "shares": None},
+            }
+            bob_app.jobs[bob_job["id"]] = bob_job
+            JOBS[bob_job["id"]] = bob_app
+            bob_app._run_job(bob_job, lambda: "学习完成", None)
+
+            # Alice later clicks one-click report with a note -> upgrades course c1 row without double-counting
+            submit_res = access.private(req, "POST", "/api/reports", {}, {"job_id": alice_job["id"], "note": "进不去"}, ctx_alice)
+            self.assertFalse(submit_res["already_reported"])
+            self.assertEqual(submit_res["report_count"], 1)
+            self.assertEqual(submit_res["source"], "manual")
+
+            listed2 = access.private(req, "GET", "/api/admin/reports", {}, {}, ctx_admin)
+            self.assertEqual(len(listed2["reports"]), 2)
+            self.assertEqual(len(listed2["gaps"]), 1)
+            gap = listed2["gaps"][0]
+            self.assertEqual(gap["course_count"], 2)
+            self.assertEqual(gap["user_count"], 2)
+            self.assertEqual(gap["hit_count"], 2)
+            self.assertEqual(gap["manual_count"], 1)
+            self.assertEqual(gap["auto_count"], 1)
+
+            # Admin turns OFF switch -> new jobs do not auto-collect
+            access.private(req, "POST", "/api/admin/settings", {}, {"issue_report": False}, ctx_admin)
+            job3 = dict(bob_job, id="job003", course="c3", course_name="关闭后课程", cancel=threading.Event(),
+                        state="running", lines=[], progress={}, findings=[finding])
+            bob_app.jobs[job3["id"]] = job3
+            JOBS[job3["id"]] = bob_app
+            bob_app._run_job(job3, lambda: "学习完成", None)
+            self.assertEqual(len(access.private(req, "GET", "/api/admin/reports", {}, {}, ctx_admin)["reports"]), 2)
 
     def test_answer_records_paper_error_and_skipped_but_ignores_ai_error(self):
         from ai.client import AIConfig

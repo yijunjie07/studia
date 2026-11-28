@@ -766,10 +766,10 @@ function listTools(kind, placeholder, facets, counts, extra = "") {
     const q = open ? list.facetQ.trim().toLowerCase() : "";
     const shown = options.filter(([, name]) => !q || name.toLowerCase().includes(q));
     return `<div class="facet"><button class="facet_btn" data-facet="${key}" aria-haspopup="listbox" aria-expanded="${open}">${ICON.plusCircle}${label}${picked.length
-        ? `<span class="facet_sep"></span>${picked.length > 2 ? `<span class="pill">已选 ${picked.length} 项</span>` : picked.map(([, name]) => `<span class="pill">${name}</span>`).join("")}` : ""}</button>
+        ? `<span class="facet_sep"></span>${picked.length > 2 ? `<span class="pill">已选 ${picked.length} 项</span>` : picked.map(([, name]) => `<span class="pill">${esc(name)}</span>`).join("")}` : ""}</button>
       ${open ? `<div class="facet_pop"><label class="facet_find">${ICON.find}<input data-facet-search value="${esc(list.facetQ)}" placeholder="${label}" autocomplete="off" spellcheck="false"></label>
         <div class="facet_opts" role="listbox" aria-multiselectable="true" aria-label="${label}">${shown.map(([value, name]) =>
-          `<button class="facet_opt" role="option" data-facet-opt="${value}" aria-selected="${picked.some(([v]) => v === value)}"><span class="facet_tick"></span><span class="grow">${name}</span><span class="n">${counts[key][value]}</span></button>`).join("")
+          `<button class="facet_opt" role="option" data-facet-opt="${esc(value)}" aria-selected="${picked.some(([v]) => v === value)}"><span class="facet_tick"></span><span class="grow" title="${esc(name)}">${esc(name)}</span><span class="n">${counts[key][value]}</span></button>`).join("")
           || '<div class="facet_none">没有匹配的选项</div>'}</div>
         ${picked.length ? '<button class="facet_clear" data-facet-clear>清除筛选</button>' : ""}</div>` : ""}</div>`;
   }).join("");
@@ -1039,17 +1039,41 @@ const VIEWS = {
     } else if (tab === "reports") {
       const list = adminList("reports"), q = list.q.trim().toLowerCase();
       const reports = data.reports?.reports || [];
+      const gaps = data.reports?.gaps || [];
       const enabled = data.reports?.enabled !== false;
       const STATUS_META = { open: ["wait", "待处理"], resolved: ["blue", "已处理"], ignored: ["", "已忽略"] };
+      const SOURCE_META = { manual: ["blue", "成员上报"], auto: ["", "自动检测"] };
       const PLAT_NAME = { mooc: "MOOC", zhs: "智慧树" };
+      const gapTagOf = (platform, item) => `${platform}|${item?.kind || item?.code || "job_error"}`;
+      const gapOptions = [];
+      const seenGap = new Set();
+      for (const g of gaps) {
+        const tag = gapTagOf(g.platform, g);
+        if (seenGap.has(tag)) continue;
+        seenGap.add(tag);
+        const name = `${PLAT_NAME[g.platform] || g.platform} · ${g.kind || g.label || g.code}`;
+        gapOptions.push([tag, name, (r) => ((r.payload?.items) || []).some((it) => gapTagOf(r.platform, it) === tag)]);
+      }
+      for (const r of reports) {
+        for (const it of r.payload?.items || []) {
+          const tag = gapTagOf(r.platform, it);
+          if (seenGap.has(tag)) continue;
+          seenGap.add(tag);
+          const name = `${PLAT_NAME[r.platform] || r.platform} · ${it.kind || it.label || it.code}`;
+          gapOptions.push([tag, name, (row) => ((row.payload?.items) || []).some((x) => gapTagOf(row.platform, x) === tag)]);
+        }
+      }
       const FACETS = [
         ["status", "状态", [["open", "待处理"], ["resolved", "已处理"], ["ignored", "已忽略"]].map(([k, name]) => [k, name, (r) => r.status === k])],
+        ["source", "来源", [["manual", "成员上报", (r) => (r.source || "manual") === "manual"], ["auto", "自动检测", (r) => r.source === "auto"]]],
+        ...(gapOptions.length ? [["gap", "缺口", gapOptions]] : []),
         ["platform", "平台", [["mooc", "MOOC"], ["zhs", "智慧树"]].map(([k, name]) => [k, name, (r) => r.platform === k])],
         ["job", "任务", [["study", "自动学习", (r) => r.job_kind === "study"], ["answer", "AI 答题", (r) => r.job_kind === "answer"],
           ["other", "其他", (r) => r.job_kind !== "study" && r.job_kind !== "answer"]]],
       ];
       const matchText = (r) => [
         r.course_name, r.course_id, r.course_type, r.course_kind, r.headline, r.platform, PLAT_NAME[r.platform],
+        r.source === "auto" ? "自动检测" : "成员上报",
         ...(r.reporters || []).map((x) => `${x.username} ${x.note || ""}`),
         ...((r.payload?.items) || []).map((x) => `${x.label} ${x.name} ${x.kind} ${x.detail} ${x.fields}`),
       ].join(" ").toLowerCase();
@@ -1075,8 +1099,9 @@ const VIEWS = {
               <b>${esc(it.name || "未命名")}</b>${it.kind ? `<code class="issue_kind">${esc(it.kind)}</code>` : ""}</div>
             ${it.detail ? `<p class="issue_desc">${esc(it.detail)}</p>` : ""}
             ${it.fields ? `<code class="issue_fields">${esc(it.fields)}</code>` : ""}</div>`).join("") || '<p class="issue_desc">无条目明细</p>'}</div>
-          ${(r.reporters || []).length ? `<div class="report_subhead">上报成员（${r.reporter_count} 人 · 共 ${r.report_count} 次）</div>
+          ${(r.reporters || []).length ? `<div class="report_subhead">影响成员（${r.reporter_count} 人 · 共 ${r.report_count} 次${r.manual_count ? ` · ${r.manual_count} 人主动上报` : " · 自动检测"}）</div>
             <div class="report_people">${r.reporters.slice(0, 10).map((u) => `<div class="report_person"><b>${esc(u.username)}</b>
+              <span class="pill ${u.source === "auto" ? "" : "blue"}">${u.source === "auto" ? "自动检测" : "成员上报"}</span>
               <span class="when">${u.at ? ago(u.at) : ""}</span>${u.note ? `<span class="report_note">${esc(u.note)}</span>` : ""}</div>`).join("")}</div>` : ""}
           ${logs.length ? `<div class="report_subhead">任务日志片段</div>
             <div class="report_logs">${logs.slice(0, 12).map((l) => `<div class="line ${l.level === "error" ? "err" : l.level === "warn" ? "warn" : ""}">
@@ -1093,10 +1118,11 @@ const VIEWS = {
       const reportRow = (r) => {
         const open = state.reportOpen === r.id;
         const [pillCls, pillWord] = STATUS_META[r.status] || ["", r.status];
+        const [srcCls, srcWord] = SOURCE_META[r.source === "auto" ? "auto" : "manual"];
         return `<div class="report_entry ${open ? "open" : ""}" data-key="${esc(r.id)}">
           <div class="model report_row">
             <span class="plat ${esc(r.platform)}">${INITIAL[r.platform] || "?"}</span>
-            <span class="m1"><b>${esc(r.course_name)}</b><span class="pill ${pillCls}">${pillWord}</span><span class="pill">${r.reporter_count} 人 · ${r.report_count} 次</span>
+            <span class="m1"><b>${esc(r.course_name)}</b><span class="pill ${pillCls}">${pillWord}</span><span class="pill ${srcCls}">${srcWord}</span><span class="pill">${r.reporter_count} 人 · ${r.report_count} 次</span>
               <small class="sans">${esc(r.headline)} · ${esc(LABEL[r.job_kind] || r.job_kind)}${r.course_type ? ` · ${esc(r.course_type)}` : ""} · ${ago(r.updated)}</small></span>
             <span class="row_btns">
               <button class="btn small" data-report-expand="${esc(r.id)}" aria-expanded="${open}">${open ? "收起" : "详情"}</button>
@@ -1108,9 +1134,9 @@ const VIEWS = {
           ${open ? reportDetail(r) : ""}</div>`;
       };
       body = `${listTools("reports", "搜索课程名、问题类型、字段或上报人", FACETS, counts)}
-        ${enabled ? "" : '<p class="list_note">当前已关闭适配检查与上报，新任务不会弹窗收集反馈。<button class="link" data-go="#/admin/site">去开启</button></p>'}
+        ${enabled ? "" : '<p class="list_note">当前已关闭适配检查与上报，新任务不再自动检测聚合，也不会弹窗收集反馈。<button class="link" data-go="#/admin/site">去开启</button></p>'}
         <div class="models">${pageOf("reports", rows).map(reportRow).join("")
-          || `<div class="model plain"><span class="m1"><small class="sans">${reports.length ? "没有符合条件的上报记录" : "还没有收到课程适配上报"}</small></span></div>`}</div>
+          || `<div class="model plain"><span class="m1"><small class="sans">${reports.length ? "没有符合条件的上报记录" : "还没有收到课程适配记录"}</small></span></div>`}</div>
         ${pagerHtml("reports", rows.length, "条")}`;
     } else if (tab === "oauth") {
       const oauth = data.settings.oauth || {
@@ -1190,8 +1216,8 @@ const VIEWS = {
         <div class="models"><div class="model plain"><span class="m1"><b>默认每人同时 <input class="inline_num" type="number" min="1" max="20" name="max_jobs" value="${esc(kept("max_jobs", settings.max_jobs))}"> 个任务</b></span>
           <span class="row_btns"><button class="btn small primary" data-save-limit>保存</button></span></div></div>
         <div class="section"><h2>适配检查与上报</h2></div>
-        <div class="models"><div class="model plain stepper_row"><span class="m1"><b>任务后问题检查弹窗</b>
-          <small class="sans">${settings.issue_report !== false ? "任务结束后检测到未完成或跳过项时弹窗，成员可一键上报到「适配上报」列表" : "已关闭，任务结束不再弹窗检查，也不接收新的适配上报"}</small></span>
+        <div class="models"><div class="model plain stepper_row"><span class="m1"><b>任务后自动检测与上报</b>
+          <small class="sans">${settings.issue_report !== false ? "任务结束后自动聚合未适配或未完成项到「适配上报」，并弹窗供成员补充说明" : "已关闭，任务结束不再自动记录或弹窗检查，也不接收新的适配上报"}</small></span>
           <span class="row_btns"><button class="btn small" data-issue-report-toggle="0" aria-pressed="${settings.issue_report === false}">关闭</button><button class="btn small" data-issue-report-toggle="1" aria-pressed="${settings.issue_report !== false}">开启</button></span></div></div>
         <div class="section"><h2>智慧树</h2></div>
         <div class="models"><div class="model plain"><span class="m1"><b>多并发学习</b><span class="pill ${settings.zhs_parallel_study ? "wait" : ""}">${settings.zhs_parallel_study ? "已开启" : "已关闭"}</span></span>
@@ -1876,24 +1902,26 @@ function openIssueModal(check) {
   dialog.innerHTML = `<form data-issue-form>
       <h3 id="issue-modal-title" tabindex="-1" autofocus>你似乎遇到了一些问题</h3>
       <p class="sub">${esc(check.headline || "任务结束后检测到未能自动完成或被跳过的课程内容。")}</p>
-      <div class="issue_card">
-        <div class="issue_course">
-          <span class="plat ${esc(check.platform || "")}">${INITIAL[check.platform] || "?"}</span>
-          <span class="m1"><b>${esc(check.course_name || "未知课程")}</b>
-            <small class="sans">${esc([check.platform_name || check.platform, check.course_type || check.course_kind, check.job_title,
-              check.progress != null ? `进度 ${check.progress}%` : ""].filter(Boolean).join(" · "))}</small>
-            ${shares ? `<small class="sans">考核占比：${esc(shares)}</small>` : ""}</span>
+      <div class="issue_body">
+        <div class="issue_card">
+          <div class="issue_course">
+            <span class="plat ${esc(check.platform || "")}">${INITIAL[check.platform] || "?"}</span>
+            <span class="m1"><b>${esc(check.course_name || "未知课程")}</b>
+              <small class="sans">${esc([check.platform_name || check.platform, check.course_type || check.course_kind, check.job_title,
+                check.progress != null ? `进度 ${check.progress}%` : ""].filter(Boolean).join(" · "))}</small>
+              ${shares ? `<small class="sans">考核占比：${esc(shares)}</small>` : ""}</span>
+          </div>
+          <div class="issue_list">${shown.map((it) => `<div class="issue_item">
+            <div class="issue_item_head"><span class="pill ${ISSUE_PILL[it.bucket] || ""}">${esc(it.label || it.code)}</span>
+              <b>${esc(it.name || "未命名")}</b>${it.kind ? `<code class="issue_kind">${esc(it.kind)}</code>` : ""}</div>
+            ${it.detail ? `<p class="issue_desc">${esc(it.detail)}</p>` : ""}</div>`).join("")}
+            ${more ? `<p class="issue_more">还有 ${more} 项未展开，上报时将一并附带</p>` : ""}</div>
         </div>
-        <div class="issue_list">${shown.map((it) => `<div class="issue_item">
-          <div class="issue_item_head"><span class="pill ${ISSUE_PILL[it.bucket] || ""}">${esc(it.label || it.code)}</span>
-            <b>${esc(it.name || "未命名")}</b>${it.kind ? `<code class="issue_kind">${esc(it.kind)}</code>` : ""}</div>
-          ${it.detail ? `<p class="issue_desc">${esc(it.detail)}</p>` : ""}</div>`).join("")}
-          ${more ? `<p class="issue_more">还有 ${more} 项未展开，上报时将一并附带</p>` : ""}</div>
+        ${hosted ? `<label class="auth_field issue_note_field"><span>补充说明（选填）</span>
+          <input name="note" maxlength="300" autocomplete="off" placeholder="例如：第 3 章互动环节一直没算完成"></label>` : ""}
+        <details class="issue_preview"><summary>查看脱敏诊断内容（不含账号与登录态）</summary>
+          <pre class="issue_code">${esc(formatIssueMarkdown(check))}</pre></details>
       </div>
-      ${hosted ? `<label class="auth_field issue_note_field"><span>补充说明（选填）</span>
-        <input name="note" maxlength="300" autocomplete="off" placeholder="例如：第 3 章互动环节一直没算完成"></label>` : ""}
-      <details class="issue_preview"><summary>查看脱敏诊断内容（不含账号与登录态）</summary>
-        <pre class="issue_code">${esc(formatIssueMarkdown(check))}</pre></details>
       <p class="form_msg" role="alert"></p>
       <div class="modal_btns">
         ${hosted
@@ -1906,6 +1934,8 @@ function openIssueModal(check) {
       </div></form>`;
   document.body.appendChild(dialog);
   const form = $("form", dialog), msg = $(".form_msg", dialog);
+  const preview = $(".issue_preview", dialog);
+  if (preview) preview.ontoggle = () => { if (preview.open) preview.scrollIntoView({ block: "nearest" }); };
   dialog.addEventListener("cancel", (e) => { e.preventDefault(); closeModal(dialog); });
   dialog.addEventListener("close", () => dialog.remove());
   $("[data-issue-close]", dialog).onclick = () => closeModal(dialog);
