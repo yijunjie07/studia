@@ -1366,24 +1366,6 @@ def prompt_ai_config(input_fn=None, secret_fn=None, output=None):
             emit(str(exc))
 
 
-def display_questions(questions, show_options=True):
-    from mooc.icve_exam_parser import get_question_stats
-    ui = TerminalUI()
-    stats = get_question_stats(questions)
-    ui.note(f"题目总数 {stats['total']} · 总分 {stats['total_score']}")
-    for q in questions:
-        ui.note(f"{q['number']}. {q['text']}（{q['score']} 分）")
-        if q['type'] == '填空题':
-            ui.note(f"空格数：{q['blank_count']}")
-        elif show_options:
-            for opt in q.get('options', []):
-                ui.note(f"  {opt['label']}. {opt['text']}")
-
-
-def parser_help():
-    TerminalUI().note("职教云考试解析工具\nquestions = parse_exam_questions(html_content)\ndisplay_questions(questions)")
-
-
 def oauth_diagnostic(login):
     run_console_tool(lambda: bool(login()), "测试浏览器登录")
 

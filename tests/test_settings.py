@@ -261,5 +261,32 @@ class AuthenticationTests(unittest.TestCase):
         self.assertNotIn("secret-token", str(error.exception))
 
 
+class ConfigDirectoryTests(unittest.TestCase):
+    def test_default_uses_studia_and_migrates_legacy_directory_once(self):
+        from core.settings import config_directory
+        with tempfile.TemporaryDirectory() as home:
+            home_path = Path(home)
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("STUDIA_CONFIG_DIR", None)
+                os.environ.pop("ICVE_CONFIG_DIR", None)
+                with patch("core.settings.os.name", "posix"), patch("core.settings.Path.home", return_value=home_path):
+                    self.assertEqual(config_directory(), home_path / ".config" / "studia")
+                    legacy = home_path / ".config" / "icve-ai-assistant"
+                    legacy.mkdir(parents=True)
+                    (legacy / "settings.json").write_text('{"version": 1, "confidence": 0.9}', encoding="utf-8")
+                    migrated = config_directory()
+                    self.assertEqual(migrated, home_path / ".config" / "studia")
+                    self.assertFalse(legacy.exists())
+                    self.assertEqual(SettingsStore(migrated).get("confidence"), 0.9)
+
+    def test_env_overrides_prefer_studia_and_accept_legacy_var(self):
+        from core.settings import config_directory
+        with patch.dict(os.environ, {"STUDIA_CONFIG_DIR": "/tmp/studia-cfg", "ICVE_CONFIG_DIR": "/tmp/old-cfg"}, clear=False):
+            self.assertEqual(config_directory(), Path("/tmp/studia-cfg"))
+        with patch.dict(os.environ, {"ICVE_CONFIG_DIR": "/tmp/old-cfg"}, clear=False):
+            os.environ.pop("STUDIA_CONFIG_DIR", None)
+            self.assertEqual(config_directory(), Path("/tmp/old-cfg"))
+
+
 if __name__ == "__main__":
     unittest.main()

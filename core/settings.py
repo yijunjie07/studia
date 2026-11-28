@@ -43,13 +43,26 @@ class ModelProfile:
         return self.id == DEFAULT_PROFILE_ID
 
 
+def _migrate_legacy_config_dir(target, legacy):
+    if target.exists() or not legacy.exists():
+        return target
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        legacy.rename(target)
+        return target
+    except OSError:
+        return legacy
+
+
 def config_directory():
-    override = os.environ.get("ICVE_CONFIG_DIR")
+    override = os.environ.get("STUDIA_CONFIG_DIR") or os.environ.get("ICVE_CONFIG_DIR")
     if override:
         return Path(override).expanduser()
     if os.name == "nt":
-        return Path(os.environ.get("LOCALAPPDATA", Path.home())) / "icve-ai-assistant"
-    return Path.home() / ".config" / "icve-ai-assistant"
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home()))
+    else:
+        base = Path.home() / ".config"
+    return _migrate_legacy_config_dir(base / "studia", base / "icve-ai-assistant")
 
 
 ANSWER_PACES = ("steady", "fast")

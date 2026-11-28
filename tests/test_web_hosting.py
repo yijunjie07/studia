@@ -1316,7 +1316,7 @@ if __name__ == "__main__":
 class LogExportTest(unittest.TestCase):
     def test_only_lines_inside_the_window_and_their_tracebacks(self):
         with tempfile.TemporaryDirectory() as directory:
-            day = Path(directory) / "icve-ai-assistant-log_2026-11-01.log"
+            day = Path(directory) / "studia-log_2026-11-01.log"
             day.write_text("[2026-11-01 08:00:00,001][1][a.py][line: 1][INFO] :: early\n"
                            "[2026-11-01 09:30:00,001][1][a.py][line: 1][ERROR] :: boom\n"
                            "Traceback (most recent call last):\n"
@@ -1330,6 +1330,18 @@ class LogExportTest(unittest.TestCase):
             self.assertIn('"login"', export_logs(directory, "audit", at("2026-11-01 09:00"), at("2026-11-01 10:00")))
             self.assertEqual(export_logs(directory, "app", at("2026-11-02 09:00"), at("2026-11-02 10:00")),
                              "这段时间没有日志。\n")
+
+    def test_export_reads_legacy_and_new_daily_log_files_together(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "icve-ai-assistant-log_2026-11-01.log").write_text(
+                "[2026-11-01 09:10:00,001][1][a.py][line: 1][INFO] :: before-upgrade\n", encoding="utf-8")
+            Path(directory, "studia-log_2026-11-01.log").write_text(
+                "[2026-11-01 09:20:00,001][1][a.py][line: 1][INFO] :: after-upgrade\n", encoding="utf-8")
+            at = lambda text: time.mktime(time.strptime(text, "%Y-%m-%d %H:%M"))
+            lines = export_logs(directory, "app", at("2026-11-01 09:00"), at("2026-11-01 10:00")).splitlines()
+            self.assertEqual(len(lines), 2)
+            self.assertIn("before-upgrade", lines[0])
+            self.assertIn("after-upgrade", lines[1])
 
 
 class DailyLogFileTest(unittest.TestCase):
@@ -1348,14 +1360,14 @@ class DailyLogFileTest(unittest.TestCase):
                     handler.handle(record)
                 handler.close()
                 day = lambda t: time.strftime("%Y-%m-%d", time.localtime(t))
-                self.assertEqual(Path("icve-ai-assistant-log_%s.log" % day(today)).read_text().strip(), "today")
-                self.assertEqual(Path("icve-ai-assistant-log_%s.log" % day(today + 86400)).read_text().strip(), "tomorrow")
+                self.assertEqual(Path("studia-log_%s.log" % day(today)).read_text().strip(), "today")
+                self.assertEqual(Path("studia-log_%s.log" % day(today + 86400)).read_text().strip(), "tomorrow")
             finally:
                 os.chdir(cwd)
 
     def test_export_finds_lines_an_older_server_left_in_the_previous_days_file(self):
         with tempfile.TemporaryDirectory() as directory:
-            Path(directory, "icve-ai-assistant-log_2026-11-01.log").write_text(
+            Path(directory, "studia-log_2026-11-01.log").write_text(
                 "[2026-11-02 00:01:53,616][1][api.py][line: 1][WARNING] :: 智慧树接口失败：POST x\n", encoding="utf-8")
             at = lambda text: time.mktime(time.strptime(text, "%Y-%m-%d %H:%M"))
             self.assertIn("智慧树接口失败", export_logs(directory, "app", at("2026-11-02 00:00"), at("2026-11-02 09:00")))
