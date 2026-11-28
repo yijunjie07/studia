@@ -1341,7 +1341,7 @@ def export_logs(directory, kind, start, end):
         last = datetime.date.fromtimestamp(end)
         files = []
         while day <= last:
-            files.append(Path(directory) / ("icve-ai-assistant-log_%s.log" % day.isoformat()))
+            files.extend(sorted(Path(directory).glob("*-log_%s.log" % day.isoformat())))
             day += datetime.timedelta(days=1)
     lines, size, keep = [], 0, False
     for path in files:

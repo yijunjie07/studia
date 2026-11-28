@@ -91,7 +91,7 @@ class DailyFileHandler(logging.FileHandler):
 
     @staticmethod
     def path(day):
-        return './icve-ai-assistant-log_{t}.log'.format(t=day.isoformat())
+        return './studia-log_{t}.log'.format(t=day.isoformat())
 
     def emit(self, record):
         day = datetime.date.fromtimestamp(record.created)

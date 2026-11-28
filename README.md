@@ -87,7 +87,7 @@ uv run StartWork.py --web
 
 浏览器会自动打开网页版，只有本机能访问。去掉 `--web` 进入终端版。更新：`git pull --ff-only && uv sync --locked`。
 
-本机模式的配置在 `~/.config/icve-ai-assistant/settings.json`（Windows 在 `%LOCALAPPDATA%\icve-ai-assistant\`），里面的登录令牌和 Key **没有加密**，不要分享。
+本机模式的配置在 `~/.config/studia/settings.json`（Windows 在 `%LOCALAPPDATA%\studia\`），里面的登录令牌和 Key **没有加密**，不要分享。
 
 ## AI 模型
 
