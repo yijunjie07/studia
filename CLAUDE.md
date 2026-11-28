@@ -9,3 +9,4 @@
 - 托管模式下成员填的模型地址不能指向内网（`web.server.public_endpoint`），测试里用 `patch("web.server.resolve_host", ...)` 代替真实 DNS。
 - 智慧树 `getSaveAnswerLockResult` 的 `state`：1 可以进考试、2 要做身份验证、3 禁止考试（照平台自己考试列表页 onlineexamh5new 的写法；以前把 1 当成“已锁定”，正常的考试全被拦了）。要用户先去平台操作、或可能在平台上被改掉状态的试卷（要身份验证、能开考的）标 `_waiting`：后端这类列表只缓存 `WAITING_TTL` 秒，前端在用户回到页面时跳过缓存重读（`recheckWaiting`）。
 - 智慧树每次进入考试都要图片验证码 + 诚信承诺书（`changeCodeImg` → `codeImgIsRight`，参数 `encryptedStuExamId` 就是列表的 `id`），没过的话 `doExam` 回 msg 3。网页在作答前弹窗让用户自己输（`examCode`），考试排在任务最前面；考试的验证码不交给 AI 识别。`doExam` 本身就是开考：考试时间内还没开考的考试（`_start`）也走这个弹窗，但给图之前服务器先照平台的顺序做 `exam_entry_check`（异常记录、剩余时间、开考才查的学习进度、旧版系统、定位、人脸）：需要定位扫码就在同一弹窗里展示平台的定位二维码（`location/createEncodeImage`）并轮询 / 点「我已开启定位」查 `location/queryEncodeImageIsPass`，通过后自动续上人脸检查和验证码；要人脸才只能去网页。能开考的考试不自动勾选。终端版不能输验证码，这类考试标成「请用网页版」。
+- 界面文案保持克制：能从标题、按钮或上下文看懂的就不加副标题和说明文字；同一信息在一屏只出现一次，不重复回显；不为填满卡片写凑字数的空话（如“当前空闲，随时可启动学习”）；内部 ID、已登录后的登录方式等低频信息不往主视图塞；能由操作按钮表达的状态不重复挂胶囊。

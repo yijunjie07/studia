@@ -328,7 +328,7 @@ export async function request(path, method, body) {
   await new Promise((resolve) => setTimeout(resolve, 200));
   let m;
   if (path === "/api/state") return { platforms, jobs: Object.values(jobs), history, issue_report: issueReportOn };
-  if (path === "/api/auth/me") return { user: { id: "mock", username: "演示", role: new URLSearchParams(location.search).has("admin") ? "admin" : "member", has_password: true, linuxdo: null }, csrf: "mock", oauth: { enabled: false, linuxdo: false } };
+  if (path === "/api/auth/me") return { user: { id: "mock", username: "演示", role: new URLSearchParams(location.search).has("admin") ? "admin" : "member", email: "demo@example.com", created: Date.now() / 1000 - 28 * 86400, has_password: true, linuxdo: { username: "demo", trust_level: 3 } }, csrf: "mock", mail: true, oauth: { enabled: true, linuxdo: true } };
   if (path === "/api/reports" && method === "POST") {
     if (!issueReportOn) throw new Error("管理员已关闭课程适配上报");
     return { ok: true, id: "rep_mock", already_reported: false, report_count: 1, reporter_count: 1 };

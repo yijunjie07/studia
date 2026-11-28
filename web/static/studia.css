@@ -700,9 +700,9 @@ body.dragging, body.dragging * { cursor: grabbing !important; user-select: none;
 .log_range input, .log_range select { height: 36px; padding: 0 11px; font: 13px var(--sans); color: var(--text); }
 
 /* Profile page: identity card + live stats strip + dual cards (学习平台 & 账号与安全). */
-.profile_hero { border-radius: 10px; background: linear-gradient(125deg, color-mix(in srgb, var(--indigo) 8%, var(--card)), var(--card) 58%);
-  box-shadow: inset 0 0 0 1px var(--line-2), 0 2px 10px rgb(20 24 30 / .04); overflow: hidden; }
-:root[data-theme="night"] .profile_hero { box-shadow: inset 0 0 0 1px rgb(255 255 255 / .08), 0 8px 24px rgb(0 0 0 / .28); }
+.profile_hero { border-radius: 10px; background: linear-gradient(125deg, color-mix(in srgb, var(--indigo) 10%, var(--card)), var(--card) 60%);
+  border: 1px solid color-mix(in srgb, var(--indigo) 28%, transparent); box-shadow: 0 1px 2px rgb(var(--ink) / .04); overflow: hidden; }
+:root[data-theme="night"] .profile_hero { border-color: color-mix(in srgb, var(--indigo) 28%, transparent); box-shadow: 0 8px 24px rgb(0 0 0 / .28); }
 .profile_head { display: flex; align-items: center; gap: 18px; padding: 24px 26px; }
 .profile_avatar { display: grid; place-items: center; flex: none; width: 58px; height: 58px; border-radius: 14px; background: rgb(var(--ink)); color: var(--paper); font-size: 24px; font-weight: 700; letter-spacing: -.02em; }
 .profile_avatar.admin { background: linear-gradient(145deg, var(--indigo), color-mix(in srgb, var(--indigo) 72%, #111)); color: #fff; }
@@ -710,11 +710,10 @@ body.dragging, body.dragging * { cursor: grabbing !important; user-select: none;
 .profile_who { flex: 1; min-width: 0; }
 .profile_name { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .profile_name h1 { margin: 0; font-size: 22px; font-weight: 700; line-height: 1.25; letter-spacing: -.015em; overflow-wrap: anywhere; }
-.profile_id { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: 4px; background: var(--indigo-soft); color: var(--indigo); font-size: 11px; font-weight: 600; }
-.profile_meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 7px; margin: 6px 0 0; font-size: 13px; color: var(--text-3); overflow-wrap: anywhere; }
+.profile_meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 7px; margin: 4px 0 0; font-size: 13px; color: var(--text-3); overflow-wrap: anywhere; }
 .profile_meta .sep { color: var(--text-4); }
 .profile_stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid var(--line); background: color-mix(in srgb, var(--paper-2) 55%, var(--card)); }
-.pstat { display: flex; flex-direction: column; gap: 5px; min-width: 0; padding: 18px 24px 20px; }
+.pstat { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 15px 24px 16px; }
 .pstat + .pstat { border-left: 1px solid var(--line); }
 .pstat_label { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 500; color: var(--text-3); }
 .pstat_ico { display: grid; place-items: center; flex: none; width: 22px; height: 22px; border-radius: 5px; }
@@ -727,10 +726,9 @@ body.dragging, body.dragging * { cursor: grabbing !important; user-select: none;
 .pstat_sub { font-size: 12px; color: var(--text-3); }
 .profile_grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 20px; align-items: start; }
 .profile_card { border-radius: 10px; background: var(--card); box-shadow: 0 0 0 1px var(--line); overflow: hidden; }
-.pcard_head { display: flex; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+.pcard_head { display: flex; align-items: center; gap: 11px; padding: 13px 20px; border-bottom: 1px solid var(--line); }
 .pcard_head h2 { margin: 0; font-size: 15px; font-weight: 700; line-height: 1.3; }
-.pcard_head p { margin: 2px 0 0; font-size: 12px; color: var(--text-3); }
-.pcard_ico { display: grid; place-items: center; flex: none; width: 34px; height: 34px; border-radius: 8px; }
+.pcard_ico { display: grid; place-items: center; flex: none; width: 30px; height: 30px; border-radius: 7px; }
 .pcard_ico.indigo { background: var(--indigo-soft); color: var(--indigo); }
 .pcard_ico.celadon { background: var(--celadon-soft); color: var(--celadon); }
 .pcard_body > * + * { border-top: 1px solid var(--line); }
@@ -805,6 +803,7 @@ body.dragging, body.dragging * { cursor: grabbing !important; user-select: none;
 .modal[open]::backdrop { animation: fade calc(.45s * var(--pace)) var(--ease) both; }
 @keyframes dialog-in { from { clip-path: inset(50% -40px 50% -40px); transform: scale(.985); } to { clip-path: inset(-40px); } }
 .modal h3 { margin: 0; font-size: 17.5px; font-weight: 700; letter-spacing: -.015em; line-height: 1.35; outline: none; }
+.modal h3 + .auth_field, .modal h3 + .form_grid { margin-top: 16px; }
 .modal .modal_paper { margin: 8px 0 0; font-size: 13.5px; font-weight: 600; color: var(--text); line-height: 1.45; }
 .modal .sub { margin: 6px 0 18px; font-size: 13px; color: var(--text-3); line-height: 1.65; }
 .modal .sub b { color: var(--text); font-weight: 600; }
