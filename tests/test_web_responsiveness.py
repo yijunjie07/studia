@@ -63,6 +63,7 @@ class Fixture(SimpleHTTPRequestHandler):
             self.send_response(200)
             data = {"/api/mode": {"mode": "hosted" if self.server.admin else "local"},
                     "/api/auth/me": {"user": {"id": "a1", "username": "admin", "role": "admin"}, "csrf": "c", "mail": False},
+                    "/api/settings": {"models": [], "concurrency": {"ai": 1, "study": 1}},
                     "/api/state": {"platforms": PLATFORMS, "jobs": self.server.own_jobs, "history": [],
                                    **({"site_jobs": self.server.site_jobs} if self.server.admin else {})},
                     "/api/platforms/mooc/courses": {"courses": []},
@@ -278,22 +279,22 @@ class WebResponsivenessTests(unittest.TestCase):
                 self.page.locator('[data-oauth-enabled="1"]').click()
                 self.page.locator('[data-oauth-enabled="1"][aria-pressed="true"]').wait_for(timeout=3000)
 
-                # 3. 个人资料 and 设置 are separate: sidebar menu has both, 设置 holds only 平台账号, 个人资料 holds user profile.
+                # 3. 个人资料 is a full profile page (hero + stats + 学习平台 + 账号与安全); 设置 only has AI 模型 & 偏好.
                 self.page.locator("[data-me]").click()
                 self.page.locator('.me_menu [data-go="#/profile"]').wait_for(timeout=3000)
                 self.page.locator('.me_menu [data-go="#/settings"]').wait_for(timeout=3000)
                 self.page.locator('.me_menu [data-go="#/profile"]').click()
-                self.page.get_by_role("heading", name="个人资料").wait_for(timeout=3000)
+                self.page.locator(".profile_hero").wait_for(timeout=3000)
+                self.assertEqual(self.page.locator(".profile_stats .pstat").count(), 3)
+                self.page.get_by_role("heading", name="学习平台").wait_for(timeout=3000)
+                self.page.get_by_role("heading", name="账号与安全").wait_for(timeout=3000)
                 self.page.locator("[data-linuxdo-bind]").wait_for(timeout=3000)
                 self.assertGreater(self.page.get_by_text("邮箱", exact=True).count(), 0)
                 self.assertGreater(self.page.get_by_text("密码", exact=True).count(), 0)
-                self.assertEqual(self.page.get_by_role("heading", name="平台账号").count(), 0)
 
-                self.page.goto(base + "/#/settings/account", wait_until="domcontentloaded")
-                self.page.get_by_role("tab", name="平台账号").wait_for(timeout=3000)
-                self.page.get_by_role("heading", name="平台账号").wait_for(timeout=3000)
-                self.assertEqual(self.page.locator("[data-linuxdo-bind]").count(), 0)
-                self.assertEqual(self.page.locator('[data-account-edit="username"]').count(), 0)
+                self.page.goto(base + "/#/settings", wait_until="domcontentloaded")
+                tabs = self.page.locator('.tabs [role="tab"]').all_text_contents()
+                self.assertEqual(tabs, ["AI 模型", "偏好"])
 
                 # 4. Sign out: login page now displays the Linux DO OAuth button.
                 self.page.context.clear_cookies()
@@ -308,8 +309,9 @@ class WebResponsivenessTests(unittest.TestCase):
                 self.page.context.add_cookies([{"name": COOKIE, "value": tok, "url": base}])
                 self.page.goto("about:blank")
                 self.page.goto(base + "/#/profile", wait_until="domcontentloaded")
-                self.page.get_by_role("heading", name="个人资料").wait_for(timeout=3000)
-                self.page.get_by_text("@ld_user · 2 级 · 通过 Linux DO 登录").wait_for(timeout=3000)
+                self.page.locator(".profile_hero").wait_for(timeout=3000)
+                self.page.get_by_text("@ld_user · 2 级").first.wait_for(timeout=3000)
+                self.page.get_by_text("主登录方式").wait_for(timeout=3000)
                 self.page.wait_for_timeout(300)
                 self.assertEqual(self.page.locator("dialog[open]").count(), 0)
                 self.assertEqual(self.page.locator("[data-linuxdo-unbind]").count(), 0)

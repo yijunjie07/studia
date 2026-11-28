@@ -855,12 +855,14 @@ class HostedServerTest(unittest.TestCase):
         # Save credentials, secret is encrypted on disk and masked in responses.
         status, reply, _, _ = post({"linuxdo": {"client_id": "cid-1", "client_secret": "csec-12345678"}})
         self.assertEqual(status, 200)
-        self.assertEqual(reply["oauth"]["linuxdo"], {"client_id": "cid-1", "secret_hint": "cse…5678"})
+        self.assertEqual(reply["oauth"]["linuxdo"], {"client_id": "cid-1", "secret_hint": "cse…5678", "api_base": ""})
         self.assertFalse(reply["oauth"]["enabled"])
         self.assertEqual(reply["oauth"]["callback_url"], "%s/auth/linuxdo/callback" % self.hub.public_url)
         self.assertNotIn(b"csec-12345678", (self.hub.data / "site" / "settings.enc").read_bytes())
-        # Blank secret keeps existing value for same Client ID, rejected when Client ID changes.
-        self.assertEqual(post({"linuxdo": {"client_id": "cid-1", "client_secret": ""}})[0], 200)
+        # Blank secret keeps existing value for same Client ID and allows updating api_base; bad api_base is rejected.
+        self.assertEqual(post({"linuxdo": {"client_id": "cid-1", "client_secret": "", "api_base": "ftp://bad"}})[0], 400)
+        upd = post({"linuxdo": {"client_id": "cid-1", "client_secret": "", "api_base": "https://studia.example/linuxdo-proxy/"}})
+        self.assertEqual((upd[0], upd[1]["oauth"]["linuxdo"]["api_base"]), (200, "https://studia.example/linuxdo-proxy"))
         self.assertEqual(self.hub.linuxdo()["client_secret"], "csec-12345678")
         self.assertEqual(post({"linuxdo": {"client_id": "cid-2", "client_secret": ""}})[0], 400)
         # Master switch controls /api/mode and /api/auth/me without clearing credentials.
@@ -1071,6 +1073,15 @@ class HostedServerTest(unittest.TestCase):
             "grant_type": "authorization_code", "code": "the-code", "redirect_uri": "https://s.example/auth/linuxdo/callback"})
         self.assertEqual(get.call_args[0][0], web.hosting.LINUXDO_USER_URL)
         self.assertEqual(get.call_args[1]["headers"]["Authorization"], "Bearer tok-abc")
+        # Custom reverse-proxy api_base rewrites token & userinfo URLs while keeping subpath.
+        with patch("web.hosting.requests.post", return_value=token_resp) as post2, \
+             patch("web.hosting.requests.get", return_value=user_resp) as get2:
+            web.hosting.linuxdo_exchange(
+                {"client_id": "cid", "client_secret": "csec", "api_base": "https://studia.example/linuxdo-proxy/"},
+                "the-code", "https://s.example/auth/linuxdo/callback",
+            )
+        self.assertEqual(post2.call_args[0][0], "https://studia.example/linuxdo-proxy/oauth2/token")
+        self.assertEqual(get2.call_args[0][0], "https://studia.example/linuxdo-proxy/api/user")
 
 
 class IsolationUnitTest(unittest.TestCase):

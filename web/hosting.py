@@ -44,27 +44,34 @@ COOKIE = "studia_session"
 OAUTH_STATE_COOKIE = "studia_oauth_state"
 OAUTH_TTL = 600
 KEY_ENV = "STUDIA_SECRET_KEY"
-LINUXDO_AUTHORIZE_URL = "https://connect.linux.do/oauth2/authorize"
-LINUXDO_TOKEN_URL = "https://connect.linux.do/oauth2/token"
-LINUXDO_USER_URL = "https://connect.linux.do/api/user"
+LINUXDO_API_BASE = "https://connect.linux.do"
+LINUXDO_AUTHORIZE_URL = LINUXDO_API_BASE + "/oauth2/authorize"
+LINUXDO_TOKEN_URL = LINUXDO_API_BASE + "/oauth2/token"
+LINUXDO_USER_URL = LINUXDO_API_BASE + "/api/user"
 LINUXDO_USER_AGENT = "Studia/1.0 (+https://connect.linux.do)"
 logger = Logger(__name__).get_log()  # into the daily log file the admin exports
 
 
 def linuxdo_exchange(config, code, redirect_uri):
     """Exchange a Linux DO Connect authorization code for the user's profile. Raises HttpError on failure."""
+    base = (config.get("api_base") or LINUXDO_API_BASE).rstrip("/")
+    token_url = base + "/oauth2/token"
+    user_url = base + "/api/user"
     headers = {"Accept": "application/json", "User-Agent": LINUXDO_USER_AGENT}
     try:
         token_resp = requests.post(
-            LINUXDO_TOKEN_URL,
+            token_url,
             auth=(config["client_id"], config["client_secret"]),
             data={"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri},
             headers=headers,
             timeout=15,
         )
+    except requests.Timeout as exc:
+        logger.warning("Linux DO 换取令牌超时（%s）：%s", token_url, exc)
+        raise HttpError(502, "连接 Linux DO 超时，请检查服务器网络或在 OAuth 设置中填写反代地址") from None
     except requests.RequestException as exc:
-        logger.warning("Linux DO 换取令牌失败：%s", exc)
-        raise HttpError(502, "连不上 Linux DO，请稍后再试") from None
+        logger.warning("Linux DO 换取令牌失败（%s）：%s", token_url, exc)
+        raise HttpError(502, "连不上 Linux DO，请检查服务器网络或在 OAuth 设置中填写反代地址") from None
     if token_resp.status_code != 200:
         logger.warning("Linux DO 换取令牌返回 %s：%s", token_resp.status_code, token_resp.text[:200])
         raise HttpError(400, "Linux DO 授权验证失败，请重试（或检查管理员配置的应用密钥与回调地址）")
@@ -76,13 +83,16 @@ def linuxdo_exchange(config, code, redirect_uri):
         raise HttpError(400, "Linux DO 没有返回有效的访问令牌，请重试")
     try:
         user_resp = requests.get(
-            LINUXDO_USER_URL,
+            user_url,
             headers={**headers, "Authorization": "Bearer %s" % access_token},
             timeout=15,
         )
+    except requests.Timeout as exc:
+        logger.warning("Linux DO 获取用户信息超时（%s）：%s", user_url, exc)
+        raise HttpError(502, "连接 Linux DO 超时，请检查服务器网络或在 OAuth 设置中填写反代地址") from None
     except requests.RequestException as exc:
-        logger.warning("Linux DO 获取用户信息失败：%s", exc)
-        raise HttpError(502, "连不上 Linux DO，请稍后再试") from None
+        logger.warning("Linux DO 获取用户信息失败（%s）：%s", user_url, exc)
+        raise HttpError(502, "连不上 Linux DO，请检查服务器网络或在 OAuth 设置中填写反代地址") from None
     if user_resp.status_code != 200:
         logger.warning("Linux DO 获取用户信息返回 %s：%s", user_resp.status_code, user_resp.text[:200])
         raise HttpError(400, "读取 Linux DO 用户信息失败，请重试")
@@ -409,12 +419,18 @@ class Hub:
             if raw is None:
                 next_linuxdo = None
             else:
-                if not isinstance(raw, dict) or any(k in raw and not isinstance(raw[k], str) for k in ("client_id", "client_secret")):
+                fields = ("client_id", "client_secret", "api_base")
+                if not isinstance(raw, dict) or any(k in raw and not isinstance(raw[k], str) for k in fields):
                     raise HttpError(400, "Linux DO 配置格式不正确")
                 client_id = raw.get("client_id", "").strip()
                 client_secret = raw.get("client_secret", "").strip()
+                api_base = raw.get("api_base", "").strip().rstrip("/")
                 if not client_id:
                     raise HttpError(400, "请填写 Client ID")
+                if api_base:
+                    parsed = urlsplit(api_base)
+                    if parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.query or parsed.fragment:
+                        raise HttpError(400, "服务端接口地址格式不正确，请填写完整的 http(s):// 地址")
                 previous = self.linuxdo()
                 if not client_secret and previous:
                     # A blank secret keeps the saved one, but never pairs it with a different Client ID.
@@ -423,7 +439,7 @@ class Hub:
                     client_secret = previous["client_secret"]
                 if not client_secret:
                     raise HttpError(400, "请填写 Client Secret")
-                next_linuxdo = {"client_id": client_id, "client_secret": client_secret}
+                next_linuxdo = {"client_id": client_id, "client_secret": client_secret, "api_base": api_base}
         if "enabled" in body:
             enabled = body["enabled"]
             if not isinstance(enabled, bool):
@@ -607,7 +623,11 @@ class Hub:
                     "enabled": self.oauth_enabled(),
                     "callback_url": self.linuxdo_callback_url(),
                     "icon_url": "%s/icon-512.png" % self.public_url,
-                    "linuxdo": linuxdo and {"client_id": linuxdo["client_id"], "secret_hint": key_hint(linuxdo["client_secret"])},
+                    "linuxdo": linuxdo and {
+                        "client_id": linuxdo["client_id"],
+                        "secret_hint": key_hint(linuxdo["client_secret"]),
+                        "api_base": linuxdo.get("api_base") or "",
+                    },
                 },
                 "zhs_parallel_study": bool(self.accounts.setting("zhs_parallel_study", False)),
                 "answer_pace": self.answer_pace(),

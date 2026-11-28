@@ -798,7 +798,7 @@ function pagerHtml(kind, total, unit) {
       <span class="mono">${list.page} / ${pages}</span>
       <button class="btn small" data-list-page="${list.page + 1}" ${list.page >= pages ? "disabled" : ""}>下一页</button></span></div>`;
 }
-const SETTINGS_TABS = [["account", "平台账号"], ["models", "AI 模型"], ["study", "偏好"]];
+const SETTINGS_TABS = [["models", "AI 模型"], ["study", "偏好"]];
 function pageHead(title, sub, base, tabs, active) {
   return `<h1 class="title">${title}</h1>${sub ? `<p class="sub">${sub}</p>` : ""}
     <div class="tabs" role="tablist">${tabs.map(([k, label]) => `<button class="tab" role="tab" aria-selected="${k === active}" data-go="${base}/${k}">${label}</button>`).join("")}</div>`;
@@ -1048,7 +1048,7 @@ const VIEWS = {
         `<button class="btn small" data-oauth-enabled="${value ? 1 : 0}" aria-pressed="${Boolean(oauth.enabled) === value}" ${attrs}>${label}</button>`;
       const ldRow = ld
         ? `<div class="model plain"><span class="m1"><b>Linux DO</b><span class="pill blue">已配置</span>
-            <small>Client ID：${esc(ld.client_id)} · Secret：${esc(ld.secret_hint)}</small></span>
+            <small>Client ID：${esc(ld.client_id)} · Secret：${esc(ld.secret_hint)}${ld.api_base ? ` · 反代：${esc(ld.api_base)}` : ""}</small></span>
           <span class="row_btns"><button class="btn small" data-linuxdo-edit>编辑</button>
             <button class="btn small danger" data-linuxdo-clear data-confirm="确认清除">清除</button></span></div>`
         : `<div class="model plain"><span class="m1"><b>Linux DO</b><small class="sans">未配置 · 在 connect.linux.do/dash/sso 创建应用后填写凭证</small></span>
@@ -1363,15 +1363,18 @@ const VIEWS = {
     const me = session.user;
     const row = (attrs, icon, label, sub = "", end = ICON.chev) =>
       `<button class="lrow" ${attrs}>${icon}<span class="lrow_t"><b>${esc(label)}</b>${sub ? `<small>${esc(sub)}</small>` : ""}</span>${end}</button>`;
-    setPage(`<div class="me_card"><span class="avatar big">${esc(me ? me.username.slice(0, 1).toUpperCase() : "本")}</span>
-        <span class="who"><h1>${esc(me ? me.username : "本机")}</h1><small>${me ? (me.role === "admin" ? "管理员" : "成员") : "只有这台电脑能访问"}</small></span></div>
+    const card = me
+      ? `<button class="me_card me_link" data-go="#/profile"><span class="avatar big">${esc(me.username.slice(0, 1).toUpperCase())}</span>
+          <span class="who"><h1>${esc(me.username)}</h1><small>${me.role === "admin" ? "管理员" : "成员"}${me.linuxdo ? ` · Linux DO @${esc(me.linuxdo.username || me.linuxdo.id)}` : ""}</small></span>${ICON.chev}</button>`
+      : `<div class="me_card"><span class="avatar big">本</span><span class="who"><h1>本机</h1><small>只有这台电脑能访问</small></span></div>`;
+    const platTarget = me ? "#/profile" : "#/settings/study";
+    setPage(`${card}
       <div class="section"><h2>平台账号</h2></div>
-      <div class="lrows">${state.platforms.map((p) => row(`data-go="${p.rescan || qaSoon(p) ? rescanLink(p) : p.logged_in ? "#/settings/account" : `#/login/${p.id}`}"`,
+      <div class="lrows">${state.platforms.map((p) => row(`data-go="${p.rescan || qaSoon(p) ? rescanLink(p) : p.logged_in ? platTarget : `#/login/${p.id}`}"`,
         `<span class="plat ${p.id}">${INITIAL[p.id]}</span>`, p.name, platformStatus(p),
         p.rescan || qaSoon(p) ? '<span class="lrow_go">扫码</span>' : p.logged_in ? ICON.chev : '<span class="lrow_go">登录</span>')).join("")}</div>
       <div class="section"><h2>设置</h2></div>
-      <div class="lrows">${me ? row('data-go="#/profile"', ICON.user, "个人资料") : ""}${row('data-go="#/settings/account"', ICON.key, "平台账号")}${row('data-go="#/settings/models"', ICON.spark, "AI 模型")}
-        ${row('data-go="#/settings/study"', ICON.gear, "偏好")}${me?.role === "admin" ? row('data-go="#/admin"', ICON.shield, "管理后台") : ""}</div>
+      <div class="lrows">${row('data-go="#/settings/models"', ICON.spark, "AI 模型")}${row('data-go="#/settings/study"', ICON.gear, "偏好")}${me?.role === "admin" ? row('data-go="#/admin"', ICON.shield, "管理后台") : ""}</div>
       <div class="lrows" style="margin-top:14px">${row("data-toggle-theme", ICON.moon, "夜读模式", "", '<span class="switch" aria-hidden="true"></span>')}</div>
       ${me ? '<button class="btn danger me_out" data-signout>退出 Studia</button>' : ""}`);
   },
@@ -1410,25 +1413,92 @@ const VIEWS = {
     const me = session.user;
     if (!me) return go("#/settings");
     const admin = me.role === "admin", hasPassword = me.has_password !== false, ld = me.linuxdo;
-    const nameRow = `<div class="model plain"><span class="account_who"><span class="avatar big">${esc(me.username.slice(0, 1).toUpperCase())}</span>
-          <span class="m1"><b>${esc(me.username)}</b><span class="pill ${admin ? "blue" : ""}">${admin ? "管理员" : "成员"}</span>
-          <small class="sans">${me.created ? `${new Date(me.created * 1000).toLocaleDateString()} 加入` : ""}</small></span></span>
-          <span class="row_btns"><button class="btn small" data-account-edit="username">修改用户名</button></span></div>`;
-    const linuxdoRow = (ld || session.oauth?.linuxdo) ? `<div class="model plain"><span class="m1"><b>Linux DO</b><small class="sans">${ld
-          ? `@${esc(ld.username || ld.id)}${ld.trust_level != null ? ` · ${ld.trust_level} 级` : ""}${hasPassword ? "" : " · 通过 Linux DO 登录"}`
-          : "未绑定 · 绑定后可用 Linux DO 一键登录"}</small></span>
+    const connected = state.platforms.filter((p) => p.logged_in);
+    const loadingCourses = connected.some((p) => !state.courses[p.id]);
+    const totalCourses = connected.reduce((sum, p) => sum + (state.courses[p.id]?.length || 0), 0);
+    const doneJobs = state.history.filter((j) => j.state === "done").length;
+    const lastJob = state.history[0];
+    const running = state.jobs.filter((j) => j.state === "running").length;
+    const metaParts = [
+      ld ? `Linux DO @${esc(ld.username || ld.id)}${ld.trust_level != null ? ` · ${ld.trust_level} 级` : ""}` : "",
+      me.email ? esc(me.email) : "",
+      me.created ? `${new Date(me.created * 1000).toLocaleDateString()} 加入` : "",
+    ].filter(Boolean);
+
+    const hero = `<section class="profile_hero">
+      <div class="profile_head">
+        <span class="profile_avatar ${admin ? "admin" : ""}">${esc(me.username.slice(0, 1).toUpperCase())}</span>
+        <div class="profile_who">
+          <div class="profile_name">
+            <h1>${esc(me.username)}</h1>
+            <span class="pill ${admin ? "blue" : ""}">${admin ? "管理员" : "成员"}</span>
+            <span class="profile_id mono">ID ${esc(String(me.id || "").slice(0, 8))}</span>
+          </div>
+          <p class="profile_meta">${metaParts.join('<span class="sep">·</span>') || "Studia 成员"}</p>
+        </div>
+        <button class="btn small" data-account-edit="username">修改用户名</button>
+      </div>
+      <div class="profile_stats">
+        <div class="pstat">
+          <span class="pstat_label"><span class="pstat_ico celadon">${ICON.cells}</span>在学课程</span>
+          <strong class="pstat_val mono">${connected.length && loadingCourses ? "—" : `${totalCourses}`}<small>门</small></strong>
+          <span class="pstat_sub">已连接 ${connected.length} / ${state.platforms.length} 个学习平台</span>
+        </div>
+        <div class="pstat">
+          <span class="pstat_label"><span class="pstat_ico indigo">${ICON.pulse}</span>并行任务</span>
+          <strong class="pstat_val mono">${running}<small>/ ${state.jobLimit}</small></strong>
+          <span class="pstat_sub">${state.jobs.length ? `队列中共 ${state.jobs.length} 个任务` : "当前空闲，随时可启动学习"}</span>
+        </div>
+        <div class="pstat">
+          <span class="pstat_label"><span class="pstat_ico ink">${ICON.spark}</span>已完成任务</span>
+          <strong class="pstat_val mono">${doneJobs}<small>次</small></strong>
+          <span class="pstat_sub">${lastJob ? `最近一次 ${ago(lastJob.ended || lastJob.started)}` : "还没有运行过任务"}</span>
+        </div>
+      </div>
+    </section>`;
+
+    const linuxdoRow = (ld || session.oauth?.linuxdo) ? `<div class="pcard_row"><span class="m1"><b>Linux DO</b>${ld ? '<span class="pill blue">已绑定</span>' : ""}
+          <small class="sans">${ld ? `@${esc(ld.username || ld.id)}${ld.trust_level != null ? ` · ${ld.trust_level} 级` : ""}` : "未绑定 · 绑定后可用 Linux DO 一键登录"}</small></span>
           <span class="row_btns">${ld
-            ? (hasPassword ? '<button class="btn small danger" data-linuxdo-unbind data-confirm="确认解绑">解绑</button>' : "")
+            ? (hasPassword ? '<button class="btn small danger" data-linuxdo-unbind data-confirm="确认解绑">解绑</button>' : '<span class="pill">主登录方式</span>')
             : '<button class="btn small primary" data-linuxdo-bind>绑定</button>'}</span></div>` : "";
-    const emailRow = hasPassword ? `<div class="model plain"><span class="m1"><b>邮箱</b><small class="sans">${me.email ? esc(me.email)
-          : session.mail ? "未绑定" : "管理员未配置邮件服务"}</small></span>
+    const emailRow = hasPassword ? `<div class="pcard_row"><span class="m1"><b>邮箱</b>
+          <small class="sans">${me.email ? esc(me.email) : session.mail ? "未绑定 · 用于找回和修改密码" : "管理员未配置邮件服务"}</small></span>
           <span class="row_btns">${session.mail ? `<button class="btn small ${me.email ? "" : "primary"}" data-account-edit="email">${me.email ? "更换" : "绑定邮箱"}</button>`
             : admin ? '<button class="btn small" data-go="#/admin/site">去配置</button>' : ""}</span></div>` : "";
-    const passwordRow = hasPassword ? `<div class="model plain"><span class="m1"><b>密码</b><small class="sans">${me.email && session.mail
-          ? "通过邮箱重置链接修改密码" : "绑定邮箱并配置邮件服务后可修改"}</small></span>
+    const passwordRow = hasPassword ? `<div class="pcard_row"><span class="m1"><b>密码</b>
+          <small class="sans">${me.email && session.mail ? "通过邮箱重置链接修改密码" : "绑定邮箱并配置邮件服务后可修改"}</small></span>
           <span class="row_btns"><button class="btn small" data-account-edit="password" ${me.email && session.mail ? "" : "disabled"}>修改密码</button></span></div>` : "";
-    setPage(`<h1 class="title">个人资料</h1>
-      <div class="models">${nameRow}${linuxdoRow}${emailRow}${passwordRow}</div>`);
+    const oauthOnlyNote = !hasPassword ? `<div class="pcard_row"><span class="m1"><b>免密登录</b>
+          <small class="sans">当前通过 Linux DO 授权登录，无需单独绑定邮箱或设置密码</small></span></div>` : "";
+
+    const securityCard = `<section class="profile_card">
+      <div class="pcard_head"><span class="pcard_ico indigo">${ICON.shield}</span><div><h2>账号与安全</h2><p>第三方登录授权、邮箱与密码保护</p></div></div>
+      <div class="pcard_body">${linuxdoRow}${emailRow}${passwordRow}${oauthOnlyNote}</div>
+    </section>`;
+
+    const platformCard = `<section class="profile_card">
+      <div class="pcard_head"><span class="pcard_ico celadon">${ICON.key}</span><div><h2>学习平台</h2><p>已连接的网课账号，用于同步课程与自动学习</p></div></div>
+      <div class="pcard_body">${state.platforms.map((p) => {
+        const list = state.courses[p.id];
+        const status = !p.logged_in ? (p.lapsed ? "登录已过期" : p.login === "qr" ? "App 扫码登录" : "职教云浏览器授权")
+          : [list ? `${list.length} 门课程` : "正在读取课程", p.login === "qr" ? "App 扫码" : "浏览器授权"].join(" · ");
+        return `<div class="pcard_row plat_row">
+        <span class="plat ${p.id}">${INITIAL[p.id]}</span>
+        <span class="m1"><b>${esc(p.name)}</b><span class="pill ${p.rescan || qaSoon(p) ? "wait" : p.logged_in ? "blue" : ""}">${p.rescan ? "需重新扫码" : p.logged_in ? "已连接" : "未登录"}</span>
+          <small class="sans">${esc(status)}</small></span>
+        <span class="row_btns">${p.rescan || qaSoon(p) ? `<button class="btn small primary" data-go="${rescanLink(p)}">重新扫码</button>` : ""}${p.logged_in ? `<button class="btn small danger" data-logout="${p.id}" data-confirm="确认退出">退出</button>` : `<button class="btn small primary" data-go="#/login/${p.id}">登录</button>`}</span></div>`;
+      }).join("")}</div>
+    </section>`;
+
+    setPage(`${hero}<div class="profile_grid">${platformCard}${securityCard}</div>`);
+
+    page.querySelectorAll("[data-logout]").forEach((el) => (el.onclick = async () => {
+      try { await api(`/api/platforms/${el.dataset.logout}/logout`, { method: "POST" }); } catch (e) { toast(e.message); return; }
+      await refreshState();
+      toast("已退出登录");
+      VIEWS.profile();
+    }));
     page.querySelectorAll("[data-account-edit]").forEach((el) => (el.onclick = () => {
       const kind = el.dataset.accountEdit;
       if (kind === "username") openUsernameModal();
@@ -1461,25 +1531,12 @@ const VIEWS = {
   async settings(tab = SETTINGS_TABS[0][0]) {
     tab = SETTINGS_TABS.some(([k]) => k === tab) ? tab : SETTINGS_TABS[0][0];
     const head = settingsHead(tab, "");
-    if (tab === "account") {
-      setPage(`${head}<div class="section"><h2>平台账号</h2></div>
-        <div class="models">${state.platforms.map((p) => `<div class="model"><span class="plat ${p.id}">${INITIAL[p.id]}</span>
-          <span class="m1"><b>${esc(p.name)}</b><small class="sans">${esc(platformStatus(p))} · ${p.login === "qr" ? "App 扫码登录" : "职教云浏览器授权"}</small></span><span></span>
-          <span class="row_btns">${p.rescan || qaSoon(p) ? `<button class="btn small primary" data-go="${rescanLink(p)}">重新扫码</button>` : ""}${p.logged_in ? `<button class="btn small danger" data-logout="${p.id}" data-confirm="确认退出">退出</button>` : `<button class="btn small primary" data-go="#/login/${p.id}">登录</button>`}</span></div>`).join("")}</div>`);
-      page.querySelectorAll("[data-logout]").forEach((el) => (el.onclick = async () => {
-        try { await api(`/api/platforms/${el.dataset.logout}/logout`, { method: "POST" }); } catch (e) { toast(e.message); return; }
-        await refreshState();
-        toast("已退出登录");
-        VIEWS.settings("account");
-      }));
-      return;
-    }
     // Draw from the last copy at once; repaint only if the server's copy differs.
     const cached = state.settings;
     if (cached) paintSettings(tab, head, cached, false);
     else setPage(`${head}<div class="empty loading">正在读取…</div>`);
     try { state.settings = await api("/api/settings"); } catch (error) { if (!cached) toast(error.message); return; }
-    if (location.hash.startsWith(`#/settings/${tab}`)) {
+    if (location.hash.startsWith("#/settings")) {
       if (!cached || JSON.stringify(cached) !== JSON.stringify(state.settings)) paintSettings(tab, head, state.settings, true);
     }
   },
@@ -1665,6 +1722,10 @@ function paintSettings(tab, head, data, again) {
     const row = (k, label, note) => `<div class="model plain stepper_row"><span class="m1"><b>${label}</b><small class="sans">${note}</small></span>
       <span class="stepper"><button class="btn small" data-step="${k}" data-d="-1" aria-label="减少" ${data.concurrency[k] <= 1 ? "disabled" : ""}>−</button>
         <output>${data.concurrency[k]}</output><button class="btn small" data-step="${k}" data-d="1" aria-label="增加" ${data.concurrency[k] >= 8 ? "disabled" : ""}>＋</button></span></div>`;
+    const localPlatforms = session.mode === "local" ? `<div class="section"><h2>学习平台</h2></div>
+      <div class="models">${state.platforms.map((p) => `<div class="model"><span class="plat ${p.id}">${INITIAL[p.id]}</span>
+        <span class="m1"><b>${esc(p.name)}</b><small class="sans">${esc(platformStatus(p))} · ${p.login === "qr" ? "App 扫码登录" : "职教云浏览器授权"}</small></span><span></span>
+        <span class="row_btns">${p.rescan || qaSoon(p) ? `<button class="btn small primary" data-go="${rescanLink(p)}">重新扫码</button>` : ""}${p.logged_in ? `<button class="btn small danger" data-logout="${p.id}" data-confirm="确认退出">退出</button>` : `<button class="btn small primary" data-go="#/login/${p.id}">登录</button>`}</span></div>`).join("")}</div>` : "";
     quiet = again;
     setPage(`${head}<div class="section"><h2>并发数量</h2><span class="aside">1–8</span></div>
       <div class="models">${row("ai", "AI 答题", "同时作答的题数")}${row("study", "自动学习", "同时学的资源数")}</div>
@@ -1672,8 +1733,14 @@ function paintSettings(tab, head, data, again) {
       <div class="models"><div class="model plain stepper_row"><span class="m1"><b>${fast ? "快速" : "稳妥"}</b><small class="sans">${fast
         ? "每步间隔 0.1–0.5 秒"
         : "每步间隔 0.5–2 秒"}</small></span>
-        <span class="row_btns">${paceButtons}</span></div></div>`}`);
+        <span class="row_btns">${paceButtons}</span></div></div>`}${localPlatforms}`);
     quiet = false;
+    page.querySelectorAll("[data-logout]").forEach((el) => (el.onclick = async () => {
+      try { await api(`/api/platforms/${el.dataset.logout}/logout`, { method: "POST" }); } catch (e) { toast(e.message); return; }
+      await refreshState();
+      toast("已退出登录");
+      paintSettings(tab, head, state.settings, true);
+    }));
     page.querySelectorAll("[data-pace]").forEach((el) => (el.onclick = async () => {
       const pace = el.dataset.pace;
       if ((state.settings.pace || "steady") === pace) return;
@@ -1927,6 +1994,8 @@ function openLinuxdoModal(oauth, onDone) {
       <label class="auth_field"><span>Client Secret</span>
         <span class="pw"><input class="mono_in" name="client_secret" type="password" autocomplete="new-password" spellcheck="false">
           <button type="button" class="pw_eye" data-reveal aria-label="显示密钥">显示</button></span></label>
+      <label class="auth_field"><span>服务端接口地址（选填）</span>
+        <input class="mono_in" name="api_base" inputmode="url" value="${esc(saved?.api_base || "")}" placeholder="留空默认 https://connect.linux.do（国内服务器可填反代地址）" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
       <p class="form_msg" role="alert"></p>
       <div class="modal_btns"><span class="grow"></span>
         <button type="button" class="btn" data-cancel>取消</button>
@@ -2041,9 +2110,10 @@ function renderModels(head, models, again = true) {
       <span class="row_btns">${m.active ? '<span class="in_use">使用中</span>' : '<button class="btn small primary" data-activate>改用</button>'}
         <button class="btn small" data-test>测试</button>${m.deletable ? '<button class="btn small" data-edit>编辑</button>' : ""}</span></div>`;
   };
+  const list = models || [];
   quiet = again;
   setPage(`${head}<div class="section">${PHONE.matches ? '<span class="grow"></span>' : "<h2>AI 模型</h2>"}<button class="link" data-add>＋ 添加模型</button></div>
-    <div class="models">${models.map(row).join("") || '<div class="model plain"><span class="m1"><small class="sans">还没有可用的模型</small></span></div>'}</div>`);
+    <div class="models">${list.map(row).join("") || '<div class="model plain"><span class="m1"><small class="sans">还没有可用的模型</small></span></div>'}</div>`);
   quiet = false;
   const reload = async () => {
     try { state.settings = await api("/api/settings"); renderModels(head, state.settings.models); } catch (e) { toast(e.message); }
@@ -2928,6 +2998,7 @@ function repaint() {
       if (name === "jobs") VIEWS.jobs(a);
       else if (name === "home") VIEWS.home();
       else if (name === "me") VIEWS.me();
+      else if (name === "profile") VIEWS.profile();
       // Signed in elsewhere; a fresh scan is done once the ticket is back.
       else if (name === "login" && platformOf(a)?.logged_in && !(b === "again" && rescannable(platformOf(a)))
                && (state.loginToken.cancelled || state.loginToken.qr !== a)) go(homeOf(platformOf(a)));
