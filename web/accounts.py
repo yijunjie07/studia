@@ -14,6 +14,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+from core.log import redact
+
 ITERATIONS = 600_000  # PBKDF2-SHA256, OWASP 2023; scrypt is missing from LibreSSL builds
 USERNAME = re.compile(r"^[\w.\-]{2,32}$")
 USERNAME_RULE = "用户名需 2–32 位，只能包含字母、数字、汉字、下划线、点或减号"
@@ -24,6 +26,8 @@ NO_PASSWORD = "!"  # sentinel for OAuth-only accounts; never matches check_passw
 SESSION_TTL = 7 * 86400
 INVITE_TTL = 7 * 86400
 RESET_TTL = 30 * 60
+ISSUE_REPORT_STATUSES = ("open", "resolved", "ignored")
+MAX_REPORT_REPORTERS = 50
 
 
 class AccountError(Exception):
@@ -86,6 +90,22 @@ class Accounts:
             provider TEXT NOT NULL, external_id TEXT NOT NULL, uid TEXT NOT NULL,
             username TEXT, name TEXT, trust_level INTEGER, created REAL,
             PRIMARY KEY (provider, external_id), UNIQUE (provider, uid));
+        CREATE TABLE IF NOT EXISTS issue_reports (
+            id TEXT PRIMARY KEY,
+            fingerprint TEXT NOT NULL UNIQUE,
+            platform TEXT NOT NULL,
+            course_id TEXT NOT NULL,
+            course_name TEXT NOT NULL,
+            course_type TEXT NOT NULL DEFAULT '',
+            course_kind TEXT NOT NULL DEFAULT '',
+            job_kind TEXT NOT NULL,
+            headline TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'open',
+            report_count INTEGER NOT NULL DEFAULT 1,
+            reporters_json TEXT NOT NULL DEFAULT '[]',
+            payload_json TEXT NOT NULL,
+            created REAL NOT NULL,
+            updated REAL NOT NULL);
     """
 
     def __init__(self, directory):
@@ -439,6 +459,171 @@ class Accounts:
                 raise AccountError("当前账号没有设置密码，不能解绑 Linux DO")
             if self.db.execute("DELETE FROM oauth_accounts WHERE provider = ? AND uid = ?", (provider, uid)).rowcount == 0:
                 raise AccountError("当前账号尚未绑定 Linux DO")
+
+    # ------------------------------------------------------------ course adaptation reports
+
+    @staticmethod
+    def _clean_note(note):
+        if not isinstance(note, str):
+            return ""
+        text = " ".join(note.split()).strip()
+        return redact(text)[:500]
+
+    @staticmethod
+    def _parse_json(raw, default):
+        try:
+            value = json.loads(raw) if raw else default
+            return value if isinstance(value, type(default)) else default
+        except (ValueError, TypeError):
+            return default
+
+    @classmethod
+    def _report_public(cls, row):
+        reporters = cls._parse_json(row["reporters_json"], [])
+        payload = cls._parse_json(row["payload_json"], {})
+        distinct_uids = {entry.get("uid") or entry.get("username") for entry in reporters if isinstance(entry, dict)}
+        public_reporters = [
+            {
+                "username": str(entry.get("username") or "成员"),
+                "at": entry.get("at"),
+                "note": str(entry.get("note") or ""),
+            }
+            for entry in reporters if isinstance(entry, dict)
+        ]
+        return {
+            "id": row["id"],
+            "fingerprint": row["fingerprint"],
+            "platform": row["platform"],
+            "course_id": row["course_id"],
+            "course_name": row["course_name"],
+            "course_type": row["course_type"],
+            "course_kind": row["course_kind"],
+            "job_kind": row["job_kind"],
+            "headline": row["headline"],
+            "status": row["status"],
+            "report_count": int(row["report_count"] or 1),
+            "reporter_count": max(1, len(distinct_uids)),
+            "reporters": public_reporters,
+            "payload": payload,
+            "created": row["created"],
+            "updated": row["updated"],
+        }
+
+    def submit_issue_report(self, check, *, uid, username, note=""):
+        """Upsert a sanitized course adaptation report grouped by its problem fingerprint."""
+        if not isinstance(check, dict) or not check.get("fingerprint"):
+            raise AccountError("上报内容无效")
+        fingerprint = str(check["fingerprint"])[:64]
+        platform = str(check.get("platform") or "")[:32]
+        course_id = str(check.get("course_id") or "")[:128]
+        course_name = str(check.get("course_name") or "未知课程")[:160]
+        course_type = str(check.get("course_type") or "")[:80]
+        course_kind = str(check.get("course_kind") or "")[:40]
+        job_kind = str(check.get("job_kind") or "")[:32]
+        job_id = str(check.get("job_id") or "")[:32]
+        headline = str(check.get("headline") or "检测到未完成或跳过的课程内容")[:200]
+        clean_note = self._clean_note(note)
+        now = time.time()
+        payload_json = json.dumps(check, ensure_ascii=False)
+        entry = {
+            "uid": str(uid or ""),
+            "username": str(username or "成员")[:64],
+            "job_id": job_id,
+            "at": now,
+            "note": clean_note,
+        }
+
+        with self.transaction():
+            existing = self.db.execute(
+                "SELECT * FROM issue_reports WHERE fingerprint = ?", (fingerprint,)
+            ).fetchone()
+            if existing is None:
+                report_id = secrets.token_hex(8)
+                self.db.execute(
+                    "INSERT INTO issue_reports (id, fingerprint, platform, course_id, course_name, "
+                    "course_type, course_kind, job_kind, headline, status, report_count, "
+                    "reporters_json, payload_json, created, updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        report_id, fingerprint, platform, course_id, course_name, course_type,
+                        course_kind, job_kind, headline, "open", 1,
+                        json.dumps([entry], ensure_ascii=False), payload_json, now, now,
+                    ),
+                )
+                return {
+                    "id": report_id,
+                    "fingerprint": fingerprint,
+                    "already_reported": False,
+                    "report_count": 1,
+                    "reporter_count": 1,
+                    "status": "open",
+                }
+
+            reporters = [r for r in self._parse_json(existing["reporters_json"], []) if isinstance(r, dict)]
+            dup = next(
+                (r for r in reporters
+                 if r.get("uid") == entry["uid"] and ((job_id and r.get("job_id") == job_id)
+                                                      or (not job_id and now - float(r.get("at") or 0) < 60))),
+                None,
+            )
+            report_count = int(existing["report_count"] or 1)
+            status = existing["status"]
+            if dup is not None:
+                if clean_note:
+                    dup["note"] = clean_note
+                    dup["at"] = now
+                already_reported = True
+            else:
+                reporters.insert(0, entry)
+                del reporters[MAX_REPORT_REPORTERS:]
+                report_count += 1
+                already_reported = False
+                if status == "resolved":
+                    status = "open"
+            distinct_uids = {r.get("uid") or r.get("username") for r in reporters}
+            self.db.execute(
+                "UPDATE issue_reports SET course_name = ?, course_type = ?, course_kind = ?, "
+                "headline = ?, status = ?, report_count = ?, reporters_json = ?, payload_json = ?, updated = ? "
+                "WHERE id = ?",
+                (
+                    course_name, course_type, course_kind, headline, status, report_count,
+                    json.dumps(reporters, ensure_ascii=False), payload_json, now, existing["id"],
+                ),
+            )
+            return {
+                "id": existing["id"],
+                "fingerprint": fingerprint,
+                "already_reported": already_reported,
+                "report_count": report_count,
+                "reporter_count": max(1, len(distinct_uids)),
+                "status": status,
+            }
+
+    def issue_reports(self):
+        with self.lock:
+            rows = self.db.execute("SELECT * FROM issue_reports ORDER BY updated DESC").fetchall()
+        items = [self._report_public(row) for row in rows]
+        rank = {"open": 0, "resolved": 1, "ignored": 2}
+        items.sort(key=lambda r: (rank.get(r["status"], 3), -r["reporter_count"], -r["report_count"], -float(r["updated"] or 0)))
+        return items
+
+    def set_issue_report_status(self, report_id, status):
+        if status not in ISSUE_REPORT_STATUSES:
+            raise AccountError("上报状态只能是待处理、已处理或已忽略")
+        with self.transaction():
+            updated = self.db.execute(
+                "UPDATE issue_reports SET status = ?, updated = ? WHERE id = ?",
+                (status, time.time(), str(report_id or "")),
+            ).rowcount
+            if updated == 0:
+                raise AccountError("这条上报记录不存在")
+
+    def delete_issue_report(self, report_id):
+        with self.transaction():
+            deleted = self.db.execute(
+                "DELETE FROM issue_reports WHERE id = ?", (str(report_id or ""),)
+            ).rowcount
+            if deleted == 0:
+                raise AccountError("这条上报记录不存在")
 
 
 class Sessions:

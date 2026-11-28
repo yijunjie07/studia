@@ -758,6 +758,35 @@ body.dragging, body.dragging * { cursor: grabbing !important; user-select: none;
 .modal { width: 432px; max-width: calc(100% - 32px); padding: 24px 24px 18px; border: 0; border-radius: 12px; background: var(--card); color: var(--text);
          box-shadow: inset 0 2px 0 var(--indigo), 0 0 0 1px var(--line), 0 22px 48px rgb(20 24 30 / .18); overflow: hidden; }
 .modal.model_modal { width: 480px; }
+.modal.issue_modal { width: 512px; max-height: min(86vh, 720px); overflow-y: auto; }
+.issue_card { border-radius: 9px; background: var(--well); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; margin-bottom: 14px; }
+.issue_course { display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: var(--card); border-bottom: 1px solid var(--line); }
+.issue_list { display: grid; gap: 8px; padding: 12px 14px; max-height: 220px; overflow-y: auto; }
+.issue_item { padding: 8px 10px; border-radius: 7px; background: var(--card); box-shadow: inset 0 0 0 1px var(--line); }
+.issue_item_head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; }
+.issue_item_head .pill { margin: 0; }
+.issue_item_head b { font-weight: 600; overflow-wrap: anywhere; }
+.issue_kind { padding: 1px 6px; border-radius: 4px; background: var(--well); color: var(--text-3); font: 11.5px var(--mono); }
+.issue_desc { margin: 4px 0 0; font-size: 12.5px; color: var(--text-3); line-height: 1.55; overflow-wrap: anywhere; }
+.issue_fields { display: block; margin-top: 5px; padding: 5px 8px; border-radius: 5px; background: var(--well); color: var(--text-2); font: 11px/1.5 var(--mono); overflow-wrap: anywhere; }
+.issue_more { margin: 2px 0 0; font-size: 12px; color: var(--text-3); }
+.issue_note_field { margin-bottom: 10px; }
+.issue_preview { margin: 6px 0 4px; font-size: 12.5px; color: var(--text-3); }
+.issue_preview summary { cursor: pointer; user-select: none; color: var(--text-3); }
+.issue_preview summary:hover { color: var(--text); }
+.issue_code { margin: 8px 0 0; padding: 10px 12px; border-radius: 7px; background: var(--well); color: var(--text-2); font: 11.5px/1.55 var(--mono); max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.report_entry { display: block; }
+.model.report_row { grid-template-columns: auto minmax(0, 1fr) auto; }
+.report_detail { padding: 14px 16px 16px; background: var(--well); border-top: 1px solid var(--line); }
+.report_detail .issue_list { padding: 0; max-height: none; overflow: visible; margin: 6px 0 12px; }
+.report_meta { font-size: 12.5px; color: var(--text-3); line-height: 1.6; margin-bottom: 10px; overflow-wrap: anywhere; }
+.report_subhead { font-size: 12px; font-weight: 600; color: var(--text-2); margin: 10px 0 6px; }
+.report_people { display: grid; gap: 6px; margin-bottom: 10px; }
+.report_person { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; padding: 7px 10px; border-radius: 6px; background: var(--card); box-shadow: inset 0 0 0 1px var(--line); font-size: 12.5px; }
+.report_person .when { font: 11.5px var(--mono); color: var(--text-3); }
+.report_note { flex-basis: 100%; color: var(--text-2); font-size: 12.5px; line-height: 1.5; }
+.report_logs { border-radius: 7px; background: var(--card); box-shadow: inset 0 0 0 1px var(--line); padding: 6px 0; margin-bottom: 12px; max-height: 200px; overflow-y: auto; font: 11.5px/19px var(--mono); }
+.report_actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
 @media (max-width: 520px) { .form_grid { grid-template-columns: 1fr; } }
 :root[data-theme="night"] .modal { box-shadow: inset 0 2px 0 var(--indigo), 0 0 0 1px rgb(255 255 255 / .08), 0 24px 56px rgb(0 0 0 / .62); }
 .modal::backdrop { background: rgb(var(--ink) / .34); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
@@ -1041,6 +1070,8 @@ button.switch { border: 0; padding: 0; cursor: pointer; }
   .facet_find input { font-size: 16px; }
   .pager_nav { flex: 1 1 100%; } .pager_nav .btn { flex: 1; }
   .model.plain.invite_row { grid-template-columns: minmax(0, 1fr) auto; } .model.plain.invite_row .row_btns { grid-column: 2; }
+  .model.report_row { grid-template-columns: auto minmax(0, 1fr); } .model.report_row .row_btns { grid-column: 1 / -1; }
+  .report_detail { padding: 12px; }
   .field { grid-template-columns: 1fr; gap: 4px; }
   .form_btns { flex-wrap: wrap; }
   .row_form { grid-column: 1 / -1; } .row_form .grow { display: none; } .row_form .btn { flex: 1; } .row_input { flex: 1 1 100%; height: 40px; font-size: 16px; }

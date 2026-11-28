@@ -64,9 +64,10 @@ class MoocRulesTest(unittest.TestCase):
         with patch.dict(MOOC_UNIT_RULES, custom), patch("mooc.main.time.sleep", return_value=None):
             chapters = mooc_course_units(client, course)
             self.assertEqual(chapters[0]["units"][0]["state"], "skipped")
-            AIMoocHandler(client=client, course_rows=[course], max_workers=1)
+            handler = AIMoocHandler(client=client, course_rows=[course], max_workers=1)
 
         client.study_record.assert_not_called()
+        self.assertEqual([(f["code"], f["kind"]) for f in handler.findings], [("skipped_unit", "custom_lab")])
 
 
 class ZhsRulesTest(unittest.TestCase):
@@ -105,10 +106,11 @@ class ZhsRulesTest(unittest.TestCase):
         with patch.dict(ZHS_AI_RESOURCE_RULES, custom):
             chapters = zhs_course_units(client, row)
             self.assertEqual(chapters[0]["units"][0]["state"], "skipped")
-            ZHSHandler(client=client, course_rows=[row], sleep=lambda _s: None)
+            handler = ZHSHandler(client=client, course_rows=[row], sleep=lambda _s: None)
 
         client.ai_complete.assert_not_called()
         client.ai_report.assert_not_called()
+        self.assertEqual([(f["code"], f["kind"]) for f in handler.findings], [("skipped_unit", "8/9")])
 
     def test_assessment_rules_power_score_shares_offers_and_uncovered_list(self):
         self.assertEqual(SCORE_SHARES, tuple((r.key, r.api_field) for r in ZHS_ASSESSMENT_RULES))

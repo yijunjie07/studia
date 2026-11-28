@@ -281,6 +281,7 @@ class Hub:
         self.throttle = Throttle()
         # Mail costs the site's sender reputation: at most 5 an hour per person, per account and per address.
         self.mail_throttle = Throttle(limit=5, window=3600)
+        self.report_throttle = Throttle(limit=30, window=3600)
         # Per account across all addresses: high enough that a few strangers can't lock someone out,
         # low enough to stop a guesser that rotates addresses (each address still gets 5).
         self.user_throttle = Throttle(limit=30)
@@ -313,6 +314,7 @@ class Hub:
                              job_limit=lambda uid=uid: self.job_limit(uid),
                              zhs_parallel=lambda: bool(self.accounts.setting("zhs_parallel_study", False)),
                              answer_pace=self.answer_pace,
+                             issue_report=self.issue_report,
                              peers=lambda course_id, recruit_id, uid=uid: self.peer_questions(uid, course_id, recruit_id),
                              on_job=self.notify_site_jobs)
                 app.owner = (self.accounts.user(uid) or {}).get("username", uid)
@@ -631,6 +633,7 @@ class Hub:
                 },
                 "zhs_parallel_study": bool(self.accounts.setting("zhs_parallel_study", False)),
                 "answer_pace": self.answer_pace(),
+                "issue_report": self.issue_report(),
                 "ui_speed": self.ui_speed(),
                 "smtp": smtp and dict({k: v for k, v in smtp.items() if k != "password"},
                                       password_hint="已保存" if smtp["password"] else ""),  # not even part of it
@@ -649,6 +652,11 @@ class Hub:
         """Zhihuishu answer pace for everyone on the site; only an admin changes it (stored like zhs_parallel_study)."""
         pace = self.accounts.setting("answer_pace", "steady")
         return pace if pace in ANSWER_PACES else "steady"
+
+    def issue_report(self):
+        """Whether post-task adaptation checks and one-click member issue reporting are enabled site-wide."""
+        saved = self.accounts.setting("issue_report", True)
+        return saved if isinstance(saved, bool) else True
 
     def smtp(self):
         return self.site_store.get("smtp")
@@ -1177,6 +1185,26 @@ class HostedAccess:
             fresh = hub.accounts.user(user["id"])
             hub.audit("email", actor=user["username"], ip=self._ip(request))
             return {"user": fresh}
+        if method == "POST" and path == "/api/reports":
+            if not hub.issue_report():
+                raise HttpError(403, "管理员已关闭课程适配上报")
+            job_id = str(body.get("job_id") or "").strip()
+            note = str(body.get("note") or "")
+            check = ctx["app"].issue_check_for(job_id)
+            if check is None:
+                raise HttpError(404, "未找到该任务的问题诊断记录，请刷新或重新运行后再试")
+            key = "report:" + user["id"]
+            if hub.report_throttle.blocked(key):
+                raise HttpError(429, "上报太频繁，请稍后再试")
+            try:
+                result = hub.accounts.submit_issue_report(check, uid=user["id"], username=user["username"], note=note)
+            except AccountError as exc:
+                raise HttpError(400, str(exc))
+            if not result.get("already_reported"):
+                hub.report_throttle.fail(key)
+            ctx["app"].mark_reported(job_id)
+            hub.audit("issue_report", actor=user["username"], target=check.get("course_name", ""), ip=self._ip(request))
+            return dict(result, ok=True)
         if method == "GET" and path == "/api/state" and user["role"] == "admin":
             return dict(ctx["app"].state(), site_jobs=hub.site_job_count())
         if not path.startswith("/api/admin/"):
@@ -1217,6 +1245,16 @@ class HostedAccess:
             return dict(hub.memory.stats(), mooc=hub.mooc_memory.stats())
         if method == "GET" and path == "/api/admin/jobs":
             return {"people": hub.all_jobs()}
+        if method == "GET" and path == "/api/admin/reports":
+            return {"reports": hub.accounts.issue_reports(), "enabled": hub.issue_report()}
+        match = re.fullmatch(r"/api/admin/reports/([\w-]+)/status", path)
+        if method == "POST" and match:
+            hub.accounts.set_issue_report_status(match[1], str(body.get("status") or ""))
+            return {"ok": True}
+        match = re.fullmatch(r"/api/admin/reports/([\w-]+)/delete", path)
+        if method == "POST" and match:
+            hub.accounts.delete_issue_report(match[1])
+            return {"ok": True}
         if method == "GET" and path == "/api/admin/settings":
             return hub.site_settings()
         if method == "POST" and path == "/api/admin/default-model/test":
@@ -1242,6 +1280,10 @@ class HostedAccess:
                 hub.accounts.set_setting("zhs_parallel_study", body.get("zhs_parallel_study") is True)
             if "answer_pace" in body:
                 hub.accounts.set_setting("answer_pace", body["answer_pace"])
+            if "issue_report" in body:
+                if not isinstance(body["issue_report"], bool):
+                    raise HttpError(400, "适配上报开关格式不正确")
+                hub.accounts.set_setting("issue_report", body["issue_report"])
             if "ui_speed" in body:
                 hub.accounts.set_setting("ui_speed", round(float(speed), 1))
             return hub.site_settings()

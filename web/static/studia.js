@@ -99,9 +99,9 @@ async function api(path, { method = "GET", body } = {}) {
 
 const state = {
   platforms: [], courses: {}, papers: {}, paperErrors: {}, units: {}, selected: {}, earned: {}, qaDraft: {}, qaPosts: {}, qaRoom: {}, qaPeers: null, qaOpen: new Set(),
-  jobs: [], siteJobs: 0, runs: {}, focus: null, jobLimit: 4, zhsParallel: false, history: [], view: "", loginToken: { cancelled: true }, returnTo: "", lastDone: null,
+  jobs: [], siteJobs: 0, runs: {}, focus: null, jobLimit: 4, zhsParallel: false, issueReport: true, history: [], view: "", loginToken: { cancelled: true }, returnTo: "", lastDone: null,
   current: store.get("studia-platform", ""), meOpen: false, adminTab: "people", logFilter: "all", accountEdit: null, passwordSent: null, adminEdit: null, pausedOpen: new Set(),
-  adminLists: {}, adminOpen: null,
+  adminLists: {}, adminOpen: null, reportOpen: null, shownIssueJobs: new Set(), pendingIssues: [],
 };
 function freshRun() { return { detail: "", overall: null, sub: null, lines: [], unit: null }; }
 const runOf = (id) => (state.runs[id] = state.runs[id] || freshRun());
@@ -734,7 +734,7 @@ document.addEventListener("mouseover", (event) => {
 
 /* ---------------------------------------------------------------- views */
 
-const ADMIN_TABS = [["people", "用户"], ["invites", "邀请码"], ["oauth", "OAuth"], ["site", "站点"], ["logs", "日志"]];
+const ADMIN_TABS = [["people", "用户"], ["invites", "邀请码"], ["reports", "适配上报"], ["oauth", "OAuth"], ["site", "站点"], ["logs", "日志"]];
 /* 用户 and 邀请码 grow with the site, so each is a list that pages, filters and searches. What a list is
    showing stays while the console is open; the page size is remembered in the browser. */
 const PAGE_SIZES = [10, 20, 50, 100];
@@ -974,7 +974,7 @@ const VIEWS = {
         quiet = false;
       }
     }
-    const need = { people: ["users"], invites: ["invites", "users"], oauth: ["settings"], site: ["settings", "memory"], logs: [] }[tab];
+    const need = { people: ["users"], invites: ["invites", "users"], reports: ["reports"], oauth: ["settings"], site: ["settings", "memory"], logs: [] }[tab];
     let data;
     // "local": the same lists drawn again (a search, a filter, another page), without reading them again.
     if (refresh === "local" && adminData?.tab === tab) data = adminData.data;
@@ -1036,6 +1036,82 @@ const VIEWS = {
         <div class="models">${pageOf("invites", rows).map(inviteRow).join("")
           || `<div class="model plain"><span class="m1"><small class="sans">${invites.length ? "没有符合条件的邀请码" : "还没有邀请码"}</small></span></div>`}</div>
         ${pagerHtml("invites", rows.length, "个")}`;
+    } else if (tab === "reports") {
+      const list = adminList("reports"), q = list.q.trim().toLowerCase();
+      const reports = data.reports?.reports || [];
+      const enabled = data.reports?.enabled !== false;
+      const STATUS_META = { open: ["wait", "待处理"], resolved: ["blue", "已处理"], ignored: ["", "已忽略"] };
+      const PLAT_NAME = { mooc: "MOOC", zhs: "智慧树" };
+      const FACETS = [
+        ["status", "状态", [["open", "待处理"], ["resolved", "已处理"], ["ignored", "已忽略"]].map(([k, name]) => [k, name, (r) => r.status === k])],
+        ["platform", "平台", [["mooc", "MOOC"], ["zhs", "智慧树"]].map(([k, name]) => [k, name, (r) => r.platform === k])],
+        ["job", "任务", [["study", "自动学习", (r) => r.job_kind === "study"], ["answer", "AI 答题", (r) => r.job_kind === "answer"],
+          ["other", "其他", (r) => r.job_kind !== "study" && r.job_kind !== "answer"]]],
+      ];
+      const matchText = (r) => [
+        r.course_name, r.course_id, r.course_type, r.course_kind, r.headline, r.platform, PLAT_NAME[r.platform],
+        ...(r.reporters || []).map((x) => `${x.username} ${x.note || ""}`),
+        ...((r.payload?.items) || []).map((x) => `${x.label} ${x.name} ${x.kind} ${x.detail} ${x.fields}`),
+      ].join(" ").toLowerCase();
+      const found = reports.filter((r) => !q || matchText(r).includes(q));
+      const { rows, counts } = facetFilter("reports", found, FACETS);
+      const reportDetail = (r) => {
+        const p = r.payload || {};
+        const items = p.items || [];
+        const logs = p.logs || [];
+        const shares = p.shares ? Object.entries(p.shares).filter(([, v]) => v > 0).map(([k, v]) => `${SHARE_LABEL[k] || k} ${v} 分`).join(" · ") : "";
+        const metaLine = [
+          `平台：${PLAT_NAME[r.platform] || r.platform}`,
+          r.course_type ? `课型：${r.course_type}` : (r.course_kind ? `课型：${r.course_kind}` : ""),
+          r.course_id ? `课程 ID：${r.course_id}` : "",
+          p.progress != null ? `进度：${p.progress}%` : "",
+          shares ? `考核：${shares}` : "",
+        ].filter(Boolean).join(" · ");
+        return `<div class="report_detail" data-report-detail="${esc(r.id)}">
+          <div class="report_meta">${esc(metaLine)}</div>
+          <div class="report_subhead">检测到的问题（${items.length} 项）</div>
+          <div class="issue_list">${items.map((it) => `<div class="issue_item">
+            <div class="issue_item_head"><span class="pill ${ISSUE_PILL[it.bucket] || ""}">${esc(it.label || it.code)}</span>
+              <b>${esc(it.name || "未命名")}</b>${it.kind ? `<code class="issue_kind">${esc(it.kind)}</code>` : ""}</div>
+            ${it.detail ? `<p class="issue_desc">${esc(it.detail)}</p>` : ""}
+            ${it.fields ? `<code class="issue_fields">${esc(it.fields)}</code>` : ""}</div>`).join("") || '<p class="issue_desc">无条目明细</p>'}</div>
+          ${(r.reporters || []).length ? `<div class="report_subhead">上报成员（${r.reporter_count} 人 · 共 ${r.report_count} 次）</div>
+            <div class="report_people">${r.reporters.slice(0, 10).map((u) => `<div class="report_person"><b>${esc(u.username)}</b>
+              <span class="when">${u.at ? ago(u.at) : ""}</span>${u.note ? `<span class="report_note">${esc(u.note)}</span>` : ""}</div>`).join("")}</div>` : ""}
+          ${logs.length ? `<div class="report_subhead">任务日志片段</div>
+            <div class="report_logs">${logs.slice(0, 12).map((l) => `<div class="line ${l.level === "error" ? "err" : l.level === "warn" ? "warn" : ""}">
+              <time>${esc(l.time || "")}</time><span class="lv"></span><span class="msg">${esc(l.text || "")}</span></div>`).join("")}</div>` : ""}
+          <div class="report_actions">
+            <button class="btn small" data-report-copy="${esc(r.id)}">复制诊断 Markdown</button>
+            ${r.status !== "resolved" ? `<button class="btn small primary" data-report-status="${esc(r.id)}" data-to-status="resolved">标记已处理</button>` : ""}
+            ${r.status !== "open" ? `<button class="btn small" data-report-status="${esc(r.id)}" data-to-status="open">重新打开</button>` : ""}
+            ${r.status !== "ignored" ? `<button class="btn small" data-report-status="${esc(r.id)}" data-to-status="ignored">忽略</button>` : ""}
+            <span class="grow"></span>
+            <button class="btn small danger" data-report-delete="${esc(r.id)}" data-confirm="确认删除">删除</button>
+          </div></div>`;
+      };
+      const reportRow = (r) => {
+        const open = state.reportOpen === r.id;
+        const [pillCls, pillWord] = STATUS_META[r.status] || ["", r.status];
+        return `<div class="report_entry ${open ? "open" : ""}" data-key="${esc(r.id)}">
+          <div class="model report_row">
+            <span class="plat ${esc(r.platform)}">${INITIAL[r.platform] || "?"}</span>
+            <span class="m1"><b>${esc(r.course_name)}</b><span class="pill ${pillCls}">${pillWord}</span><span class="pill">${r.reporter_count} 人 · ${r.report_count} 次</span>
+              <small class="sans">${esc(r.headline)} · ${esc(LABEL[r.job_kind] || r.job_kind)}${r.course_type ? ` · ${esc(r.course_type)}` : ""} · ${ago(r.updated)}</small></span>
+            <span class="row_btns">
+              <button class="btn small" data-report-expand="${esc(r.id)}" aria-expanded="${open}">${open ? "收起" : "详情"}</button>
+              <button class="btn small" data-report-copy="${esc(r.id)}">复制</button>
+              ${r.status !== "resolved"
+                ? `<button class="btn small primary" data-report-status="${esc(r.id)}" data-to-status="resolved">已处理</button>`
+                : `<button class="btn small" data-report-status="${esc(r.id)}" data-to-status="open">重开</button>`}
+            </span></div>
+          ${open ? reportDetail(r) : ""}</div>`;
+      };
+      body = `${listTools("reports", "搜索课程名、问题类型、字段或上报人", FACETS, counts)}
+        ${enabled ? "" : '<p class="list_note">当前已关闭适配检查与上报，新任务不会弹窗收集反馈。<button class="link" data-go="#/admin/site">去开启</button></p>'}
+        <div class="models">${pageOf("reports", rows).map(reportRow).join("")
+          || `<div class="model plain"><span class="m1"><small class="sans">${reports.length ? "没有符合条件的上报记录" : "还没有收到课程适配上报"}</small></span></div>`}</div>
+        ${pagerHtml("reports", rows.length, "条")}`;
     } else if (tab === "oauth") {
       const oauth = data.settings.oauth || {
         enabled: false,
@@ -1113,6 +1189,10 @@ const VIEWS = {
         <div class="section"><h2>任务上限</h2></div>
         <div class="models"><div class="model plain"><span class="m1"><b>默认每人同时 <input class="inline_num" type="number" min="1" max="20" name="max_jobs" value="${esc(kept("max_jobs", settings.max_jobs))}"> 个任务</b></span>
           <span class="row_btns"><button class="btn small primary" data-save-limit>保存</button></span></div></div>
+        <div class="section"><h2>适配检查与上报</h2></div>
+        <div class="models"><div class="model plain stepper_row"><span class="m1"><b>任务后问题检查弹窗</b>
+          <small class="sans">${settings.issue_report !== false ? "任务结束后检测到未完成或跳过项时弹窗，成员可一键上报到「适配上报」列表" : "已关闭，任务结束不再弹窗检查，也不接收新的适配上报"}</small></span>
+          <span class="row_btns"><button class="btn small" data-issue-report-toggle="0" aria-pressed="${settings.issue_report === false}">关闭</button><button class="btn small" data-issue-report-toggle="1" aria-pressed="${settings.issue_report !== false}">开启</button></span></div></div>
         <div class="section"><h2>智慧树</h2></div>
         <div class="models"><div class="model plain"><span class="m1"><b>多并发学习</b><span class="pill ${settings.zhs_parallel_study ? "wait" : ""}">${settings.zhs_parallel_study ? "已开启" : "已关闭"}</span></span>
           <span class="row_btns"><button class="btn small ${settings.zhs_parallel_study ? "" : "danger"}" data-zhs-parallel="${settings.zhs_parallel_study ? "off" : "on"}" ${settings.zhs_parallel_study ? "" : 'data-confirm="确认开启"'}>${settings.zhs_parallel_study ? "关闭" : "开启"}</button></span></div>
@@ -1194,6 +1274,44 @@ const VIEWS = {
       catch (e) { toast(e.message); }
     });
     on("[data-save-limit]", () => act("/api/admin/settings", { max_jobs: Number($('[name="max_jobs"]', page).value) }, "已保存"));
+    on("[data-issue-report-toggle]", async (el) => {
+      if (el.getAttribute("aria-pressed") === "true") return;
+      const enabled = el.dataset.issueReportToggle === "1";
+      try {
+        await api("/api/admin/settings", { method: "POST", body: { issue_report: enabled } });
+        state.issueReport = enabled;
+        session.issueReport = enabled;
+        delete adminCache.reports;
+        toast(enabled ? "已开启适配检查与上报" : "已关闭适配检查与上报");
+        VIEWS.admin(true, tab);
+      } catch (e) { toast(e.message); }
+    });
+    on("[data-report-expand]", (el) => {
+      const id = el.dataset.reportExpand;
+      state.reportOpen = state.reportOpen === id ? null : id;
+      VIEWS.admin("local", tab).then(() => {
+        if (state.reportOpen) {
+          const panel = page.querySelector(`[data-report-detail="${CSS.escape(state.reportOpen)}"]`);
+          if (panel) moves(panel, scanned(-6), { duration: 420, easing: EASE_IO });
+        }
+      });
+    });
+    on("[data-report-copy]", (el) => {
+      const report = (data.reports?.reports || []).find((x) => x.id === el.dataset.reportCopy);
+      if (!report) return;
+      const notes = (report.reporters || []).filter((u) => u.note).map((u) => `${u.username}: ${u.note}`).join("；");
+      const text = formatIssueMarkdown(report.payload || report, notes);
+      navigator.clipboard?.writeText(text).then(() => toast("已复制诊断详情"), () => toast("复制失败，请手动展开查看"));
+    });
+    on("[data-report-status]", (el) => {
+      const to = el.dataset.toStatus;
+      const word = { open: "已重新打开", resolved: "已标记处理完成", ignored: "已忽略" }[to] || "已更新";
+      act(`/api/admin/reports/${el.dataset.reportStatus}/status`, { status: to }, word);
+    });
+    on("[data-report-delete]", (el) => {
+      if (state.reportOpen === el.dataset.reportDelete) state.reportOpen = null;
+      act(`/api/admin/reports/${el.dataset.reportDelete}/delete`, {}, "已删除上报记录");
+    });
     on("[data-zhs-parallel]", (el) => {
       const enable = el.dataset.zhsParallel === "on";
       act("/api/admin/settings", { zhs_parallel_study: enable }, enable ? "已开启" : "已关闭");
@@ -1330,6 +1448,10 @@ const VIEWS = {
     page.querySelectorAll("[data-retry]").forEach((el) => (el.onclick = () => {
       const j = state.history[el.dataset.retry];
       startJob({ platform: j.platform, course: j.course, type: TYPE_OF[j.title] });
+    }));
+    page.querySelectorAll("[data-history-issue]").forEach((el) => (el.onclick = () => {
+      const j = state.history[el.dataset.historyIssue];
+      if (j?.issue_check) openIssueModal(j.issue_check);
     }));
   },
 
@@ -1688,8 +1810,150 @@ function closeModal(dialog) {
   // Folded back to its middle line, as it opened.
   const out = moves(dialog, [{ clipPath: "inset(-40px)" }, { clipPath: "inset(50% -40px 50% -40px)", transform: "scale(.985)" }], { duration: 360, easing: EASE_IO, fill: "forwards" });
   try { moves(dialog, [{ opacity: 1 }, { opacity: 0 }], { duration: 360, pseudoElement: "::backdrop", fill: "forwards" }); } catch { /* backdrop stays until close */ }
-  if (out) out.onfinish = () => dialog.close(); else dialog.close();
+  const done = () => { dialog.close(); setTimeout(flushPendingIssues, 160); };
+  if (out) out.onfinish = done; else done();
 }
+const ISSUE_PILL = { failed: "red", unverified: "wait", unknown: "wait", skipped: "" };
+const SHARE_LABEL = { progress: "学习", habit: "习惯", interactive: "互动", knowledge: "掌握度", test: "测试", meet: "见面课", final: "期末" };
+
+function formatIssueMarkdown(check, note = "") {
+  const lines = [
+    "### 课程适配问题诊断",
+    `- 平台：${check.platform_name || check.platform || "未知"}${check.course_type ? `（${check.course_type}）` : ""}`,
+    `- 课程：${check.course_name || "未知课程"}（ID: \`${check.course_id || ""}\`，课型: \`${check.course_kind || ""}\`）`,
+    `- 任务：${check.job_title || check.job_kind || "任务"} · 状态：${check.job_state || ""}${check.job_summary ? `（${check.job_summary}）` : ""}`,
+  ];
+  if (check.progress != null) lines.push(`- 当前进度：${check.progress}%`);
+  if (check.shares) {
+    const parts = Object.entries(check.shares).filter(([, v]) => v > 0).map(([k, v]) => `${SHARE_LABEL[k] || k} ${v} 分`);
+    if (parts.length) lines.push(`- 考核占比：${parts.join(" / ")}`);
+  }
+  if (note && note.trim()) lines.push(`- 补充说明：${note.trim()}`);
+  const items = check.items || [];
+  lines.push("", `#### 检测到的问题（共 ${items.length} 项）`);
+  items.forEach((it, idx) => {
+    lines.push(`${idx + 1}. [${it.label || it.code}] ${it.name || "未命名"}${it.kind ? `（类型：\`${it.kind}\`）` : ""}`);
+    if (it.detail) lines.push(`   - 说明：${it.detail}`);
+    if (it.fields) lines.push(`   - 字段：\`${it.fields}\``);
+  });
+  const logs = check.logs || [];
+  if (logs.length) {
+    lines.push("", "#### 相关日志");
+    logs.slice(0, 15).forEach((l) => lines.push(`- ${l.time ? `[${l.time}] ` : ""}${l.text || ""}`));
+  }
+  return lines.join("\n");
+}
+
+function flushPendingIssues() {
+  if (!state.issueReport || document.querySelector("dialog[open]") || !state.pendingIssues.length) return;
+  const next = state.pendingIssues.shift();
+  if (next) openIssueModal(next);
+}
+
+function queueIssueModal(check) {
+  if (!state.issueReport || !check?.items?.length) return;
+  const jid = check.job_id || "";
+  if (jid && state.shownIssueJobs.has(jid)) return;
+  if (jid) state.shownIssueJobs.add(jid);
+  if (document.querySelector("dialog[open]")) {
+    state.pendingIssues.push(check);
+    return;
+  }
+  openIssueModal(check);
+}
+
+function openIssueModal(check) {
+  const hosted = session.mode === "hosted";
+  const items = check.items || [];
+  const shown = items.slice(0, 6);
+  const more = Math.max(0, items.length - shown.length);
+  const shares = check.shares
+    ? Object.entries(check.shares).filter(([, v]) => v > 0).map(([k, v]) => `${SHARE_LABEL[k] || k} ${v}%`).join(" · ")
+    : "";
+  const dialog = document.createElement("dialog");
+  dialog.className = "modal issue_modal";
+  dialog.setAttribute("aria-labelledby", "issue-modal-title");
+  dialog.innerHTML = `<form data-issue-form>
+      <h3 id="issue-modal-title" tabindex="-1" autofocus>你似乎遇到了一些问题</h3>
+      <p class="sub">${esc(check.headline || "任务结束后检测到未能自动完成或被跳过的课程内容。")}</p>
+      <div class="issue_card">
+        <div class="issue_course">
+          <span class="plat ${esc(check.platform || "")}">${INITIAL[check.platform] || "?"}</span>
+          <span class="m1"><b>${esc(check.course_name || "未知课程")}</b>
+            <small class="sans">${esc([check.platform_name || check.platform, check.course_type || check.course_kind, check.job_title,
+              check.progress != null ? `进度 ${check.progress}%` : ""].filter(Boolean).join(" · "))}</small>
+            ${shares ? `<small class="sans">考核占比：${esc(shares)}</small>` : ""}</span>
+        </div>
+        <div class="issue_list">${shown.map((it) => `<div class="issue_item">
+          <div class="issue_item_head"><span class="pill ${ISSUE_PILL[it.bucket] || ""}">${esc(it.label || it.code)}</span>
+            <b>${esc(it.name || "未命名")}</b>${it.kind ? `<code class="issue_kind">${esc(it.kind)}</code>` : ""}</div>
+          ${it.detail ? `<p class="issue_desc">${esc(it.detail)}</p>` : ""}</div>`).join("")}
+          ${more ? `<p class="issue_more">还有 ${more} 项未展开，上报时将一并附带</p>` : ""}</div>
+      </div>
+      ${hosted ? `<label class="auth_field issue_note_field"><span>补充说明（选填）</span>
+        <input name="note" maxlength="300" autocomplete="off" placeholder="例如：第 3 章互动环节一直没算完成"></label>` : ""}
+      <details class="issue_preview"><summary>查看脱敏诊断内容（不含账号与登录态）</summary>
+        <pre class="issue_code">${esc(formatIssueMarkdown(check))}</pre></details>
+      <p class="form_msg" role="alert"></p>
+      <div class="modal_btns">
+        ${hosted
+          ? `<button type="button" class="btn" data-issue-copy>复制信息</button><span class="grow"></span>
+             <button type="button" class="btn" data-issue-close>暂不上报</button>
+             <button class="btn primary" data-issue-submit>${check.reported ? "再次上报" : "一键上报"}</button>`
+          : `<button type="button" class="link" data-issue-local-off>关闭此提示</button><span class="grow"></span>
+             <button type="button" class="btn" data-issue-close>关闭</button>
+             <button type="button" class="btn primary" data-issue-copy>一键复制诊断信息</button>`}
+      </div></form>`;
+  document.body.appendChild(dialog);
+  const form = $("form", dialog), msg = $(".form_msg", dialog);
+  dialog.addEventListener("cancel", (e) => { e.preventDefault(); closeModal(dialog); });
+  dialog.addEventListener("close", () => dialog.remove());
+  $("[data-issue-close]", dialog).onclick = () => closeModal(dialog);
+  const copyBtn = $("[data-issue-copy]", dialog);
+  if (copyBtn) copyBtn.onclick = () => {
+    const note = form.elements.note?.value || "";
+    const text = formatIssueMarkdown(check, note);
+    navigator.clipboard?.writeText(text).then(
+      () => { toast(hosted ? "已复制脱敏诊断信息" : "已复制脱敏诊断信息，可发给开发者或提 Issue"); if (!hosted) closeModal(dialog); },
+      () => { msg.textContent = "无法自动复制，请展开上方脱敏内容手动复制"; }
+    );
+  };
+  const offBtn = $("[data-issue-local-off]", dialog);
+  if (offBtn) offBtn.onclick = async () => {
+    try {
+      await api("/api/settings/issue-report", { method: "POST", body: { enabled: false } });
+      state.issueReport = false;
+      if (state.settings) state.settings.issue_report = false;
+      closeModal(dialog);
+      toast("已关闭问题检查弹窗，可在「设置 → 偏好」重新开启");
+    } catch (e) { msg.textContent = e.message; }
+  };
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    if (!hosted) return;
+    msg.textContent = "";
+    const submit = $("[data-issue-submit]", dialog);
+    submit.disabled = true;
+    submit.textContent = "上报中…";
+    try {
+      const note = form.elements.note?.value.trim() || "";
+      const res = await api("/api/reports", { method: "POST", body: { job_id: check.job_id, note } });
+      check.reported = true;
+      const hist = state.history.find((h) => h.id === check.job_id);
+      if (hist?.issue_check) hist.issue_check.reported = true;
+      delete adminCache.reports;
+      closeModal(dialog);
+      toast(res.already_reported ? "已更新上报说明，感谢反馈" : "已一键上报给管理员，感谢反馈");
+      repaint();
+    } catch (e) {
+      msg.textContent = e.message;
+      submit.disabled = false;
+      submit.textContent = check.reported ? "再次上报" : "一键上报";
+    }
+  };
+  dialog.showModal();
+}
+
 function promptEmail() {
   const me = session.user, later = `studia-email-later:${me?.id}`;
   if (session.mode !== "hosted" || !me || me.email || me.has_password === false || !session.mail || store.get(later, "") === new Date().toDateString()) return;
@@ -1726,6 +1990,10 @@ function paintSettings(tab, head, data, again) {
       <div class="models">${state.platforms.map((p) => `<div class="model"><span class="plat ${p.id}">${INITIAL[p.id]}</span>
         <span class="m1"><b>${esc(p.name)}</b><small class="sans">${esc(platformStatus(p))} · ${p.login === "qr" ? "App 扫码登录" : "职教云浏览器授权"}</small></span><span></span>
         <span class="row_btns">${p.rescan || qaSoon(p) ? `<button class="btn small primary" data-go="${rescanLink(p)}">重新扫码</button>` : ""}${p.logged_in ? `<button class="btn small danger" data-logout="${p.id}" data-confirm="确认退出">退出</button>` : `<button class="btn small primary" data-go="#/login/${p.id}">登录</button>`}</span></div>`).join("")}</div>` : "";
+    const localIssue = data.issue_report_locked ? "" : `<div class="section"><h2>适配检查</h2><span class="aside">任务结束后提示</span></div>
+      <div class="models"><div class="model plain stepper_row"><span class="m1"><b>完成后问题检查弹窗</b>
+        <small class="sans">${data.issue_report !== false ? "遇到无法完成或跳过的课程环节时弹窗，方便一键复制脱敏诊断信息" : "已关闭，任务结束后不再弹出问题提示"}</small></span>
+        <span class="row_btns"><button class="btn small" data-local-issue-toggle="0" aria-pressed="${data.issue_report === false}">关闭</button><button class="btn small" data-local-issue-toggle="1" aria-pressed="${data.issue_report !== false}">开启</button></span></div></div>`;
     quiet = again;
     setPage(`${head}<div class="section"><h2>并发数量</h2><span class="aside">1–8</span></div>
       <div class="models">${row("ai", "AI 答题", "同时作答的题数")}${row("study", "自动学习", "同时学的资源数")}</div>
@@ -1733,8 +2001,19 @@ function paintSettings(tab, head, data, again) {
       <div class="models"><div class="model plain stepper_row"><span class="m1"><b>${fast ? "快速" : "稳妥"}</b><small class="sans">${fast
         ? "每步间隔 0.1–0.5 秒"
         : "每步间隔 0.5–2 秒"}</small></span>
-        <span class="row_btns">${paceButtons}</span></div></div>`}${localPlatforms}`);
+        <span class="row_btns">${paceButtons}</span></div></div>`}${localIssue}${localPlatforms}`);
     quiet = false;
+    page.querySelectorAll("[data-local-issue-toggle]").forEach((el) => (el.onclick = async () => {
+      if (el.getAttribute("aria-pressed") === "true") return;
+      const enabled = el.dataset.localIssueToggle === "1";
+      try {
+        await api("/api/settings/issue-report", { method: "POST", body: { enabled } });
+        state.settings.issue_report = enabled;
+        state.issueReport = enabled;
+        toast(enabled ? "已开启完成后问题检查" : "已关闭完成后问题检查");
+      } catch (e) { toast(e.message); }
+      paintSettings(tab, head, state.settings, true);
+    }));
     page.querySelectorAll("[data-logout]").forEach((el) => (el.onclick = async () => {
       try { await api(`/api/platforms/${el.dataset.logout}/logout`, { method: "POST" }); } catch (e) { toast(e.message); return; }
       await refreshState();
@@ -1775,6 +2054,8 @@ function progressBar(run) {
 }
 function fixButtons(j, i) {
   const type = TYPE_OF[j.title];
+  const issueBtn = state.issueReport && j.issue_check?.items?.length
+    ? `<button class="btn small" data-history-issue="${i}">${j.issue_check.reported ? "已上报" : "上报问题"}</button>` : "";
   // An update stopped it and it was not restarted on its own (answering, or interrupted too long ago).
   if (j.state === "stopped" && j.summary === "更新时中断" && i === state.history.findIndex((x) => x.course === j.course && x.title === j.title)) {
     return type === "answer" ? `<button class="btn small" data-go="#/course/${j.platform}/${j.course}/answer">重新作答</button>`
@@ -1789,9 +2070,9 @@ function fixButtons(j, i) {
     if (type === "answer") return `<button class="btn small" data-go="#/course/${j.platform}/${j.course}/answer">验证后重新作答</button>`;
     return `<button class="btn small" data-retry="${i}">验证后重试</button>`;
   }
-  if (j.state !== "error" || i !== state.history.findIndex((x) => x.course === j.course && x.title === j.title)) return "";
-  if (type === "answer") return `<button class="btn small" data-go="#/course/${j.platform}/${j.course}/answer">重新选择试卷</button>`;
-  return `<button class="btn small primary" data-retry="${i}">重试</button>`;
+  if (j.state !== "error" || i !== state.history.findIndex((x) => x.course === j.course && x.title === j.title)) return issueBtn;
+  if (type === "answer") return `${issueBtn}<button class="btn small" data-go="#/course/${j.platform}/${j.course}/answer">重新选择试卷</button>`;
+  return `${issueBtn}<button class="btn small primary" data-retry="${i}">重试</button>`;
 }
 
 /* ---------------------------------------------------------------- settings: models */
@@ -2946,6 +3227,9 @@ function handleEvent(event) {
       delete state.qaPosts[key(event.platform, event.course)];
       delete state.qaRoom[key(event.platform, event.course)];
       loadCourses(event.platform);
+      if (state.issueReport && event.issue_check?.items?.length && !event.issue_check.reported) {
+        queueIssueModal(event.issue_check);
+      }
       setTimeout(repaint, 61000);
     }
   } else if (event.type === "site_jobs") {
@@ -3201,6 +3485,7 @@ async function refreshState(catchUp = false) {
     state.lastRun = data.last || {};
     state.jobLimit = data.job_limit || state.jobLimit;
     state.zhsParallel = Boolean(data.zhs_parallel);
+    if (typeof data.issue_report === "boolean") state.issueReport = data.issue_report;
     const live = data.jobs || [];
     for (const job of live) {
       // The server's tally is the truth for a page opened mid-run or one that missed events while away.
@@ -3211,7 +3496,12 @@ async function refreshState(catchUp = false) {
     for (const gone of state.jobs.filter((j) => !live.some((x) => x.id === j.id))) {
       delete state.runs[gone.id];
       const ended = state.history.find((h) => h.id === gone.id);
-      if (ended) finishUnits(ended);
+      if (ended) {
+        finishUnits(ended);
+        if (state.issueReport && ended.issue_check?.items?.length && !ended.issue_check.reported) {
+          queueIssueModal(ended.issue_check);
+        }
+      }
       stalePapers(gone.platform, gone.course);
     }
     state.jobs = live;

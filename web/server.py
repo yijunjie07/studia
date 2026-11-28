@@ -35,6 +35,7 @@ from ai.runner import AnswerRunner
 from core.api_client import RequestRateLimited
 from core.concurrency import INTERACTIVE_WORKERS
 from core.auth import AuthenticationExpired, PlatformUnavailable
+from core.issue_check import build_issue_check, make_finding
 from mooc.oauth_login import oauth_login
 from core.settings import DEFAULT_PROFILE_ID, SettingsError, SettingsStore
 from core.task_capabilities import task_availability, task_type_label
@@ -168,7 +169,7 @@ class Studia:
     """All state behind the web UI; one running job at a time across platforms."""
 
     def __init__(self, store=None, oauth=oauth_login, *, reports_dir="ai_results", oauth_url=None, memory=None, mooc_memory=None,
-                 job_limit=None, zhs_parallel=None, answer_pace=None, peers=None, on_job=None):
+                 job_limit=None, zhs_parallel=None, answer_pace=None, issue_report=None, peers=None, on_job=None):
         self.store = store or SettingsStore()
         self.token = secrets.token_urlsafe(24)
         self.lock = threading.RLock()
@@ -185,6 +186,9 @@ class Studia:
         # Hosted mode: the admin's site-wide Zhihuishu answer pace (Hub.answer_pace), not the person's to change.
         self.answer_pace = answer_pace or self.store.answer_pace
         self.pace_locked = answer_pace is not None
+        # Hosted mode: the admin controls post-task issue checks & reporting site-wide; locally it is in 偏好.
+        self.issue_report = issue_report or self.store.issue_report
+        self.issue_report_locked = issue_report is not None
         # Hosted mode: questions other people on this site asked in the same class, answered first (Hub.peer_questions).
         self.peers = peers or (lambda course_id, recruit_id: [])
         self.on_job = on_job
@@ -260,7 +264,8 @@ class Studia:
     def state(self):
         return {"platforms": [p.public(self.logged_in(p), *self.passport(p)) for p in self.platforms.values()],
                 "jobs": self._running(), "history": [_job_public(j) for j in self.history], "last": dict(self.last),
-                "job_limit": self.job_limit(), "zhs_parallel": self.zhs_parallel(), "build": static_build()}
+                "job_limit": self.job_limit(), "zhs_parallel": self.zhs_parallel(),
+                "issue_report": self.issue_report(), "build": static_build()}
 
     def client(self, platform):
         with self.lock:
@@ -870,8 +875,8 @@ class Studia:
             raise HttpError(400, "这个平台暂不支持该操作")
         row = self.find_row(platform, course_id)
         room = self.qa_room(platform, row) if kind in ("qa", "ask") else None  # reads the score: before the lock
+        shares = (platform.cache.get(("shares", (row.get("zhs") or {}).get("courseId"))) or (0, None))[1]
         if kind in ("review", "qa", "ask"):
-            shares = (platform.cache.get(("shares", (row.get("zhs") or {}).get("courseId"))) or (0, None))[1]
             if not course_features(platform.id, row, shares)["qa" if kind == "ask" else kind]:
                 raise HttpError(400, "这门课的考核里没有%s，不用%s" % (
                     ("学习习惯分", "每日复习") if kind == "review" else ("问答互动分", "刷问答区")))
@@ -881,7 +886,7 @@ class Studia:
                    "platform": platform.id, "course_name": row.get("courseName") or "课程",
                    "cancel": threading.Event(),
                    "state": "queued", "summary": "", "started": time.time(), "ended": None, "lines": [], "progress": {},
-                   "resumes": resumes}
+                   "resumes": resumes, "findings": [], "_course_meta": _course(platform.id, row, shares)}
             if resumes:
                 job["lines"].append({"text": "服务更新后自动继续", "level": "", "time": time.strftime("%H:%M")})
             if kind == "answer":
@@ -1119,6 +1124,7 @@ class Studia:
             len(papers), "、".join(papers[:5]), " 等" if len(papers) > 5 else ""
         )) if papers else ""
         started_logged = False
+        non_adaptation_error = False
         try:
             while True:
                 self._wait_turn(job)
@@ -1144,18 +1150,33 @@ class Studia:
         except AuthenticationExpired:
             state, summary = "waiting", str(self.expire(platform))
         except HttpError as exc:  # e.g. a queued job rebuilt the client and found the login expired
+            non_adaptation_error = exc.status in (400, 401, 403, 429)
             state, summary = "waiting" if exc.status == 401 else "error", str(exc)
         except Exception as exc:
+            non_adaptation_error = isinstance(exc, (AIError, PlatformUnavailable, RequestRateLimited))
             logger.exception("网页任务失败 · %s · 课程「%s」（%s）· %s", pname, course_name, course_id, title)
             state, summary = "error", str(exc) or "任务失败"
         finally:
             if platform is not None:
                 self._forget(platform, job["course"])
                 self.save_sessions(platform)
+            check_enabled = self.issue_report() if callable(getattr(self, "issue_report", None)) else False
+            issue_check = None
+            if check_enabled and state not in ("stopped", "waiting"):
+                findings = list(job.get("findings") or ())
+                if state == "error" and not findings and not non_adaptation_error:
+                    findings.append(make_finding("job_error", name=title, kind=job.get("kind") or "", detail=summary))
+                issue_check = build_issue_check(
+                    dict(job, state=state, summary=summary),
+                    findings=findings,
+                    course_meta=job.get("_course_meta"),
+                )
             with self.lock:
                 if self.closing and state == "stopped":
                     summary = INTERRUPTED
                 job.update(state=state, summary=summary, ended=time.time())
+                if issue_check is not None:
+                    job["issue_check"] = issue_check
                 self._remember(job)
                 self.jobs.pop(job["id"], None)
                 self._save()
@@ -1327,7 +1348,11 @@ class Studia:
         if minutes:
             kwargs["review_minutes"] = minutes
         try:
-            blocked = getattr(spec["handler"](**kwargs), "blocked", None)
+            handler = spec["handler"](**kwargs)
+            findings = getattr(handler, "findings", None)
+            if isinstance(findings, (list, tuple)) and findings:
+                job.setdefault("findings", []).extend(findings)
+            blocked = getattr(handler, "blocked", None)
             if blocked is not None:
                 raise blocked
         finally:
@@ -1380,6 +1405,23 @@ class Studia:
                     log_paper = logger.error if status in ("error", "ai_error") else logger.warning
                     log_paper("答题未完成 · %s · 课程「%s」· 试卷「%s」· 状态：%s · %s",
                               pname, course_name, name, status, result.get("message") or "无详情")
+                    if status not in ("ai_error", "waiting"):
+                        code = ("paper_skipped" if status == "skipped"
+                                else "paper_unknown" if status == "submission_unknown"
+                                else "paper_error")
+                        kind_label = ("作业" if category == 1 else "考试") if platform.id == "zhs" else task_type_label(item, category)
+                        field_keys = (
+                            ("id", "examId", "categoryId", "typeId", "questionSettingMethod", "status", "answerCount")
+                            if platform.id == "mooc"
+                            else ("id", "answerCount", "frequency", "zhs")
+                        )
+                        job.setdefault("findings", []).append(make_finding(
+                            code,
+                            name=name,
+                            kind=kind_label,
+                            detail=result.get("message") or status,
+                            fields=core.log.summarize_fields(item, keys=field_keys),
+                        ))
                 if status == "ai_error":
                     self.store.save_ai_health(ai.config, "error", result.get("message", "AI 服务失败"))
                 # Before the event: the page reads the papers again on a handed-in one, and must get its new score.
@@ -1572,7 +1614,8 @@ class Studia:
                            "health": health.get("status") or "", "health_message": health.get("message") or "",
                            "deletable": profile.id != DEFAULT_PROFILE_ID})
         return {"models": models, "concurrency": self.store.concurrency(), "pace": self.answer_pace(),
-                "pace_locked": self.pace_locked}
+                "pace_locked": self.pace_locked, "issue_report": self.issue_report(),
+                "issue_report_locked": self.issue_report_locked}
 
     def _profile(self, profile_id):
         for profile in self.store.ai_profiles():
@@ -1654,6 +1697,39 @@ class Studia:
         except SettingsError as exc:
             raise HttpError(400, str(exc))
         return {}
+
+    def save_issue_report(self, body):
+        if self.issue_report_locked:
+            raise HttpError(403, "适配检查与上报开关由管理员在管理后台设置")
+        enabled = (body or {}).get("enabled")
+        if not isinstance(enabled, bool):
+            raise HttpError(400, "开关参数不正确")
+        try:
+            self.store.save_issue_report(enabled)
+        except SettingsError as exc:
+            raise HttpError(400, str(exc))
+        return {"issue_report": self.issue_report()}
+
+    def issue_check_for(self, job_id):
+        """Return the server-built sanitized post-task check for a recent job, or None."""
+        job_id = str(job_id or "").strip()
+        if not job_id:
+            return None
+        with self.lock:
+            for job in self.history:
+                if job.get("id") == job_id and isinstance(job.get("issue_check"), dict):
+                    return dict(job["issue_check"])
+        return None
+
+    def mark_reported(self, job_id):
+        """Mark a finished job's post-task check as reported so refreshes keep the state."""
+        with self.lock:
+            for job in self.history:
+                if job.get("id") == job_id and isinstance(job.get("issue_check"), dict):
+                    job["issue_check"]["reported"] = True
+                    self._save()
+                    return True
+        return False
 
 
 class _EventLogHandler(logging.Handler):
@@ -1850,8 +1926,11 @@ def _track(progress, event):
 def _job_public(job):
     if job is None:
         return None
-    return {key: job.get(key) for key in ("id", "kind", "title", "course", "course_name", "platform", "state",
+    data = {key: job.get(key) for key in ("id", "kind", "title", "course", "course_name", "platform", "state",
                                       "summary", "started", "ended", "running_since", "lines", "progress", "hold")} | {"order": _order(job)}
+    if job.get("issue_check") is not None:
+        data["issue_check"] = job["issue_check"]
+    return data
 
 
 def _order(job):
@@ -1924,6 +2003,7 @@ ROUTES = [
     ("POST", r"/api/settings/models/([\w-]+)/test", lambda app, m, q, b: app.test_model(m[1])),
     ("POST", r"/api/settings/concurrency", lambda app, m, q, b: app.save_concurrency(b)),
     ("POST", r"/api/settings/pace", lambda app, m, q, b: app.save_pace(b)),
+    ("POST", r"/api/settings/issue-report", lambda app, m, q, b: app.save_issue_report(b)),
 ]
 
 
