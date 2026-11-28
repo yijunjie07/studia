@@ -1,4 +1,3 @@
-import json
 import random
 import time
 import threading
@@ -13,16 +12,20 @@ from core.reporting import Reporter
 from core.log import Logger, summarize_fields
 from mooc.api import AIMoocApi
 from mooc.activities import CourseActivities
+from mooc.rules import (
+    MOOC_UNIT_RULES,
+    compute_study_total,
+    known_file_types,
+    resolve_mooc_rule,
+    types_for_action,
+)
 from core.util import parse_duration, get_mp3_duration
 
-# 作业、考试、测验在答题里做；子节点和文件夹无法展开。
-ANSWERED_TYPES = ("作业", "考试", "测验")
-SKIPPED_TYPES = ANSWERED_TYPES + ("子节点", "文件夹")
-KNOWN_FILE_TYPES = set(SKIPPED_TYPES) | {
-    "video", "audio", "ppt", "pptx", "img", "image", "图文", "pdf", "doc", "docx",
-    "xls", "xlsx", "txt", "mp4", "mp3", "document", "swf", "link", "网页",
-    "图片", "视频", "音频", "文档", "演示文稿", "office",
-}
+# 作业、考试、测验在答题里做；子节点和文件夹无法展开（统一源自 mooc/rules.py 规则表）。
+ANSWERED_TYPES = types_for_action("answered")
+UNEXPANDABLE_TYPES = types_for_action("unsupported")
+SKIPPED_TYPES = ANSWERED_TYPES + UNEXPANDABLE_TYPES
+KNOWN_FILE_TYPES = known_file_types()
 _mooc_logger = Logger(__name__).get_log()
 
 
@@ -51,9 +54,10 @@ def course_units(client, course):
         units = []
         for node in leaves(chapter_cells):
             file_type = node.get("fileType") or ""
-            if file_type in ANSWERED_TYPES:
+            rule = resolve_mooc_rule(file_type)
+            if rule.action == "answered":
                 continue
-            if file_type and file_type.lower() not in KNOWN_FILE_TYPES and file_type not in unknown_seen:
+            if not rule.known and file_type not in unknown_seen:
                 unknown_seen.add(file_type)
                 _mooc_logger.warning(
                     "MOOC · 课程「%s」发现未适配学习单元类型「%s」· 节点「%s」· 原始字段：%s",
@@ -63,7 +67,7 @@ def course_units(client, course):
             units.append({
                 "id": str(node.get("id")), "name": node.get("name") or "资源", "kind": file_type,
                 "state": "done" if node.get("id") in done else
-                         "skipped" if file_type in SKIPPED_TYPES else "queued",
+                         "skipped" if rule.action != "study" else "queued",
             })
         if units:
             chapters.append({"name": chapter.get("name") or "未命名章节", "units": units})
@@ -223,7 +227,8 @@ class AIMoocHandler:
 
         self.logging.info(f"{prefix}  资源: {resource_name} | 类型: {file_type}")
 
-        if file_type in SKIPPED_TYPES:
+        rule = resolve_mooc_rule(file_type)
+        if rule.action != "study":
             self.logging.info(f"{prefix}  跳过{file_type}")
             return "skipped"
 
@@ -233,32 +238,12 @@ class AIMoocHandler:
             return "skipped"
 
         try:
-            # 默认学习总数
-            total_num = random.randint(1, 10)
-            url_short = None
-            course_content = node.get("fileUrl", "")
-            if course_content and course_content.strip() != "":
-                course_content = json.loads(course_content)
-                url_short = course_content.get("url")
-            # mp3 时长接口无法查询，本地获取
-            if file_type == "audio":
-                mp3_duration = get_mp3_duration(course_content.get("ossOriUrl"))
-                total_num = int(mp3_duration)
-            elif file_type == "ppt":
-                total_num = random.randint(1, 10)
-            elif file_type == "img":
-                total_num = random.randint(1, 10)
-            elif file_type == "图文":
-                total_num = random.randint(1, 10)
-            elif url_short:
-                # 视频类型
-                file_status_args_duration = course_content.get("duration")
-                # 文件类型
-                file_status_args_has_txt_file = course_content.get("has_txt_file")
-                if file_status_args_duration:
-                    total_num = parse_duration(file_status_args_duration)
-                elif file_status_args_has_txt_file:
-                    total_num = course_content.get("page_count")
+            total_num = compute_study_total(
+                rule,
+                node,
+                mp3_duration=get_mp3_duration,
+                duration_parser=parse_duration,
+            )
 
             course_info_id = node.get("courseInfoId")
             study_time = total_num

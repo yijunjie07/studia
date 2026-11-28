@@ -14,6 +14,7 @@ from Crypto.Util.Padding import pad, unpad
 from core.log import Logger
 from core.auth import AuthenticationExpired, PlatformUnavailable
 from core.task_metrics import nonnegative_number
+from zhs.rules import ZHS_ASSESSMENT_RULES
 
 logger = Logger(__name__).get_log()
 
@@ -175,10 +176,8 @@ def _percent(value):
         return None
 
 
-# 考核项 → scoreAssessRuleDto 的字段，按成绩分析页的顺序。
-SCORE_SHARES = (("progress", "progressScoreShare"), ("habit", "learnedHabitScoreShare"),
-                ("interactive", "learnedInteractiveScoreShare"), ("knowledge", "learnedKnowledgeScoreShare"),
-                ("test", "examScoreShare"), ("meet", "meetCourseScoreShare"), ("final", "finalExamScoreShare"))
+# 考核项 → scoreAssessRuleDto 的字段，按成绩分析页的顺序（统一源自 zhs/rules.py）。
+SCORE_SHARES = tuple((rule.key, rule.api_field) for rule in ZHS_ASSESSMENT_RULES)
 
 
 def course_offers(row, shares=None):
@@ -186,7 +185,7 @@ def course_offers(row, shares=None):
     所以只给共享课，并且考核规则里这一项大于 0 才开。shares 读不到（None）时不收窄。"""
     shared = (row.get("zhs") or {}).get("kind") == "shared"
     earns = lambda name: shares is None or shares.get(name, 0) > 0
-    return {"review": shared and earns("habit"), "qa": shared and earns("interactive")}
+    return {rule.feature: shared and earns(rule.key) for rule in ZHS_ASSESSMENT_RULES if rule.feature}
 
 
 class WatchPoints:
