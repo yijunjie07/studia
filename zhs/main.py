@@ -8,6 +8,7 @@ from datetime import date, timedelta
 
 from core.auth import AuthenticationExpired, PlatformUnavailable
 from core.concurrency import INTERACTIVE_WORKERS
+from core.issue_check import make_finding
 from core.log import Logger, summarize_fields
 from core.reporting import Reporter
 from zhs.api import (
@@ -136,7 +137,11 @@ class ZHSHandler:
         self.log = Logger(__name__).get_log()
         # A captcha or study-time limit that stopped the run; only a person can clear it.
         self.blocked = None
+        self.findings = []
         self.start_courses()
+
+    def _record_finding(self, code, **kwargs):
+        self.findings.append(make_finding(code, **kwargs))
 
     def start_courses(self):
         course_rows = self.course_rows
@@ -153,6 +158,14 @@ class ZHSHandler:
                 kind = (row.get("zhs") or {}).get("kind")
                 course_rule = resolve_zhs_course_rule(kind)
                 if course_rule is None:
+                    if not self.review_seconds:
+                        self._record_finding(
+                            "unsupported_course",
+                            name=name,
+                            kind=str(kind or "unknown"),
+                            detail="当前仅适配智慧树共享课与智慧课程",
+                            fields=summarize_fields(row.get("zhs") or {}, keys=("kind", "courseId", "recruitId", "classId")),
+                        )
                     status = "skipped"
                 else:
                     method_name = course_rule.review_method if self.review_seconds else course_rule.study_method
@@ -175,6 +188,13 @@ class ZHSHandler:
     def study_shared(self, row):
         prepared = shared_context(self.client, row, self.log)
         if prepared is None:
+            if _to_int(row.get("studySpeed")) < 100:
+                self._record_finding(
+                    "empty_units",
+                    name=row.get("courseName") or "未知课程",
+                    kind="shared",
+                    detail="共享课未读取到可学习的视频列表",
+                )
             return "skipped"
         ctx, videos, lesson_ids, video_ids = prepared
         course, recruit_id = ctx["course"], ctx["recruit_id"]
@@ -182,6 +202,7 @@ class ZHSHandler:
         self.log.info("%s：共 %d 个视频（已完成 %d）", course, len(videos), done)
         total = len(videos)
         success = skipped = failed = 0
+        failed_keys = set()
         self.progress.resources(f"{course} · 读取资源 · 成功 0 · 跳过 0 · 失败 0", 0, total)
         for video in videos:
             if self.cancel_event.is_set():
@@ -200,10 +221,18 @@ class ZHSHandler:
                     raise
                 except Exception as error:
                     failed += 1
+                    failed_keys.add(key)
                     self.progress.unit(key, name, "failed")
                     self.log.error(
                         "智慧树 · %s · %s（lessonId=%s, videoId=%s）：学习失败：%s",
                         course, name, video.get("lessonId"), video.get("id"), error,
+                    )
+                    self._record_finding(
+                        "resource_error",
+                        name=name,
+                        kind="video",
+                        detail=str(error),
+                        fields=summarize_fields(video, keys=("lessonId", "id", "videoId", "chapterId", "videoSec")),
                     )
             completed = success + skipped + failed
             self.progress.resources(
@@ -212,7 +241,18 @@ class ZHSHandler:
             )
 
         states = self.client.shared_study_info(lesson_ids, video_ids, recruit_id) or {}
-        ready = sum(1 for video in videos if self._shared_state(states, video)[0] == 1)
+        ready = 0
+        for video in videos:
+            if self._shared_state(states, video)[0] == 1:
+                ready += 1
+            elif _video_key(video) not in failed_keys:
+                self._record_finding(
+                    "unverified_unit",
+                    name=video["name"],
+                    kind="video",
+                    detail="视频播放完成后回查 watchState 仍未标记完成",
+                    fields=summarize_fields(video, keys=("lessonId", "id", "videoId", "chapterId", "videoSec")),
+                )
         self.log.info("%s：服务端确认 %d/%d 个视频已完成", course, ready, total)
         return "success" if ready == total and not failed else "error"
 
@@ -549,6 +589,13 @@ class ZHSHandler:
         total = sum(len(items) for _, items in groups)
         if total == 0:
             self.log.warning("%s：没有可学习的资源", course)
+            if _to_int(row.get("studySpeed")) < 100:
+                self._record_finding(
+                    "empty_units",
+                    name=course,
+                    kind="ai",
+                    detail="智慧课程未读取到可学习资源",
+                )
             return "skipped"
         done = sum(1 for _, items in groups for item in items
                    if _to_int(item.get("studyStatus")) == 1)
@@ -556,6 +603,8 @@ class ZHSHandler:
 
         self.progress.resources(f"{course} · 读取资源 · 成功 0 · 跳过 0 · 失败 0", 0, total)
         success = skipped = failed = 0
+        failed_keys = set()
+        skipped_keys = set()
         # Instant resources first so visible progress is not stuck behind long videos.
         ordered = sorted(
             ((point, item) for point, items in groups for item in items),
@@ -569,18 +618,23 @@ class ZHSHandler:
             self.progress.detail(f"{course} · {name}")
             key = _resource_key(item)
             rule = resolve_zhs_ai_rule(detail, item)
+            rt, rdt = ai_resource_pair(detail, item)
             if _to_int(item.get("studyStatus")) == 1:
                 skipped += 1
             elif rule.action == "unsupported":
                 skipped += 1
+                skipped_keys.add(key)
                 self.progress.unit(key, name, "skipped")
-                rt, rdt = ai_resource_pair(detail, item)
                 meta = dict(item, **detail) if isinstance(detail, dict) else dict(item)
-                self.log.warning(
-                    "智慧树 · %s · %s：跳过未支持资源类型（%s/%s）· 资源字段：%s",
-                    course, name, rt, rdt,
-                    summarize_fields(meta, keys=("resourcesType", "resourcesDistributeType",
-                                                 "resourcesUid", "resourcesFileId", "studyStatus")),
+                fields = summarize_fields(meta, keys=("resourcesType", "resourcesDistributeType",
+                                                      "resourcesUid", "resourcesFileId", "studyStatus"))
+                self.log.warning("智慧树 · %s · %s：跳过未支持资源类型（%s/%s）· 字段：%s", course, name, rt, rdt, fields)
+                self._record_finding(
+                    "skipped_unit",
+                    name=name,
+                    kind="%s/%s" % (rt, rdt),
+                    detail=rule.label or "该资源类型暂不支持自动完成",
+                    fields=fields,
                 )
             else:
                 self.progress.unit(key, name, "running")
@@ -604,13 +658,21 @@ class ZHSHandler:
                     raise
                 except Exception as error:
                     failed += 1
+                    failed_keys.add(key)
                     self.progress.unit(key, name, "failed")
                     meta = dict(item, **detail) if isinstance(detail, dict) else dict(item)
+                    fields = summarize_fields(meta, keys=("resourcesType", "resourcesDistributeType",
+                                                          "resourcesUid", "resourcesFileId", "studyStatus"))
                     self.log.error(
                         "智慧树 · %s · %s：学习失败：%s · 资源字段：%s",
-                        course, name, error,
-                        summarize_fields(meta, keys=("resourcesType", "resourcesDistributeType",
-                                                     "resourcesUid", "resourcesFileId", "studyStatus")),
+                        course, name, error, fields,
+                    )
+                    self._record_finding(
+                        "resource_error",
+                        name=name,
+                        kind="%s/%s" % (rt, rdt),
+                        detail=str(error),
+                        fields=fields,
                     )
             completed = success + skipped + failed
             self.progress.resources(
@@ -623,7 +685,30 @@ class ZHSHandler:
         for point, _ in groups:
             items = self.client.ai_resources(course_id, class_id, point["knowledgeId"]) or []
             all_total += len(items)
-            ready += sum(1 for item in items if _to_int(item.get("studyStatus")) == 1)
+            for item in items:
+                if _to_int(item.get("studyStatus")) == 1:
+                    ready += 1
+                    continue
+                key = _resource_key(item)
+                if key in failed_keys or key in skipped_keys:
+                    continue
+                detail = item.get("resourcesDetail") or {}
+                item_name = detail.get("resourcesName") or item.get("resourcesName") or "资源"
+                meta = dict(item, **detail) if isinstance(detail, dict) else dict(item)
+                rt, rdt = ai_resource_pair(detail, item)
+                fields = summarize_fields(meta, keys=("resourcesType", "resourcesDistributeType",
+                                                      "resourcesUid", "resourcesFileId", "studyStatus"))
+                self.log.warning(
+                    "智慧树 · %s · %s：提交后回查仍未完成 · 资源字段：%s",
+                    course, item_name, fields,
+                )
+                self._record_finding(
+                    "unverified_unit",
+                    name=item_name,
+                    kind="%s/%s" % (rt, rdt),
+                    detail="提交完成接口后回查 studyStatus 仍未变为 1",
+                    fields=fields,
+                )
         self.log.info("%s：服务端确认 %d/%d 项资源已完成", course, ready, all_total)
         return "success" if ready == all_total and not failed else "error"
 

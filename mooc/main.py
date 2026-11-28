@@ -9,6 +9,7 @@ from core.auth import AuthenticationExpired
 from core.concurrency import INTERACTIVE_WORKERS, validate_workers
 from core.study import run_resources, check_study_response
 from core.reporting import Reporter
+from core.issue_check import make_finding
 from core.log import Logger, summarize_fields
 from mooc.api import AIMoocApi
 from mooc.activities import CourseActivities
@@ -92,6 +93,9 @@ class AIMoocHandler:
 
         self.logging = Logger(__name__).get_log()
         self._current_course_name = "未知课程"
+        self._findings_lock = threading.Lock()
+        self.findings = []
+        self._attempted_nodes = []
         self.progress = Reporter(on_progress)
         self.activities = (
             CourseActivities(self.client, activity_ai, cancel_event=self.cancel_event, log=self.logging,
@@ -137,6 +141,18 @@ class AIMoocHandler:
             self.logging.error("MOOC · 课程「%s」获取或处理失败: %s", self._current_course_name, e)
             self.progress.result("读取或处理课程", "error")
 
+    def _record_finding(self, code, **kwargs):
+        lock = getattr(self, "_findings_lock", None)
+        findings = getattr(self, "findings", None)
+        if findings is None:
+            return
+        item = make_finding(code, **kwargs)
+        if lock is not None:
+            with lock:
+                findings.append(item)
+        else:
+            findings.append(item)
+
     def process_course(self, course: Dict[str, Any]) -> None:
         """处理单个课程"""
         course_name = course.get("courseName", "未知课程")
@@ -153,6 +169,8 @@ class AIMoocHandler:
         )
 
         if course_info_id:
+            with self._findings_lock:
+                self._attempted_nodes = []
             study_design_list = self.client.study_design_list(course_info_id, course_id)
             self.study_record_list = self.client.study_record_list(
                 course_info_id, course_id
@@ -161,15 +179,59 @@ class AIMoocHandler:
                 raise RuntimeError("无法读取课程已完成记录，停止学习")
             self.study_record_list = tuple(self.study_record_list)
 
+            if not study_design_list:
+                try:
+                    done_pct = float(str(study_speed).strip().rstrip("%"))
+                except (TypeError, ValueError):
+                    done_pct = 0.0
+                if done_pct < 100:
+                    self._record_finding(
+                        "empty_units",
+                        name=course_name,
+                        kind="mooc",
+                        detail="未读取到课程章节目录，当前进度未满 100%",
+                    )
+
             def resources():
                 for node in study_design_list:
                     parent_id = node.get("id")
                     cell_list = self.client.get_cell_list(course_info_id, course_id, parent_id)
                     yield from self.print_course_structure(cell_list, parent_id)
             run_resources(self, resources(), course_name)
+            self._verify_attempted(course_info_id, course_id)
             self.run_activities(course)
         else:
             self.logging.warning(f" 课程 {course_name} 缺少 CourseInfoId，跳过")
+            self._record_finding("empty_units", name=course_name, kind="mooc", detail="课程缺少 courseInfoId")
+
+    def _verify_attempted(self, course_info_id, course_id):
+        if self.cancel_event.is_set():
+            return
+        with self._findings_lock:
+            attempted = list(self._attempted_nodes)
+        if not attempted:
+            return
+        try:
+            latest = self.client.study_record_list(course_info_id, course_id)
+        except Exception as exc:
+            self.logging.debug("MOOC 课后回查已完成列表失败：%s", exc)
+            return
+        if not isinstance(latest, (list, tuple)):
+            return
+        done_ids = set(latest)
+        for source_id, resource_name, file_type, fields in attempted:
+            if source_id not in done_ids:
+                self.logging.warning(
+                    "MOOC · 课程「%s」· 资源「%s」（类型：%s）提交后回查仍未完成 · 字段：%s",
+                    self._current_course_name, resource_name, file_type, fields,
+                )
+                self._record_finding(
+                    "unverified_unit",
+                    name=resource_name,
+                    kind=file_type,
+                    detail="学习记录接口返回成功，但回查已完成列表仍未出现",
+                    fields=fields,
+                )
 
     def run_activities(self, course: Dict[str, Any]) -> None:
         """参与课程主题讨论并提交五星课程评价（资源处理完成后独立执行）"""
@@ -186,6 +248,7 @@ class AIMoocHandler:
         except Exception as error:
             self._course_failed = True
             self.logging.error("课程讨论/评价处理失败: %s", error)
+            self._record_finding("activity_error", name="课程讨论/评价", kind="activity", detail=str(error))
             return
         label = {"submitted": "已提交五星评价", "evaluated": "已评价，跳过",
                  "failed": "失败", "skipped": "跳过"}.get(summary["evaluation"], summary["evaluation"])
@@ -194,6 +257,15 @@ class AIMoocHandler:
             course_name, summary["discussion_posted"], summary["discussion_skipped"],
             summary["discussion_failed"], label,
         )
+        if summary["discussion_failed"] > 0:
+            self._record_finding(
+                "activity_error",
+                name="课程主题讨论",
+                kind="discussion",
+                detail="有 %d 个讨论未能完成" % summary["discussion_failed"],
+            )
+        if summary["evaluation"] == "failed":
+            self._record_finding("activity_error", name="课程评价", kind="evaluation", detail="课程评价提交失败")
         self._course_processed |= summary["discussion_posted"] > 0 or summary["evaluation"] == "submitted"
         self._course_failed |= summary["discussion_failed"] > 0 or summary["evaluation"] == "failed" or self.cancel_event.is_set()
 
@@ -227,15 +299,38 @@ class AIMoocHandler:
 
         self.logging.info(f"{prefix}  资源: {resource_name} | 类型: {file_type}")
 
+        node_fields = summarize_fields(
+            node, keys=("id", "name", "fileType", "cellType", "categoryName", "courseId", "courseInfoId")
+        )
         rule = resolve_mooc_rule(file_type)
-        if rule.action != "study":
+        if rule.action == "answered":
             self.logging.info(f"{prefix}  跳过{file_type}")
+            return "skipped"
+        if rule.action == "unsupported":
+            self.logging.info(f"{prefix}  跳过{file_type}")
+            if source_id not in self.study_record_list:
+                self._record_finding(
+                    "skipped_unit",
+                    name=resource_name,
+                    kind=file_type,
+                    detail=rule.label or "该节点类型暂无法展开或自动完成",
+                    fields=node_fields,
+                )
             return "skipped"
 
         # 已完成的课程不再处理
         if source_id in self.study_record_list:
             self.logging.info(f"{prefix}  跳过已完成的课程: {resource_name}")
             return "skipped"
+
+        if not rule.known:
+            self._record_finding(
+                "unknown_type",
+                name=resource_name,
+                kind=file_type,
+                detail=rule.label,
+                fields=node_fields,
+            )
 
         try:
             total_num = compute_study_total(
@@ -270,6 +365,15 @@ class AIMoocHandler:
             )
             check_study_response(response)
             self.logging.info("学习记录已保存")
+            attempted = getattr(self, "_attempted_nodes", None)
+            if source_id is not None and attempted is not None:
+                lock = getattr(self, "_findings_lock", None)
+                entry = (source_id, resource_name, file_type, node_fields)
+                if lock is not None:
+                    with lock:
+                        attempted.append(entry)
+                else:
+                    attempted.append(entry)
             self._course_processed = True
             return "success"
         except (AuthenticationExpired, RequestRateLimited):
@@ -280,6 +384,13 @@ class AIMoocHandler:
             self.logging.error(
                 "MOOC · 课程「%s」· 资源「%s」（类型：%s，ID：%s）处理失败：%s · 原始字段：%s",
                 self._current_course_name, resource_name, file_type, source_id, e,
-                summarize_fields(node, keys=("id", "name", "fileType", "cellType", "categoryName", "courseId", "courseInfoId")),
+                node_fields,
+            )
+            self._record_finding(
+                "resource_error",
+                name=resource_name,
+                kind=file_type,
+                detail=str(e),
+                fields=node_fields,
             )
             return "error"

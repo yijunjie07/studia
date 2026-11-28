@@ -1083,6 +1083,81 @@ class HostedServerTest(unittest.TestCase):
         self.assertEqual(post2.call_args[0][0], "https://studia.example/linuxdo-proxy/oauth2/token")
         self.assertEqual(get2.call_args[0][0], "https://studia.example/linuxdo-proxy/api/user")
 
+    def test_member_submits_report_and_admin_manages_and_toggles_via_http(self):
+        from core.issue_check import build_issue_check, make_finding
+
+        alice_id = self.hub.accounts.create_user("alice", "alice-password")
+        admin_tok, admin_csrf = self.login("admin", "admin-password")
+        alice_tok, alice_csrf = self.login("alice", "alice-password")
+
+        # Default site switch is ON
+        status, state_data, _, _ = self.request("GET", "/api/state", cookie=alice_tok)
+        self.assertEqual((status, state_data["issue_report"]), (200, True))
+
+        # Seed a finished job with a post-task issue_check in Alice's history
+        alice_app = self.hub.app(alice_id)
+        job = {
+            "id": "jobhttp1",
+            "kind": "study",
+            "title": "自动学习",
+            "course": "c1",
+            "course_name": "大学英语",
+            "platform": "mooc",
+            "state": "done",
+            "summary": "学习完成",
+            "started": 1.0,
+            "ended": 2.0,
+            "lines": [],
+            "progress": {},
+        }
+        job["issue_check"] = build_issue_check(
+            job,
+            findings=[make_finding("unknown_type", name="互动环节", kind="h5_lab", detail="未适配")],
+            course_meta={"type": "AI优课", "kind": "mooc", "progress": 50},
+        )
+        alice_app.history.insert(0, job)
+
+        # Member submits one-click report
+        status, reply, _, _ = self.request(
+            "POST", "/api/reports", {"job_id": "jobhttp1", "note": "这里卡住"},
+            cookie=alice_tok, csrf=alice_csrf,
+        )
+        self.assertEqual((status, reply["ok"], reply["reporter_count"]), (200, True, 1))
+        rid = reply["id"]
+
+        # Member is forbidden from viewing admin report list
+        self.assertEqual(self.request("GET", "/api/admin/reports", cookie=alice_tok)[0], 403)
+
+        # Admin lists, marks resolved, toggles site switch off
+        status, listed, _, _ = self.request("GET", "/api/admin/reports", cookie=admin_tok)
+        self.assertEqual((status, len(listed["reports"]), listed["enabled"]), (200, 1, True))
+        self.assertEqual(listed["reports"][0]["id"], rid)
+
+        status, _, _, _ = self.request(
+            "POST", f"/api/admin/reports/{rid}/status", {"status": "resolved"},
+            cookie=admin_tok, csrf=admin_csrf,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(self.request("GET", "/api/admin/reports", cookie=admin_tok)[1]["reports"][0]["status"], "resolved")
+
+        status, cfg, _, _ = self.request(
+            "POST", "/api/admin/settings", {"issue_report": False},
+            cookie=admin_tok, csrf=admin_csrf,
+        )
+        self.assertEqual((status, cfg["issue_report"]), (200, False))
+        self.assertEqual(self.request("GET", "/api/state", cookie=alice_tok)[1]["issue_report"], False)
+        self.assertEqual(
+            self.request("POST", "/api/reports", {"job_id": "jobhttp1"}, cookie=alice_tok, csrf=alice_csrf)[0],
+            403,
+        )
+
+        status, _, _, _ = self.request(
+            "POST", f"/api/admin/reports/{rid}/delete", {},
+            cookie=admin_tok, csrf=admin_csrf,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(self.request("GET", "/api/admin/reports", cookie=admin_tok)[1]["reports"], [])
+
 
 class IsolationUnitTest(unittest.TestCase):
     def test_log_lines_go_only_to_the_job_thread_owner(self):

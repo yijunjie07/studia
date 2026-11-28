@@ -43,7 +43,18 @@ const history = [
   { id: "h2", title: "AI 答题", course: "m1", course_name: "大学英语（二）", platform: "mooc", state: "error", summary: "第 4 题：AI 返回的答案格式不符",
     started: Date.now() / 1000 - 4000, ended: Date.now() / 1000 - 3815, lines: [{ text: "第四单元测验 · 出错", level: "error", done: true, time: "13:40" }] },
   { id: "h1", title: "自动学习", course: "m1", course_name: "大学英语（二）", platform: "mooc", state: "done", summary: "学习完成",
-    started: Date.now() / 1000 - 9000, ended: Date.now() / 1000 - 2900, lines: [{ text: "第 3 章 · 完成", done: true, time: "08:12" }] },
+    started: Date.now() / 1000 - 9000, ended: Date.now() / 1000 - 2900, lines: [{ text: "第 3 章 · 完成", done: true, time: "08:12" }],
+    issue_check: {
+      fingerprint: "a1b2c3d4e5f60708", platform: "mooc", platform_name: "MOOC", course_id: "m1", course_name: "大学英语（二）",
+      course_type: "第 7 期开课", course_kind: "mooc", progress: 62, job_id: "h1", job_kind: "study", job_title: "自动学习",
+      job_state: "done", job_summary: "学习完成", headline: "发现 2 项未适配或提交后仍未完成的内容",
+      counts: { failed: 0, skipped: 0, unverified: 1, unknown: 1, total: 2 },
+      items: [
+        { code: "unknown_type", bucket: "unknown", label: "未适配资源类型", name: "3.2 虚拟仿真互动", kind: "vr_lab", detail: "未在已知学习单元类型列表中", fields: "id=u32, fileType=vr_lab" },
+        { code: "unverified_unit", bucket: "unverified", label: "提交后平台未标记完成", name: "3.2 虚拟仿真互动", kind: "vr_lab", detail: "回查已完成列表仍未出现", fields: "id=u32, fileType=vr_lab" },
+      ],
+      logs: [{ time: "08:12", level: "warn", text: "MOOC · 课程「大学英语（二）」发现未适配学习单元类型「vr_lab」" }],
+    } },
 ];
 
 // Course grid: chapters of units; the first `done` units are already finished.
@@ -67,6 +78,49 @@ const units = {
 
 const GROUP = { study: "learn", review: "learn", answer: "answer", qa: "answer", ask: "answer" };
 let qaPeersOn = false;
+let issueReportOn = true;
+const mockReports = [
+  {
+    id: "rep1",
+    fingerprint: "a1b2c3d4e5f60708",
+    platform: "mooc",
+    course_id: "m1",
+    course_name: "大学英语（二）",
+    course_type: "第 7 期开课",
+    course_kind: "mooc",
+    job_kind: "study",
+    headline: "发现 2 项未适配或提交后仍未完成的内容",
+    status: "open",
+    report_count: 5,
+    reporter_count: 3,
+    reporters: [
+      { username: "alice", at: Date.now() / 1000 - 1800, note: "第三章虚拟仿真实验跑完还是未完成" },
+      { username: "bob", at: Date.now() / 1000 - 7200, note: "同样卡在这个环节" },
+    ],
+    payload: {
+      platform: "mooc",
+      platform_name: "MOOC",
+      course_id: "m1",
+      course_name: "大学英语（二）",
+      course_type: "第 7 期开课",
+      course_kind: "mooc",
+      progress: 62,
+      job_id: "h1",
+      job_kind: "study",
+      job_title: "自动学习",
+      job_state: "done",
+      job_summary: "学习完成",
+      headline: "发现 2 项未适配或提交后仍未完成的内容",
+      items: [
+        { code: "unknown_type", bucket: "unknown", label: "未适配资源类型", name: "3.2 虚拟仿真互动", kind: "vr_lab", detail: "未在已知学习单元类型列表中", fields: "id=u32, fileType=vr_lab" },
+        { code: "unverified_unit", bucket: "unverified", label: "提交后平台未标记完成", name: "3.2 虚拟仿真互动", kind: "vr_lab", detail: "回查已完成列表仍未出现", fields: "id=u32, fileType=vr_lab" },
+      ],
+      logs: [{ time: "14:12", level: "warn", text: "MOOC · 课程「大学英语（二）」发现未适配学习单元类型「vr_lab」" }],
+    },
+    created: Date.now() / 1000 - 86400,
+    updated: Date.now() / 1000 - 1800,
+  },
+];
 const qaPosts = [{ kind: "answer", question: "云计算的三种服务模式有什么区别？", text: "IaaS 提供虚拟机等基础设施，PaaS 提供运行平台，SaaS 直接提供软件。", at: Date.now() / 1000 - 7200 }];
 function fakeJob(body) {
   const course = courses[body.platform].find((c) => c.id === body.course);
@@ -155,8 +209,46 @@ export function subscribe(listener) { listeners.add(listener); }
 export async function request(path, method, body) {
   await new Promise((resolve) => setTimeout(resolve, 200));
   let m;
-  if (path === "/api/state") return { platforms, jobs: Object.values(jobs), history };
-  if (path === "/api/auth/me") return { user: { id: "mock", username: "演示", role: "member", has_password: true, linuxdo: null }, csrf: "mock", oauth: { enabled: false, linuxdo: false } };
+  if (path === "/api/state") return { platforms, jobs: Object.values(jobs), history, issue_report: issueReportOn };
+  if (path === "/api/auth/me") return { user: { id: "mock", username: "演示", role: new URLSearchParams(location.search).has("admin") ? "admin" : "member", has_password: true, linuxdo: null }, csrf: "mock", oauth: { enabled: false, linuxdo: false } };
+  if (path === "/api/reports" && method === "POST") {
+    if (!issueReportOn) throw new Error("管理员已关闭课程适配上报");
+    return { ok: true, id: "rep_mock", already_reported: false, report_count: 1, reporter_count: 1 };
+  }
+  if (path === "/api/admin/reports") return { reports: mockReports, enabled: issueReportOn };
+  if ((m = path.match(/^\/api\/admin\/reports\/([\w-]+)\/status$/)) && method === "POST") {
+    const row = mockReports.find((x) => x.id === m[1]);
+    if (row) row.status = body.status;
+    return { ok: true };
+  }
+  if ((m = path.match(/^\/api\/admin\/reports\/([\w-]+)\/delete$/)) && method === "POST") {
+    const idx = mockReports.findIndex((x) => x.id === m[1]);
+    if (idx >= 0) mockReports.splice(idx, 1);
+    return { ok: true };
+  }
+  if (path === "/api/admin/settings" && method === "GET") {
+    return {
+      max_jobs: 4,
+      registration: { open: true, invite: true, email: false },
+      oauth: { enabled: false, callback_url: `${location.origin}/auth/linuxdo/callback`, icon_url: `${location.origin}/icon-512.png`, linuxdo: null },
+      zhs_parallel_study: false,
+      answer_pace: "steady",
+      issue_report: issueReportOn,
+      ui_speed: 1.0,
+      smtp: null,
+      builtin_available: true,
+      default_model: null,
+    };
+  }
+  if (path === "/api/admin/memory") return { questions: 42, confirmed: 30, mooc: { questions: 18 } };
+  if (path === "/api/admin/settings" && method === "POST") {
+    if (typeof body?.issue_report === "boolean") issueReportOn = body.issue_report;
+    return { ok: true, issue_report: issueReportOn };
+  }
+  if (path === "/api/settings/issue-report" && method === "POST") {
+    issueReportOn = Boolean(body?.enabled);
+    return { issue_report: issueReportOn };
+  }
   if ((m = path.match(/^\/api\/platforms\/(\w+)\/login(?:\?.*)?$/))) {
     const p = platforms.find((x) => x.id === m[1]);
     if (method === "POST") {
@@ -195,7 +287,7 @@ export async function request(path, method, body) {
     const stopped = Object.assign({}, job, { state: "stopped", summary: "已停止", ended: Date.now() / 1000 });
     history.unshift(stopped); emit(stopped); return {};
   }
-  if (path === "/api/settings") return { models, concurrency: { ai: 8, study: 8 } };
+  if (path === "/api/settings") return { models, concurrency: { ai: 8, study: 8 }, issue_report: issueReportOn, issue_report_locked: new URLSearchParams(location.search).has("hosted") };
   if (path === "/api/settings/models/activate") { models.forEach((x) => (x.active = x.id === body.id)); return {}; }
   if ((m = path.match(/^\/api\/settings\/models\/([\w-]+)\/test$/))) {
     const x = models.find((y) => y.id === m[1]);

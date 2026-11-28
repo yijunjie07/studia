@@ -111,6 +111,16 @@ class SettingsStore:
             raise SettingsError("答题节奏只能是稳妥或快速")
         self.set("answer_pace", pace)
 
+    def issue_report(self):
+        """任务结束后是否检查未完成/跳过项并提示诊断上报，默认开启。"""
+        saved = self.get("issue_report", True)
+        return saved if isinstance(saved, bool) else True
+
+    def save_issue_report(self, enabled):
+        if not isinstance(enabled, bool):
+            raise SettingsError("开关状态必须是布尔值")
+        self.set("issue_report", enabled)
+
     def _write(self, data):
         data["version"] = 1
         temporary = None
