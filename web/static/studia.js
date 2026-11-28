@@ -1005,14 +1005,14 @@ const VIEWS = {
       const { rows, counts } = facetFilter("people", found, FACETS);
       const userRow = (u) => `<div class="model user_row ${state.adminOpen === u.id ? "open" : ""}" data-key="${esc(u.id)}" data-user-row="${esc(u.id)}">
             <span class="avatar big">${esc(u.username.slice(0, 1).toUpperCase())}</span>
-            <span class="m1"><b>${esc(u.username)}</b>${u.role === "admin" ? '<span class="pill blue">管理员</span>' : ""}${u.linuxdo ? '<span class="pill">Linux DO</span>' : ""}${u.disabled ? '<span class="pill red">已停用</span>' : ""}${u.max_jobs ? `<span class="pill">同时 ${u.max_jobs} 个</span>` : ""}
-            <small class="sans">${u.jobs?.some((j) => j.state === "running") ? "学习中" : u.jobs?.some((j) => j.state === "queued") ? "排队中" : u.jobs?.length ? "已暂停" : u.last_login ? `上次在线 ${ago(u.last_login)}` : "还没登录过"}${u.email ? ` · ${esc(u.email)}` : ""}${u.linuxdo ? ` · Linux DO @${esc(u.linuxdo.username || u.linuxdo.id)}${u.linuxdo.trust_level != null ? ` (${u.linuxdo.trust_level} 级)` : ""}` : ""}</small></span>
+            <span class="m1"><b>${esc(u.username)}</b>${u.role === "admin" ? '<span class="pill blue">管理员</span>' : ""}${u.disabled ? '<span class="pill red">已停用</span>' : ""}${u.max_jobs ? `<span class="pill">同时 ${u.max_jobs} 个</span>` : ""}
+            <small class="sans">${u.jobs?.some((j) => j.state === "running") ? "学习中" : u.jobs?.some((j) => j.state === "queued") ? "排队中" : u.jobs?.length ? "已暂停" : u.last_login ? `上次在线 ${ago(u.last_login)}` : "未登录过"}${u.email ? ` · ${esc(u.email)}` : ""}${u.linuxdo ? ` · Linux DO @${esc(u.linuxdo.username || u.linuxdo.id)}${u.linuxdo.trust_level != null ? ` (${u.linuxdo.trust_level} 级)` : ""}` : ""}</small></span>
             <button class="btn small row_more" data-user-more="${esc(u.id)}" aria-expanded="${state.adminOpen === u.id}">管理</button>
             <span class="row_btns">${u.jobs?.length ? `<button class="btn small danger" data-stop-user="${u.id}" data-confirm="确认全部停止">停止全部任务</button>` : ""}
               <button class="btn small" data-row-edit="limit" data-uid="${u.id}">任务上限</button>
               <button class="btn small" data-row-edit="password" data-uid="${u.id}">${u.has_password === false ? "设置密码" : "重置密码"}</button>
               ${u.id === session.user.id ? "" : u.disabled ? `<button class="btn small" data-enable="${u.id}">启用</button>` : `<button class="btn small danger" data-disable="${u.id}" data-confirm="确认停用">停用</button>`}</span></div>`;
-      body = `${listTools("people", "搜索用户名、邮箱或 Linux DO", FACETS, counts)}
+      body = `${listTools("people", "搜索用户", FACETS, counts)}
         <div class="models">${pageOf("people", rows).map(userRow).join("")
           || `<div class="model plain"><span class="m1"><small class="sans">${users.length ? "没有符合条件的用户" : "还没有用户"}</small></span></div>`}</div>
         ${pagerHtml("people", rows.length, "人")}`;
@@ -1042,7 +1042,6 @@ const VIEWS = {
       const gaps = data.reports?.gaps || [];
       const enabled = data.reports?.enabled !== false;
       const STATUS_META = { open: ["wait", "待处理"], resolved: ["blue", "已处理"], ignored: ["", "已忽略"] };
-      const SOURCE_META = { manual: ["blue", "成员上报"], auto: ["", "自动检测"] };
       const PLAT_NAME = { mooc: "MOOC", zhs: "智慧树" };
       const gapTagOf = (platform, item) => `${platform}|${item?.kind || item?.code || "job_error"}`;
       const gapOptions = [];
@@ -1093,23 +1092,23 @@ const VIEWS = {
         ].filter(Boolean).join(" · ");
         return `<div class="report_detail" data-report-detail="${esc(r.id)}">
           <div class="report_meta">${esc(metaLine)}</div>
-          <div class="report_subhead">检测到的问题（${items.length} 项）</div>
+          <div class="report_subhead">问题（${items.length}）</div>
           <div class="issue_list">${items.map((it) => `<div class="issue_item">
             <div class="issue_item_head"><span class="pill ${ISSUE_PILL[it.bucket] || ""}">${esc(it.label || it.code)}</span>
               <b>${esc(it.name || "未命名")}</b>${it.kind ? `<code class="issue_kind">${esc(it.kind)}</code>` : ""}</div>
             ${it.detail ? `<p class="issue_desc">${esc(it.detail)}</p>` : ""}
             ${it.fields ? `<code class="issue_fields">${esc(it.fields)}</code>` : ""}</div>`).join("") || '<p class="issue_desc">无条目明细</p>'}</div>
-          ${(r.reporters || []).length ? `<div class="report_subhead">影响成员（${r.reporter_count} 人 · 共 ${r.report_count} 次${r.manual_count ? ` · ${r.manual_count} 人主动上报` : " · 自动检测"}）</div>
+          ${(r.reporters || []).length ? `<div class="report_subhead">成员（${r.reporter_count} 人 · ${r.report_count} 次）</div>
             <div class="report_people">${r.reporters.slice(0, 10).map((u) => `<div class="report_person"><b>${esc(u.username)}</b>
-              <span class="pill ${u.source === "auto" ? "" : "blue"}">${u.source === "auto" ? "自动检测" : "成员上报"}</span>
+              ${u.source === "auto" ? "" : '<span class="pill blue">上报</span>'}
               <span class="when">${u.at ? ago(u.at) : ""}</span>${u.note ? `<span class="report_note">${esc(u.note)}</span>` : ""}</div>`).join("")}</div>` : ""}
-          ${logs.length ? `<div class="report_subhead">任务日志片段</div>
+          ${logs.length ? `<div class="report_subhead">日志</div>
             <div class="report_logs">${logs.slice(0, 12).map((l) => `<div class="line ${l.level === "error" ? "err" : l.level === "warn" ? "warn" : ""}">
               <time>${esc(l.time || "")}</time><span class="lv"></span><span class="msg">${esc(l.text || "")}</span></div>`).join("")}</div>` : ""}
           <div class="report_actions">
-            <button class="btn small" data-report-copy="${esc(r.id)}">复制诊断 Markdown</button>
-            ${r.status !== "resolved" ? `<button class="btn small primary" data-report-status="${esc(r.id)}" data-to-status="resolved">标记已处理</button>` : ""}
-            ${r.status !== "open" ? `<button class="btn small" data-report-status="${esc(r.id)}" data-to-status="open">重新打开</button>` : ""}
+            <button class="btn small" data-report-copy="${esc(r.id)}">复制诊断</button>
+            ${r.status !== "resolved" ? `<button class="btn small primary" data-report-status="${esc(r.id)}" data-to-status="resolved">已处理</button>` : ""}
+            ${r.status !== "open" ? `<button class="btn small" data-report-status="${esc(r.id)}" data-to-status="open">重开</button>` : ""}
             ${r.status !== "ignored" ? `<button class="btn small" data-report-status="${esc(r.id)}" data-to-status="ignored">忽略</button>` : ""}
             <span class="grow"></span>
             <button class="btn small danger" data-report-delete="${esc(r.id)}" data-confirm="确认删除">删除</button>
@@ -1118,11 +1117,11 @@ const VIEWS = {
       const reportRow = (r) => {
         const open = state.reportOpen === r.id;
         const [pillCls, pillWord] = STATUS_META[r.status] || ["", r.status];
-        const [srcCls, srcWord] = SOURCE_META[r.source === "auto" ? "auto" : "manual"];
+        const manual = r.source !== "auto";
         return `<div class="report_entry ${open ? "open" : ""}" data-key="${esc(r.id)}">
           <div class="model report_row">
             <span class="plat ${esc(r.platform)}">${INITIAL[r.platform] || "?"}</span>
-            <span class="m1"><b>${esc(r.course_name)}</b><span class="pill ${pillCls}">${pillWord}</span><span class="pill ${srcCls}">${srcWord}</span><span class="pill">${r.reporter_count} 人 · ${r.report_count} 次</span>
+            <span class="m1"><b>${esc(r.course_name)}</b><span class="pill ${pillCls}">${pillWord}</span>${manual ? '<span class="pill blue">成员上报</span>' : ""}<span class="pill">${r.reporter_count} 人 · ${r.report_count} 次</span>
               <small class="sans">${esc(r.headline)} · ${esc(LABEL[r.job_kind] || r.job_kind)}${r.course_type ? ` · ${esc(r.course_type)}` : ""} · ${ago(r.updated)}</small></span>
             <span class="row_btns">
               <button class="btn small" data-report-expand="${esc(r.id)}" aria-expanded="${open}">${open ? "收起" : "详情"}</button>
@@ -1133,10 +1132,10 @@ const VIEWS = {
             </span></div>
           ${open ? reportDetail(r) : ""}</div>`;
       };
-      body = `${listTools("reports", "搜索课程名、问题类型、字段或上报人", FACETS, counts)}
-        ${enabled ? "" : '<p class="list_note">当前已关闭适配检查与上报，新任务不再自动检测聚合，也不会弹窗收集反馈。<button class="link" data-go="#/admin/site">去开启</button></p>'}
+      body = `${listTools("reports", "搜索课程或问题", FACETS, counts)}
+        ${enabled ? "" : '<p class="list_note">已关闭自动检测与上报<button class="link" data-go="#/admin/site">去开启</button></p>'}
         <div class="models">${pageOf("reports", rows).map(reportRow).join("")
-          || `<div class="model plain"><span class="m1"><small class="sans">${reports.length ? "没有符合条件的上报记录" : "还没有收到课程适配记录"}</small></span></div>`}</div>
+          || `<div class="model plain"><span class="m1"><small class="sans">${reports.length ? "没有符合条件的记录" : "暂无适配记录"}</small></span></div>`}</div>
         ${pagerHtml("reports", rows.length, "条")}`;
     } else if (tab === "oauth") {
       const oauth = data.settings.oauth || {
@@ -1153,11 +1152,11 @@ const VIEWS = {
             <small>Client ID：${esc(ld.client_id)} · Secret：${esc(ld.secret_hint)}${ld.api_base ? ` · 反代：${esc(ld.api_base)}` : ""}</small></span>
           <span class="row_btns"><button class="btn small" data-linuxdo-edit>编辑</button>
             <button class="btn small danger" data-linuxdo-clear data-confirm="确认清除">清除</button></span></div>`
-        : `<div class="model plain"><span class="m1"><b>Linux DO</b><small class="sans">未配置 · 在 connect.linux.do/dash/sso 创建应用后填写凭证</small></span>
+        : `<div class="model plain"><span class="m1"><b>Linux DO</b><small class="sans">未配置</small></span>
           <span class="row_btns"><button class="btn small primary" data-linuxdo-edit>配置</button></span></div>`;
+      const oauthHint = !ld ? "先配置下方应用" : oauth.enabled ? "首次登录自动创建账号" : "";
       body = `<div class="section"><h2>OAuth 总开关</h2></div>
-        <div class="models"><div class="model plain stepper_row"><span class="m1"><b>允许 OAuth 登录</b>
-          <small class="sans">${!ld ? "先配置下方 Linux DO 应用" : oauth.enabled ? "独立于站点注册规则，首次登录自动创建账号" : "已关闭，登录页不显示第三方登录入口"}</small></span>
+        <div class="models"><div class="model plain stepper_row"><span class="m1"><b>允许 OAuth 登录</b>${oauthHint ? `<small class="sans">${oauthHint}</small>` : ""}</span>
           <span class="row_btns">${oauthChoice(false, "关闭")}${oauthChoice(true, "开启", ld ? "" : "disabled")}</span></div></div>
         <div class="section"><h2>Linux DO Connect</h2><span class="aside">connect.linux.do</span></div>
         <div class="models">${ldRow}
@@ -1215,9 +1214,8 @@ const VIEWS = {
         <div class="section"><h2>任务上限</h2></div>
         <div class="models"><div class="model plain"><span class="m1"><b>默认每人同时 <input class="inline_num" type="number" min="1" max="20" name="max_jobs" value="${esc(kept("max_jobs", settings.max_jobs))}"> 个任务</b></span>
           <span class="row_btns"><button class="btn small primary" data-save-limit>保存</button></span></div></div>
-        <div class="section"><h2>适配检查与上报</h2></div>
-        <div class="models"><div class="model plain stepper_row"><span class="m1"><b>任务后自动检测与上报</b>
-          <small class="sans">${settings.issue_report !== false ? "任务结束后自动聚合未适配或未完成项到「适配上报」，并弹窗供成员补充说明" : "已关闭，任务结束不再自动记录或弹窗检查，也不接收新的适配上报"}</small></span>
+        <div class="section"><h2>适配上报</h2></div>
+        <div class="models"><div class="model plain stepper_row"><span class="m1"><b>自动检测与上报</b>${settings.issue_report !== false ? '<small class="sans">任务结束后记录未适配项并弹窗</small>' : ""}</span>
           <span class="row_btns"><button class="btn small" data-issue-report-toggle="0" aria-pressed="${settings.issue_report === false}">关闭</button><button class="btn small" data-issue-report-toggle="1" aria-pressed="${settings.issue_report !== false}">开启</button></span></div></div>
         <div class="section"><h2>智慧树</h2></div>
         <div class="models"><div class="model plain"><span class="m1"><b>多并发学习</b><span class="pill ${settings.zhs_parallel_study ? "wait" : ""}">${settings.zhs_parallel_study ? "已开启" : "已关闭"}</span></span>
@@ -1565,13 +1563,9 @@ const VIEWS = {
     const loadingCourses = connected.some((p) => !state.courses[p.id]);
     const totalCourses = connected.reduce((sum, p) => sum + (state.courses[p.id]?.length || 0), 0);
     const doneJobs = state.history.filter((j) => j.state === "done").length;
-    const lastJob = state.history[0];
     const running = state.jobs.filter((j) => j.state === "running").length;
-    const metaParts = [
-      ld ? `Linux DO @${esc(ld.username || ld.id)}${ld.trust_level != null ? ` · ${ld.trust_level} 级` : ""}` : "",
-      me.email ? esc(me.email) : "",
-      me.created ? `${new Date(me.created * 1000).toLocaleDateString()} 加入` : "",
-    ].filter(Boolean);
+    const queued = Math.max(0, state.jobs.length - running);
+    const joined = me.created ? `${new Date(me.created * 1000).toLocaleDateString()} 加入` : "";
 
     const hero = `<section class="profile_hero">
       <div class="profile_head">
@@ -1580,9 +1574,8 @@ const VIEWS = {
           <div class="profile_name">
             <h1>${esc(me.username)}</h1>
             <span class="pill ${admin ? "blue" : ""}">${admin ? "管理员" : "成员"}</span>
-            <span class="profile_id mono">ID ${esc(String(me.id || "").slice(0, 8))}</span>
           </div>
-          <p class="profile_meta">${metaParts.join('<span class="sep">·</span>') || "Studia 成员"}</p>
+          ${joined ? `<p class="profile_meta">${esc(joined)}</p>` : ""}
         </div>
         <button class="btn small" data-account-edit="username">修改用户名</button>
       </div>
@@ -1590,50 +1583,47 @@ const VIEWS = {
         <div class="pstat">
           <span class="pstat_label"><span class="pstat_ico celadon">${ICON.cells}</span>在学课程</span>
           <strong class="pstat_val mono">${connected.length && loadingCourses ? "—" : `${totalCourses}`}<small>门</small></strong>
-          <span class="pstat_sub">已连接 ${connected.length} / ${state.platforms.length} 个学习平台</span>
         </div>
         <div class="pstat">
           <span class="pstat_label"><span class="pstat_ico indigo">${ICON.pulse}</span>并行任务</span>
           <strong class="pstat_val mono">${running}<small>/ ${state.jobLimit}</small></strong>
-          <span class="pstat_sub">${state.jobs.length ? `队列中共 ${state.jobs.length} 个任务` : "当前空闲，随时可启动学习"}</span>
+          ${queued ? `<span class="pstat_sub">排队 ${queued} 个</span>` : ""}
         </div>
         <div class="pstat">
           <span class="pstat_label"><span class="pstat_ico ink">${ICON.spark}</span>已完成任务</span>
           <strong class="pstat_val mono">${doneJobs}<small>次</small></strong>
-          <span class="pstat_sub">${lastJob ? `最近一次 ${ago(lastJob.ended || lastJob.started)}` : "还没有运行过任务"}</span>
         </div>
       </div>
     </section>`;
 
-    const linuxdoRow = (ld || session.oauth?.linuxdo) ? `<div class="pcard_row"><span class="m1"><b>Linux DO</b>${ld ? '<span class="pill blue">已绑定</span>' : ""}
-          <small class="sans">${ld ? `@${esc(ld.username || ld.id)}${ld.trust_level != null ? ` · ${ld.trust_level} 级` : ""}` : "未绑定 · 绑定后可用 Linux DO 一键登录"}</small></span>
+    const linuxdoRow = (ld || session.oauth?.linuxdo) ? `<div class="pcard_row"><span class="m1"><b>Linux DO</b>
+          <small class="sans">${ld ? `@${esc(ld.username || ld.id)}${ld.trust_level != null ? ` · ${ld.trust_level} 级` : ""}` : "未绑定"}</small></span>
           <span class="row_btns">${ld
             ? (hasPassword ? '<button class="btn small danger" data-linuxdo-unbind data-confirm="确认解绑">解绑</button>' : '<span class="pill">主登录方式</span>')
             : '<button class="btn small primary" data-linuxdo-bind>绑定</button>'}</span></div>` : "";
     const emailRow = hasPassword ? `<div class="pcard_row"><span class="m1"><b>邮箱</b>
-          <small class="sans">${me.email ? esc(me.email) : session.mail ? "未绑定 · 用于找回和修改密码" : "管理员未配置邮件服务"}</small></span>
-          <span class="row_btns">${session.mail ? `<button class="btn small ${me.email ? "" : "primary"}" data-account-edit="email">${me.email ? "更换" : "绑定邮箱"}</button>`
+          <small class="sans">${me.email ? esc(me.email) : session.mail ? "未绑定" : "未配置邮件服务"}</small></span>
+          <span class="row_btns">${session.mail ? `<button class="btn small ${me.email ? "" : "primary"}" data-account-edit="email">${me.email ? "更换" : "绑定"}</button>`
             : admin ? '<button class="btn small" data-go="#/admin/site">去配置</button>' : ""}</span></div>` : "";
-    const passwordRow = hasPassword ? `<div class="pcard_row"><span class="m1"><b>密码</b>
-          <small class="sans">${me.email && session.mail ? "通过邮箱重置链接修改密码" : "绑定邮箱并配置邮件服务后可修改"}</small></span>
+    const pwHint = !session.mail ? "需先配置邮件服务" : !me.email ? "需先绑定邮箱" : "";
+    const passwordRow = hasPassword ? `<div class="pcard_row"><span class="m1"><b>密码</b>${pwHint ? `<small class="sans">${pwHint}</small>` : ""}</span>
           <span class="row_btns"><button class="btn small" data-account-edit="password" ${me.email && session.mail ? "" : "disabled"}>修改密码</button></span></div>` : "";
-    const oauthOnlyNote = !hasPassword ? `<div class="pcard_row"><span class="m1"><b>免密登录</b>
-          <small class="sans">当前通过 Linux DO 授权登录，无需单独绑定邮箱或设置密码</small></span></div>` : "";
 
     const securityCard = `<section class="profile_card">
-      <div class="pcard_head"><span class="pcard_ico indigo">${ICON.shield}</span><div><h2>账号与安全</h2><p>第三方登录授权、邮箱与密码保护</p></div></div>
-      <div class="pcard_body">${linuxdoRow}${emailRow}${passwordRow}${oauthOnlyNote}</div>
+      <div class="pcard_head"><span class="pcard_ico indigo">${ICON.shield}</span><h2>账号与安全</h2></div>
+      <div class="pcard_body">${linuxdoRow}${emailRow}${passwordRow}</div>
     </section>`;
 
     const platformCard = `<section class="profile_card">
-      <div class="pcard_head"><span class="pcard_ico celadon">${ICON.key}</span><div><h2>学习平台</h2><p>已连接的网课账号，用于同步课程与自动学习</p></div></div>
+      <div class="pcard_head"><span class="pcard_ico celadon">${ICON.key}</span><h2>学习平台</h2></div>
       <div class="pcard_body">${state.platforms.map((p) => {
         const list = state.courses[p.id];
-        const status = !p.logged_in ? (p.lapsed ? "登录已过期" : p.login === "qr" ? "App 扫码登录" : "职教云浏览器授权")
-          : [list ? `${list.length} 门课程` : "正在读取课程", p.login === "qr" ? "App 扫码" : "浏览器授权"].join(" · ");
+        const status = !p.logged_in ? (p.lapsed ? "登录已过期" : "未登录")
+          : list ? `${list.length} 门课程` : "正在读取课程";
+        const warn = p.rescan ? "需重新扫码" : qaSoon(p) ? "扫码即将过期" : "";
         return `<div class="pcard_row plat_row">
         <span class="plat ${p.id}">${INITIAL[p.id]}</span>
-        <span class="m1"><b>${esc(p.name)}</b><span class="pill ${p.rescan || qaSoon(p) ? "wait" : p.logged_in ? "blue" : ""}">${p.rescan ? "需重新扫码" : p.logged_in ? "已连接" : "未登录"}</span>
+        <span class="m1"><b>${esc(p.name)}</b>${warn ? `<span class="pill wait">${warn}</span>` : ""}
           <small class="sans">${esc(status)}</small></span>
         <span class="row_btns">${p.rescan || qaSoon(p) ? `<button class="btn small primary" data-go="${rescanLink(p)}">重新扫码</button>` : ""}${p.logged_in ? `<button class="btn small danger" data-logout="${p.id}" data-confirm="确认退出">退出</button>` : `<button class="btn small primary" data-go="#/login/${p.id}">登录</button>`}</span></div>`;
       }).join("")}</div>
@@ -1743,9 +1733,8 @@ function openUsernameModal() {
   dialog.setAttribute("aria-labelledby", "username-modal-title");
   dialog.innerHTML = `<form data-username>
       <h3 id="username-modal-title" tabindex="-1" autofocus>修改用户名</h3>
-      <p class="sub">用户名用于登录和个人资料展示，长度 2–32 个字符。</p>
       <label class="auth_field"><span>新用户名</span>
-        <input name="username" value="${esc(me?.username || "")}" autocomplete="username" autocapitalize="off" minlength="2" maxlength="32" required></label>
+        <input name="username" value="${esc(me?.username || "")}" placeholder="2–32 个字符" autocomplete="username" autocapitalize="off" minlength="2" maxlength="32" required></label>
       <p class="form_msg" role="alert"></p>
       <div class="modal_btns"><span class="grow"></span>
         <button type="button" class="btn" data-cancel>取消</button><button class="btn primary">保存</button></div></form>`;
@@ -1776,7 +1765,7 @@ function openEmailModal() {
   dialog.setAttribute("aria-labelledby", "email-modal-title");
   dialog.innerHTML = `<form data-email-form>
       <h3 id="email-modal-title" tabindex="-1" autofocus>${me?.email ? "更换邮箱" : "绑定邮箱"}</h3>
-      <p class="sub">${me?.email ? `当前已绑定 ${esc(me.email)}，验证新邮箱后立即生效。` : "绑定邮箱后可用于登录、找回和修改密码。"}</p>
+      <p class="sub">${me?.email ? `当前：${esc(me.email)}` : "用于登录与找回密码"}</p>
       ${emailFields()}
       <div class="modal_btns"><span class="grow"></span>
         <button type="button" class="btn" data-cancel>取消</button><button class="btn primary">绑定</button></div></form>`;
@@ -1795,7 +1784,7 @@ function openPasswordModal() {
   dialog.setAttribute("aria-labelledby", "password-modal-title");
   dialog.innerHTML = `<div data-password-panel>
       <h3 id="password-modal-title" tabindex="-1" autofocus>修改密码</h3>
-      <p class="sub" data-pw-sub>系统会将一次性重置密码链接发到 <b>${esc(me?.email || "")}</b>，点击邮件里的链接即可设置新密码。</p>
+      <p class="sub" data-pw-sub>将向 <b>${esc(me?.email || "")}</b> 发送重置链接。</p>
       <p class="form_msg" role="alert"></p>
       <div class="modal_btns"><span class="grow"></span>
         <button type="button" class="btn" data-cancel>取消</button>
@@ -1806,7 +1795,7 @@ function openPasswordModal() {
   dialog.addEventListener("close", () => dialog.remove());
   cancel.onclick = () => closeModal(dialog);
   const paintSent = () => {
-    sub.innerHTML = `重置链接已发到 <b>${esc(me?.email || "")}</b>，请查收邮件。重新发送会让上一封邮件里的链接失效。`;
+    sub.innerHTML = `重置链接已发到 <b>${esc(me?.email || "")}</b>，请查收邮件。`;
     cancel.textContent = "完成";
     send.classList.remove("primary");
     resendAfter(send, state.passwordSent);
@@ -1900,8 +1889,8 @@ function openIssueModal(check) {
   dialog.className = "modal issue_modal";
   dialog.setAttribute("aria-labelledby", "issue-modal-title");
   dialog.innerHTML = `<form data-issue-form>
-      <h3 id="issue-modal-title" tabindex="-1" autofocus>你似乎遇到了一些问题</h3>
-      <p class="sub">${esc(check.headline || "任务结束后检测到未能自动完成或被跳过的课程内容。")}</p>
+      <h3 id="issue-modal-title" tabindex="-1" autofocus>发现适配问题</h3>
+      <p class="sub">${esc(check.headline || "检测到未能自动完成的课程内容")}</p>
       <div class="issue_body">
         <div class="issue_card">
           <div class="issue_course">
@@ -1915,22 +1904,22 @@ function openIssueModal(check) {
             <div class="issue_item_head"><span class="pill ${ISSUE_PILL[it.bucket] || ""}">${esc(it.label || it.code)}</span>
               <b>${esc(it.name || "未命名")}</b>${it.kind ? `<code class="issue_kind">${esc(it.kind)}</code>` : ""}</div>
             ${it.detail ? `<p class="issue_desc">${esc(it.detail)}</p>` : ""}</div>`).join("")}
-            ${more ? `<p class="issue_more">还有 ${more} 项未展开，上报时将一并附带</p>` : ""}</div>
+            ${more ? `<p class="issue_more">其余 ${more} 项上报时一并附带</p>` : ""}</div>
         </div>
-        ${hosted ? `<label class="auth_field issue_note_field"><span>补充说明（选填）</span>
-          <input name="note" maxlength="300" autocomplete="off" placeholder="例如：第 3 章互动环节一直没算完成"></label>` : ""}
-        <details class="issue_preview"><summary>查看脱敏诊断内容（不含账号与登录态）</summary>
+        ${hosted ? `<label class="auth_field issue_note_field"><span>补充说明</span>
+          <input name="note" maxlength="300" autocomplete="off" placeholder="选填，如卡住的章节或现象"></label>` : ""}
+        <details class="issue_preview"><summary>脱敏诊断内容</summary>
           <pre class="issue_code">${esc(formatIssueMarkdown(check))}</pre></details>
       </div>
       <p class="form_msg" role="alert"></p>
       <div class="modal_btns">
         ${hosted
-          ? `<button type="button" class="btn" data-issue-copy>复制信息</button><span class="grow"></span>
+          ? `<button type="button" class="btn" data-issue-copy>复制</button><span class="grow"></span>
              <button type="button" class="btn" data-issue-close>暂不上报</button>
-             <button class="btn primary" data-issue-submit>${check.reported ? "再次上报" : "一键上报"}</button>`
-          : `<button type="button" class="link" data-issue-local-off>关闭此提示</button><span class="grow"></span>
+             <button class="btn primary" data-issue-submit>${check.reported ? "再次上报" : "上报"}</button>`
+          : `<button type="button" class="link" data-issue-local-off>不再提示</button><span class="grow"></span>
              <button type="button" class="btn" data-issue-close>关闭</button>
-             <button type="button" class="btn primary" data-issue-copy>一键复制诊断信息</button>`}
+             <button type="button" class="btn primary" data-issue-copy>复制诊断</button>`}
       </div></form>`;
   document.body.appendChild(dialog);
   const form = $("form", dialog), msg = $(".form_msg", dialog);
@@ -1955,7 +1944,7 @@ function openIssueModal(check) {
       state.issueReport = false;
       if (state.settings) state.settings.issue_report = false;
       closeModal(dialog);
-      toast("已关闭问题检查弹窗，可在「设置 → 偏好」重新开启");
+      toast("已关闭，可在「偏好」重新开启");
     } catch (e) { msg.textContent = e.message; }
   };
   form.onsubmit = async (event) => {
@@ -1973,12 +1962,12 @@ function openIssueModal(check) {
       if (hist?.issue_check) hist.issue_check.reported = true;
       delete adminCache.reports;
       closeModal(dialog);
-      toast(res.already_reported ? "已更新上报说明，感谢反馈" : "已一键上报给管理员，感谢反馈");
+      toast(res.already_reported ? "已更新说明" : "已上报给管理员");
       repaint();
     } catch (e) {
       msg.textContent = e.message;
       submit.disabled = false;
-      submit.textContent = check.reported ? "再次上报" : "一键上报";
+      submit.textContent = check.reported ? "再次上报" : "上报";
     }
   };
   dialog.showModal();
@@ -2018,11 +2007,10 @@ function paintSettings(tab, head, data, again) {
         <output>${data.concurrency[k]}</output><button class="btn small" data-step="${k}" data-d="1" aria-label="增加" ${data.concurrency[k] >= 8 ? "disabled" : ""}>＋</button></span></div>`;
     const localPlatforms = session.mode === "local" ? `<div class="section"><h2>学习平台</h2></div>
       <div class="models">${state.platforms.map((p) => `<div class="model"><span class="plat ${p.id}">${INITIAL[p.id]}</span>
-        <span class="m1"><b>${esc(p.name)}</b><small class="sans">${esc(platformStatus(p))} · ${p.login === "qr" ? "App 扫码登录" : "职教云浏览器授权"}</small></span><span></span>
+        <span class="m1"><b>${esc(p.name)}</b><small class="sans">${esc(p.logged_in ? platformStatus(p) : `${platformStatus(p)} · ${p.login === "qr" ? "App 扫码" : "浏览器授权"}`)}</small></span><span></span>
         <span class="row_btns">${p.rescan || qaSoon(p) ? `<button class="btn small primary" data-go="${rescanLink(p)}">重新扫码</button>` : ""}${p.logged_in ? `<button class="btn small danger" data-logout="${p.id}" data-confirm="确认退出">退出</button>` : `<button class="btn small primary" data-go="#/login/${p.id}">登录</button>`}</span></div>`).join("")}</div>` : "";
-    const localIssue = data.issue_report_locked ? "" : `<div class="section"><h2>适配检查</h2><span class="aside">任务结束后提示</span></div>
-      <div class="models"><div class="model plain stepper_row"><span class="m1"><b>完成后问题检查弹窗</b>
-        <small class="sans">${data.issue_report !== false ? "遇到无法完成或跳过的课程环节时弹窗，方便一键复制脱敏诊断信息" : "已关闭，任务结束后不再弹出问题提示"}</small></span>
+    const localIssue = data.issue_report_locked ? "" : `<div class="section"><h2>适配检查</h2></div>
+      <div class="models"><div class="model plain stepper_row"><span class="m1"><b>完成后检查弹窗</b>${data.issue_report !== false ? '<small class="sans">遇到未适配项时弹窗，方便复制诊断</small>' : ""}</span>
         <span class="row_btns"><button class="btn small" data-local-issue-toggle="0" aria-pressed="${data.issue_report === false}">关闭</button><button class="btn small" data-local-issue-toggle="1" aria-pressed="${data.issue_report !== false}">开启</button></span></div></div>`;
     quiet = again;
     setPage(`${head}<div class="section"><h2>并发数量</h2><span class="aside">1–8</span></div>
@@ -2122,7 +2110,7 @@ function openModelModal(m, onDone) {
   dialog.setAttribute("aria-labelledby", "model-modal-title");
   dialog.innerHTML = `<form data-form="${m ? esc(m.id) : "new"}">
       <h3 id="model-modal-title" tabindex="-1" autofocus>${m ? "编辑模型" : "添加模型"}</h3>
-      <p class="sub">${m ? "修改后立即生效，API Key 留空则保持当前密钥不变。" : "填写 OpenAI 兼容接口信息，保存后会自动测试连接。"}</p>
+      ${m ? "" : '<p class="sub">OpenAI 兼容接口</p>'}
       <div class="form_grid">
         <label class="auth_field"><span>名称</span>
           <input name="provider_name" value="${esc(m?.provider || "")}" placeholder="如 DeepSeek 官方"></label>
@@ -2192,7 +2180,7 @@ function openDefaultModelModal(saved, onDone) {
   dialog.setAttribute("aria-labelledby", "default-model-title");
   dialog.innerHTML = `<form data-default-model>
       <h3 id="default-model-title" tabindex="-1" autofocus>${saved ? "编辑全站默认模型" : "配置全站默认模型"}</h3>
-      <p class="sub">所有未自配模型的成员都会使用这里配置的服务，保存前会自动测试连接。</p>
+      <p class="sub">未自配模型的成员默认使用此服务。</p>
       <div class="form_grid">
         <label class="auth_field"><span>名称</span>
           <input name="provider_name" value="${esc(model.provider_name || "")}" placeholder="默认供应商"></label>
@@ -2245,7 +2233,7 @@ function openSmtpModal(smtp, onDone) {
   dialog.setAttribute("aria-labelledby", "smtp-modal-title");
   dialog.innerHTML = `<form data-smtp>
       <h3 id="smtp-modal-title" tabindex="-1" autofocus>${smtp ? "编辑邮件服务" : "配置邮件服务"}</h3>
-      <p class="sub">用于成员注册验证邮箱、绑定邮箱与重置密码，保存前会自动连接测试。</p>
+      <p class="sub">用于验证邮箱与重置密码。</p>
       <div class="form_grid">
         <label class="auth_field"><span>SMTP 服务器</span>
           <input class="mono_in" name="host" value="${esc(sm.host || "")}" placeholder="例如 smtp.qq.com" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
@@ -2299,14 +2287,14 @@ function openLinuxdoModal(oauth, onDone) {
   dialog.setAttribute("aria-labelledby", "linuxdo-modal-title");
   dialog.innerHTML = `<form data-linuxdo>
       <h3 id="linuxdo-modal-title" tabindex="-1" autofocus>${saved ? "编辑 Linux DO" : "配置 Linux DO"}</h3>
-      <p class="sub">在 <b>connect.linux.do/dash/sso</b> 创建应用，将回调地址设为 <code>${esc(oauth?.callback_url || `${location.origin}/auth/linuxdo/callback`)}</code>，再填写凭证。</p>
+      <p class="sub">回调地址：<code>${esc(oauth?.callback_url || `${location.origin}/auth/linuxdo/callback`)}</code></p>
       <label class="auth_field"><span>Client ID</span>
         <input class="mono_in" name="client_id" value="${esc(saved?.client_id || "")}" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
       <label class="auth_field"><span>Client Secret</span>
         <span class="pw"><input class="mono_in" name="client_secret" type="password" autocomplete="new-password" spellcheck="false">
           <button type="button" class="pw_eye" data-reveal aria-label="显示密钥">显示</button></span></label>
-      <label class="auth_field"><span>服务端接口地址（选填）</span>
-        <input class="mono_in" name="api_base" inputmode="url" value="${esc(saved?.api_base || "")}" placeholder="留空默认 https://connect.linux.do（国内服务器可填反代地址）" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+      <label class="auth_field"><span>服务端接口地址</span>
+        <input class="mono_in" name="api_base" inputmode="url" value="${esc(saved?.api_base || "")}" placeholder="选填，默认 https://connect.linux.do" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
       <p class="form_msg" role="alert"></p>
       <div class="modal_btns"><span class="grow"></span>
         <button type="button" class="btn" data-cancel>取消</button>
@@ -2346,7 +2334,7 @@ function openUserLimitModal(u, onDone) {
   dialog.setAttribute("aria-labelledby", "user-limit-title");
   dialog.innerHTML = `<form>
       <h3 id="user-limit-title" tabindex="-1" autofocus>设置任务上限</h3>
-      <p class="sub">设置 <b>${esc(u.username)}</b> 最多可同时运行的任务数（1–20），留空则沿用站点默认（${esc(u.job_limit)} 个）。</p>
+      <p class="sub"><b>${esc(u.username)}</b> · 1–20，留空用站点默认（${esc(u.job_limit)}）</p>
       <label class="auth_field"><span>同时最多任务数</span>
         <input class="mono_in" type="number" min="1" max="20" name="value" value="${esc(u.max_jobs || "")}" placeholder="站点默认：${esc(u.job_limit)}"></label>
       <p class="form_msg" role="alert"></p>
@@ -2379,7 +2367,7 @@ function openUserPasswordModal(u, onDone) {
   dialog.setAttribute("aria-labelledby", "user-pw-title");
   dialog.innerHTML = `<form novalidate>
       <h3 id="user-pw-title" tabindex="-1" autofocus>${first ? "设置成员密码" : "重置成员密码"}</h3>
-      <p class="sub">为 <b>${esc(u.username)}</b> 设置新的登录密码（至少 8 位），保存后立即生效。</p>
+      <p class="sub"><b>${esc(u.username)}</b> · 至少 8 位</p>
       <label class="auth_field"><span>新密码</span>
         <span class="pw"><input name="value" type="password" minlength="8" autocomplete="new-password" placeholder="至少 8 位" required>
           <button type="button" class="pw_eye" data-reveal aria-label="显示密码">显示</button></span></label>
@@ -3033,10 +3021,10 @@ function examCode(p, c, paper) {
     dialog.className = "modal exam_code checking";
     dialog.setAttribute("aria-labelledby", "exam-code-title");
     const captchaSub = (remain) => paper.start
-      ? `这场考试还没开考。<b>验证通过后会立即开考</b>：开始计时，并用掉一次考试机会${remain != null ? `（剩 ${remain} 次）` : ""}。`
-      : "智慧树每次进入考试都要输入验证码。图是用你的登录取的，通过后才能打开试卷。";
-    const locSub = () => `该考试需要开启定位，请使用「知到 App」扫码开启定位，成功后会自动继续。${
-      TOUCH ? "（长按保存二维码，在知到 App 里从相册扫码）" : ""}`;
+      ? `<b>验证通过后立即开考</b>并开始计时${remain != null ? `（剩 ${remain} 次）` : ""}。`
+      : "输入验证码后打开试卷。";
+    const locSub = () => `请用知到 App 扫码开启定位，通过后自动继续。${
+      TOUCH ? "（长按保存后从相册扫码）" : ""}`;
     dialog.innerHTML = `<form><h3 id="exam-code-title" tabindex="-1" autofocus>${paper.start ? "开考验证" : "进入考试验证"}</h3>
         <p class="modal_paper">${esc(paper.name)}</p>
         <p class="sub"></p>
@@ -3741,7 +3729,7 @@ function animateAuthGrid(box) {
 }
 
 const AUTH = {
-  login: { title: "登录", lead: "欢迎回来。", button: "登录", switch: ["还没有账号？", "注册", "register"] },
+  login: { title: "登录", lead: "", button: "登录", switch: ["还没有账号？", "注册", "register"] },
   register: { title: "注册", lead: "", button: "注册并登录", switch: ["已经有账号？", "去登录", "login"] },
   setup: { title: "创建管理员", lead: "设置码在服务器日志里（docker compose logs studia）。", button: "创建并进入" },
   forgot: { title: "找回密码", lead: "链接会发到绑定的邮箱。", button: "发送链接", switch: ["想起来了？", "去登录", "login"] },
