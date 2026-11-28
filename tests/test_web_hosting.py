@@ -326,8 +326,11 @@ class HostedServerTest(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/auth/login", {"username": "alice", "password": "alice-password"})[0], 401)
 
     def test_everything_but_login_needs_a_session(self):
-        self.assertEqual(self.request("GET", "/api/mode")[1], {"mode": "hosted", "setup": False, "speed": 1.0,
-                                                               "register": {"open": True, "invite": True, "email": False}})
+        self.assertEqual(self.request("GET", "/api/mode")[1], {
+            "mode": "hosted", "setup": False, "speed": 1.0,
+            "register": {"open": True, "invite": True, "email": False},
+            "oauth": {"enabled": False, "linuxdo": False},
+        })
         self.assertEqual(self.request("GET", "/api/state")[0], 401)
         self.assertEqual(self.request("GET", "/")[0], 200)
         self.assertEqual(self.request("GET", "/api/mode", host="evil.example")[0], 403)
@@ -797,6 +800,277 @@ class HostedServerTest(unittest.TestCase):
             self.assertEqual(status, 200)
             nonce = started["open"].rsplit("%2F", 1)[1]
             self.assertIs(self.hub.pending_oauth[nonce][3], here)
+
+    # ------------------------------------------------------------ Linux DO OAuth
+
+    def http_call(self, method, path, body=None, cookies=None, csrf=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        self.addCleanup(conn.close)
+        headers = {"Host": "127.0.0.1:%d" % self.port}
+        if cookies:
+            headers["Cookie"] = "; ".join("%s=%s" % (k, v) for k, v in cookies.items() if v)
+        if csrf:
+            headers["X-Studia-CSRF"] = csrf
+        data = json.dumps(body) if body is not None else None
+        if data:
+            headers["Content-Type"] = "application/json"
+        conn.request(method, path, body=data, headers=headers)
+        response = conn.getresponse()
+        raw = response.read()
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            payload = raw.decode()
+        return response.status, payload, response.headers
+
+    @staticmethod
+    def _cookies_from(headers):
+        parsed = {}
+        for line in headers.get_all("Set-Cookie") or []:
+            pair = line.split(";", 1)[0]
+            if "=" in pair:
+                name, value = pair.split("=", 1)
+                parsed[name.strip()] = value.strip()
+        return parsed
+
+    def _enable_linuxdo(self):
+        token, csrf = self.login("admin", "admin-password")
+        status, reply, _, _ = self.request(
+            "POST", "/api/admin/settings",
+            {"oauth": {"linuxdo": {"client_id": "ld-client-id", "client_secret": "ld-secret-123456"}, "enabled": True}},
+            cookie=token, csrf=csrf,
+        )
+        self.assertEqual(status, 200)
+        return token, csrf, reply["oauth"]
+
+    def test_admin_manages_oauth_master_switch_and_linuxdo_credentials(self):
+        token, csrf = self.login("admin", "admin-password")
+        post = lambda oauth: self.request("POST", "/api/admin/settings", {"oauth": oauth}, cookie=token, csrf=csrf)
+        # Cannot turn on the master switch until Linux DO is configured.
+        self.assertEqual(post({"enabled": True})[0], 400)
+        self.assertEqual(post({"enabled": "yes"})[0], 400)
+        # Invalid enabled alongside valid credentials must not save partial state.
+        self.assertEqual(post({"linuxdo": {"client_id": "cid", "client_secret": "csec-12345678"}, "enabled": "bad"})[0], 400)
+        self.assertIsNone(self.hub.linuxdo())
+        # Save credentials, secret is encrypted on disk and masked in responses.
+        status, reply, _, _ = post({"linuxdo": {"client_id": "cid-1", "client_secret": "csec-12345678"}})
+        self.assertEqual(status, 200)
+        self.assertEqual(reply["oauth"]["linuxdo"], {"client_id": "cid-1", "secret_hint": "cse…5678"})
+        self.assertFalse(reply["oauth"]["enabled"])
+        self.assertEqual(reply["oauth"]["callback_url"], "%s/auth/linuxdo/callback" % self.hub.public_url)
+        self.assertNotIn(b"csec-12345678", (self.hub.data / "site" / "settings.enc").read_bytes())
+        # Blank secret keeps existing value for same Client ID, rejected when Client ID changes.
+        self.assertEqual(post({"linuxdo": {"client_id": "cid-1", "client_secret": ""}})[0], 200)
+        self.assertEqual(self.hub.linuxdo()["client_secret"], "csec-12345678")
+        self.assertEqual(post({"linuxdo": {"client_id": "cid-2", "client_secret": ""}})[0], 400)
+        # Master switch controls /api/mode and /api/auth/me without clearing credentials.
+        self.assertEqual(post({"enabled": True})[1]["oauth"]["enabled"], True)
+        self.assertEqual(self.request("GET", "/api/mode")[1]["oauth"], {"enabled": True, "linuxdo": True})
+        self.assertEqual(self.request("GET", "/api/auth/me", cookie=token)[1]["oauth"], {"enabled": True, "linuxdo": True})
+        self.assertEqual(post({"enabled": False})[1]["oauth"]["enabled"], False)
+        self.assertEqual(self.request("GET", "/api/mode")[1]["oauth"], {"enabled": False, "linuxdo": False})
+        self.assertIsNotNone(self.hub.linuxdo())
+        # Clearing Linux DO turns off the master switch automatically.
+        post({"enabled": True})
+        cleared = post({"linuxdo": None})[1]["oauth"]
+        self.assertEqual((cleared["enabled"], cleared["linuxdo"]), (False, None))
+        # Regular members cannot change OAuth settings.
+        self.hub.accounts.create_user("bob", "bob-password")
+        bob_token, bob_csrf = self.login("bob", "bob-password")
+        self.assertEqual(self.request("POST", "/api/admin/settings", {"oauth": {"enabled": True}},
+                                      cookie=bob_token, csrf=bob_csrf)[0], 403)
+
+    def test_linuxdo_auto_creates_passwordless_account_independent_of_registration_rules(self):
+        token, csrf, _ = self._enable_linuxdo()
+        # Close standard registration completely: Linux DO still works independently.
+        self.registration(token, csrf, open=False)
+        # Create an existing user with the same username to test collision suffixing.
+        self.hub.accounts.create_user("neo", "existing-password")
+
+        status, _, headers = self.http_call("GET", "/auth/linuxdo/start")
+        self.assertEqual(status, 302)
+        location = headers.get("Location")
+        self.assertIn("https://connect.linux.do/oauth2/authorize?", location)
+        self.assertIn("client_id=ld-client-id", location)
+        self.assertIn("scope=user", location)
+        state = re.search(r"state=([^&]+)", location)[1]
+        oauth_cookie = self._cookies_from(headers)[web.hosting.OAUTH_STATE_COOKIE]
+        self.assertEqual(oauth_cookie, state)
+
+        profile = {"id": 4242, "username": "neo", "name": "Neo", "trust_level": 2, "active": True, "silenced": False}
+        with patch("web.hosting.linuxdo_exchange", return_value=profile) as exchanged:
+            cb_status, _, cb_headers = self.http_call(
+                "GET", "/auth/linuxdo/callback?code=auth-code-1&state=%s" % state,
+                cookies={web.hosting.OAUTH_STATE_COOKIE: oauth_cookie},
+            )
+        self.assertEqual(cb_status, 302)
+        self.assertEqual(cb_headers.get("Location"), self.hub.public_url + "/")
+        exchanged.assert_called_once()
+        cb_cookies = self._cookies_from(cb_headers)
+        self.assertEqual(cb_cookies[web.hosting.OAUTH_STATE_COOKIE], "")
+        session_cookie = cb_cookies[COOKIE]
+        self.assertTrue(session_cookie)
+
+        me = self.request("GET", "/api/auth/me", cookie=session_cookie)[1]
+        user = me["user"]
+        self.assertEqual(user["username"], "neo_2")
+        self.assertIsNone(user["email"])
+        self.assertFalse(user["has_password"])
+        self.assertEqual(user["linuxdo"], {"id": "4242", "username": "neo", "name": "Neo", "trust_level": 2})
+
+        # Password login never works for an OAuth-only account, even with the internal sentinel.
+        for guess in ("", "!", "existing-password"):
+            self.assertEqual(self.request("POST", "/api/auth/login", {"username": "neo_2", "password": guess})[0], 401)
+        # Cannot unbind Linux DO while passwordless (would lock the account out).
+        self.assertEqual(self.request("POST", "/api/auth/linuxdo/unbind", {}, cookie=session_cookie, csrf=me["csrf"])[0], 400)
+
+        # Signing in again with the same Linux DO id reuses the same user and updates trust_level/username.
+        _, _, h2 = self.http_call("GET", "/auth/linuxdo/start")
+        s2 = self._cookies_from(h2)[web.hosting.OAUTH_STATE_COOKIE]
+        updated = dict(profile, username="neo_new", trust_level=3)
+        with patch("web.hosting.linuxdo_exchange", return_value=updated):
+            st2, _, cbh2 = self.http_call("GET", "/auth/linuxdo/callback?code=c2&state=%s" % s2,
+                                          cookies={web.hosting.OAUTH_STATE_COOKIE: s2})
+        self.assertEqual(st2, 302)
+        me2 = self.request("GET", "/api/auth/me", cookie=self._cookies_from(cbh2)[COOKIE])[1]["user"]
+        self.assertEqual(me2["id"], user["id"])
+        self.assertEqual(me2["linuxdo"]["username"], "neo_new")
+        self.assertEqual(me2["linuxdo"]["trust_level"], 3)
+
+        # Disabled account is blocked from Linux DO login too.
+        self.hub.disable(user["id"])
+        _, _, h3 = self.http_call("GET", "/auth/linuxdo/start")
+        s3 = self._cookies_from(h3)[web.hosting.OAUTH_STATE_COOKIE]
+        with patch("web.hosting.linuxdo_exchange", return_value=updated):
+            st3, body3, cbh3 = self.http_call("GET", "/auth/linuxdo/callback?code=c3&state=%s" % s3,
+                                              cookies={web.hosting.OAUTH_STATE_COOKIE: s3})
+        self.assertEqual(st3, 400)
+        self.assertIn("已被停用", body3)
+        self.assertNotIn(COOKIE, self._cookies_from(cbh3))
+
+    def test_linuxdo_rejects_bad_state_inactive_silenced_and_disabled_master_switch(self):
+        # Master switch off -> start returns 403 HTML page.
+        status, body, _ = self.http_call("GET", "/auth/linuxdo/start")
+        self.assertEqual(status, 403)
+        self.assertIn("还没有开启", body)
+
+        self._enable_linuxdo()
+        _, _, h = self.http_call("GET", "/auth/linuxdo/start")
+        state = self._cookies_from(h)[web.hosting.OAUTH_STATE_COOKIE]
+        # Missing state cookie (Login CSRF defense) fails and consumes the state.
+        st_csrf, body_csrf, _ = self.http_call("GET", "/auth/linuxdo/callback?code=x&state=%s" % state)
+        self.assertEqual(st_csrf, 400)
+        self.assertIn("失效", body_csrf)
+        # Replaying the same state even with the right cookie fails.
+        st_replay, _, _ = self.http_call("GET", "/auth/linuxdo/callback?code=x&state=%s" % state,
+                                         cookies={web.hosting.OAUTH_STATE_COOKIE: state})
+        self.assertEqual(st_replay, 400)
+
+        # User cancelled authorization.
+        _, _, h2 = self.http_call("GET", "/auth/linuxdo/start")
+        s2 = self._cookies_from(h2)[web.hosting.OAUTH_STATE_COOKIE]
+        st_cancel, body_cancel, _ = self.http_call("GET", "/auth/linuxdo/callback?error=access_denied&state=%s" % s2,
+                                                   cookies={web.hosting.OAUTH_STATE_COOKIE: s2})
+        self.assertEqual(st_cancel, 400)
+        self.assertIn("取消", body_cancel)
+
+        # Inactive or silenced Linux DO accounts are refused.
+        for bad_profile, keyword in (
+            ({"id": 7, "username": "dormant", "active": False, "silenced": False}, "未激活"),
+            ({"id": 8, "username": "muted", "active": True, "silenced": True}, "禁言"),
+        ):
+            _, _, hx = self.http_call("GET", "/auth/linuxdo/start")
+            sx = self._cookies_from(hx)[web.hosting.OAUTH_STATE_COOKIE]
+            with patch("web.hosting.linuxdo_exchange", return_value=bad_profile):
+                stx, bodyx, _ = self.http_call("GET", "/auth/linuxdo/callback?code=ok&state=%s" % sx,
+                                               cookies={web.hosting.OAUTH_STATE_COOKIE: sx})
+            self.assertEqual(stx, 400)
+            self.assertIn(keyword, bodyx)
+
+    def test_existing_account_can_bind_login_and_unbind_linuxdo(self):
+        self._enable_linuxdo()
+        alice_id = self.hub.accounts.create_user("alice", "alice-password")
+        bob_id = self.hub.accounts.create_user("bob", "bob-password")
+        alice_token, alice_csrf = self.login("alice", "alice-password")
+        bob_token, bob_csrf = self.login("bob", "bob-password")
+
+        # Start bind (CSRF-protected POST).
+        status, reply, headers = self.http_call("POST", "/api/auth/linuxdo/bind", {},
+                                                cookies={COOKIE: alice_token}, csrf=alice_csrf)
+        self.assertEqual(status, 200)
+        self.assertIn("https://connect.linux.do/oauth2/authorize?", reply["url"])
+        state = self._cookies_from(headers)[web.hosting.OAUTH_STATE_COOKIE]
+
+        profile = {"id": 9901, "username": "alice_ld", "name": "Alice", "trust_level": 3, "active": True, "silenced": False}
+        # Wrong session on callback cannot hijack the bind.
+        with patch("web.hosting.linuxdo_exchange", return_value=profile):
+            st_wrong, body_wrong, _ = self.http_call(
+                "GET", "/auth/linuxdo/callback?code=ok&state=%s" % state,
+                cookies={COOKIE: bob_token, web.hosting.OAUTH_STATE_COOKIE: state},
+            )
+        self.assertEqual(st_wrong, 400)
+        self.assertIn("不一致", body_wrong)
+
+        # Re-initiate bind as Alice and complete callback.
+        _, reply2, headers2 = self.http_call("POST", "/api/auth/linuxdo/bind", {},
+                                             cookies={COOKIE: alice_token}, csrf=alice_csrf)
+        state2 = self._cookies_from(headers2)[web.hosting.OAUTH_STATE_COOKIE]
+        with patch("web.hosting.linuxdo_exchange", return_value=profile):
+            cb_st, _, cb_h = self.http_call(
+                "GET", "/auth/linuxdo/callback?code=ok&state=%s" % state2,
+                cookies={COOKIE: alice_token, web.hosting.OAUTH_STATE_COOKIE: state2},
+            )
+        self.assertEqual(cb_st, 302)
+        self.assertEqual(cb_h.get("Location"), "%s/?oauth=bound#/profile" % self.hub.public_url)
+        self.assertEqual(self.hub.accounts.user(alice_id)["linuxdo"]["id"], "9901")
+
+        # Bob cannot bind the same Linux DO account while Alice holds it.
+        _, _, bh = self.http_call("POST", "/api/auth/linuxdo/bind", {}, cookies={COOKIE: bob_token}, csrf=bob_csrf)
+        bs = self._cookies_from(bh)[web.hosting.OAUTH_STATE_COOKIE]
+        with patch("web.hosting.linuxdo_exchange", return_value=profile):
+            bst, bbody, _ = self.http_call("GET", "/auth/linuxdo/callback?code=ok&state=%s" % bs,
+                                           cookies={COOKIE: bob_token, web.hosting.OAUTH_STATE_COOKIE: bs})
+        self.assertEqual(bst, 400)
+        self.assertIn("其他 Studia 账号", bbody)
+
+        # Logging in via Linux DO now signs into Alice's existing account (no duplicate user created).
+        _, _, lh = self.http_call("GET", "/auth/linuxdo/start")
+        ls = self._cookies_from(lh)[web.hosting.OAUTH_STATE_COOKIE]
+        with patch("web.hosting.linuxdo_exchange", return_value=profile):
+            lst, _, lcb = self.http_call("GET", "/auth/linuxdo/callback?code=ok&state=%s" % ls,
+                                         cookies={web.hosting.OAUTH_STATE_COOKIE: ls})
+        self.assertEqual(lst, 302)
+        self.assertEqual(self.request("GET", "/api/auth/me", cookie=self._cookies_from(lcb)[COOKIE])[1]["user"]["id"], alice_id)
+
+        # Alice has a password, so she can unbind Linux DO cleanly.
+        ust, ureply, _, _ = self.request("POST", "/api/auth/linuxdo/unbind", {}, cookie=alice_token, csrf=alice_csrf)
+        self.assertEqual(ust, 200)
+        self.assertIsNone(ureply["user"]["linuxdo"])
+        self.assertIsNone(self.hub.accounts.user(alice_id)["linuxdo"])
+
+        # After Alice unbinds, Bob can bind the Linux DO account.
+        _, _, bh2 = self.http_call("POST", "/api/auth/linuxdo/bind", {}, cookies={COOKIE: bob_token}, csrf=bob_csrf)
+        bs2 = self._cookies_from(bh2)[web.hosting.OAUTH_STATE_COOKIE]
+        with patch("web.hosting.linuxdo_exchange", return_value=profile):
+            bst2, _, _ = self.http_call("GET", "/auth/linuxdo/callback?code=ok&state=%s" % bs2,
+                                        cookies={COOKIE: bob_token, web.hosting.OAUTH_STATE_COOKIE: bs2})
+        self.assertEqual(bst2, 302)
+        self.assertEqual(self.hub.accounts.user(bob_id)["linuxdo"]["id"], "9901")
+
+    def test_linuxdo_exchange_uses_basic_auth_and_bearer_token(self):
+        token_resp = Mock(status_code=200, json=Mock(return_value={"access_token": "tok-abc"}))
+        user_resp = Mock(status_code=200, json=Mock(return_value={"id": 123, "username": "u", "trust_level": 2}))
+        with patch("web.hosting.requests.post", return_value=token_resp) as post, \
+             patch("web.hosting.requests.get", return_value=user_resp) as get:
+            profile = web.hosting.linuxdo_exchange(
+                {"client_id": "cid", "client_secret": "csec"}, "the-code", "https://s.example/auth/linuxdo/callback")
+        self.assertEqual(profile["id"], 123)
+        self.assertEqual(post.call_args[0][0], web.hosting.LINUXDO_TOKEN_URL)
+        self.assertEqual(post.call_args[1]["auth"], ("cid", "csec"))
+        self.assertEqual(post.call_args[1]["data"], {
+            "grant_type": "authorization_code", "code": "the-code", "redirect_uri": "https://s.example/auth/linuxdo/callback"})
+        self.assertEqual(get.call_args[0][0], web.hosting.LINUXDO_USER_URL)
+        self.assertEqual(get.call_args[1]["headers"]["Authorization"], "Bearer tok-abc")
 
 
 class IsolationUnitTest(unittest.TestCase):

@@ -26,6 +26,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
+import requests
 from Crypto.Cipher import AES
 
 from core.log import Logger
@@ -40,9 +41,58 @@ from web.server import MAX_JOBS, MAX_PENDING, NOT_HANDLED, PEERS_MARKER, HttpErr
     keep_passports, key_hint, make_handler
 
 COOKIE = "studia_session"
+OAUTH_STATE_COOKIE = "studia_oauth_state"
 OAUTH_TTL = 600
 KEY_ENV = "STUDIA_SECRET_KEY"
+LINUXDO_AUTHORIZE_URL = "https://connect.linux.do/oauth2/authorize"
+LINUXDO_TOKEN_URL = "https://connect.linux.do/oauth2/token"
+LINUXDO_USER_URL = "https://connect.linux.do/api/user"
+LINUXDO_USER_AGENT = "Studia/1.0 (+https://connect.linux.do)"
 logger = Logger(__name__).get_log()  # into the daily log file the admin exports
+
+
+def linuxdo_exchange(config, code, redirect_uri):
+    """Exchange a Linux DO Connect authorization code for the user's profile. Raises HttpError on failure."""
+    headers = {"Accept": "application/json", "User-Agent": LINUXDO_USER_AGENT}
+    try:
+        token_resp = requests.post(
+            LINUXDO_TOKEN_URL,
+            auth=(config["client_id"], config["client_secret"]),
+            data={"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri},
+            headers=headers,
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        logger.warning("Linux DO 换取令牌失败：%s", exc)
+        raise HttpError(502, "连不上 Linux DO，请稍后再试") from None
+    if token_resp.status_code != 200:
+        logger.warning("Linux DO 换取令牌返回 %s：%s", token_resp.status_code, token_resp.text[:200])
+        raise HttpError(400, "Linux DO 授权验证失败，请重试（或检查管理员配置的应用密钥与回调地址）")
+    try:
+        access_token = (token_resp.json() or {}).get("access_token")
+    except ValueError:
+        access_token = None
+    if not access_token or not isinstance(access_token, str):
+        raise HttpError(400, "Linux DO 没有返回有效的访问令牌，请重试")
+    try:
+        user_resp = requests.get(
+            LINUXDO_USER_URL,
+            headers={**headers, "Authorization": "Bearer %s" % access_token},
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        logger.warning("Linux DO 获取用户信息失败：%s", exc)
+        raise HttpError(502, "连不上 Linux DO，请稍后再试") from None
+    if user_resp.status_code != 200:
+        logger.warning("Linux DO 获取用户信息返回 %s：%s", user_resp.status_code, user_resp.text[:200])
+        raise HttpError(400, "读取 Linux DO 用户信息失败，请重试")
+    try:
+        profile = user_resp.json()
+    except ValueError:
+        profile = None
+    if not isinstance(profile, dict) or profile.get("id") in (None, ""):
+        raise HttpError(400, "Linux DO 返回的用户信息格式不正确")
+    return profile
 
 
 def load_key(value):
@@ -236,6 +286,7 @@ class Hub:
         self.lock = threading.RLock()
         self.apps = {}
         self.pending_oauth = {}
+        self.pending_linuxdo = {}
         self._site_jobs_sent = 0
 
     def app(self, uid):
@@ -331,6 +382,137 @@ class Hub:
             return True, "职教云登录成功，正在读取课程。可以关闭这个页面，回到 Studia。", None
         return True, "职教云登录成功，正在返回 Studia…", back
 
+    # ------------------------------------------------------------ Linux DO OAuth login & binding
+
+    def linuxdo(self):
+        return self.site_store.get("oauth_linuxdo")
+
+    def oauth_enabled(self):
+        return bool(self.accounts.setting("oauth_enabled", False))
+
+    def linuxdo_active(self):
+        return bool(self.oauth_enabled() and self.linuxdo())
+
+    def linuxdo_callback_url(self):
+        return "%s/auth/linuxdo/callback" % self.public_url
+
+    def oauth_public(self):
+        return {"enabled": self.oauth_enabled(), "linuxdo": self.linuxdo_active()}
+
+    def save_oauth(self, body):
+        if not isinstance(body, dict) or any(k not in ("enabled", "linuxdo") for k in body):
+            raise HttpError(400, "OAuth 设置格式不正确")
+        next_linuxdo = self.linuxdo()
+        update_linuxdo = "linuxdo" in body
+        if update_linuxdo:
+            raw = body["linuxdo"]
+            if raw is None:
+                next_linuxdo = None
+            else:
+                if not isinstance(raw, dict) or any(k in raw and not isinstance(raw[k], str) for k in ("client_id", "client_secret")):
+                    raise HttpError(400, "Linux DO 配置格式不正确")
+                client_id = raw.get("client_id", "").strip()
+                client_secret = raw.get("client_secret", "").strip()
+                if not client_id:
+                    raise HttpError(400, "请填写 Client ID")
+                previous = self.linuxdo()
+                if not client_secret and previous:
+                    # A blank secret keeps the saved one, but never pairs it with a different Client ID.
+                    if client_id != previous["client_id"]:
+                        raise HttpError(400, "更换 Client ID 时请重新填写 Client Secret")
+                    client_secret = previous["client_secret"]
+                if not client_secret:
+                    raise HttpError(400, "请填写 Client Secret")
+                next_linuxdo = {"client_id": client_id, "client_secret": client_secret}
+        if "enabled" in body:
+            enabled = body["enabled"]
+            if not isinstance(enabled, bool):
+                raise HttpError(400, "OAuth 开关格式不正确")
+            if enabled and next_linuxdo is None:
+                raise HttpError(400, "先配置 Linux DO 应用，才能开启 OAuth 登录")
+        if update_linuxdo:
+            self.site_store.set("oauth_linuxdo", next_linuxdo)
+            if next_linuxdo is None and "enabled" not in body:
+                self.accounts.set_setting("oauth_enabled", False)
+        if "enabled" in body:
+            self.accounts.set_setting("oauth_enabled", body["enabled"])
+
+    def linuxdo_start(self, *, action="login", uid=None):
+        if not self.linuxdo_active():
+            raise HttpError(403, "管理员还没有开启 Linux DO 登录")
+        if action == "login" and not self.accounts.has_admin():
+            raise HttpError(403, "请先完成管理员初始化设置")
+        if action == "bind":
+            user = self.accounts.user(uid)
+            if user is None:
+                raise HttpError(401, "请先登录 Studia")
+            if user.get("linuxdo"):
+                raise HttpError(400, "当前账号已经绑定了 Linux DO，请先解绑")
+        state = secrets.token_urlsafe(24)
+        now = time.time()
+        with self.lock:
+            self.pending_linuxdo = {k: v for k, v in self.pending_linuxdo.items() if v["expires"] > now}
+            self.pending_linuxdo[state] = {"action": action, "uid": uid, "expires": now + OAUTH_TTL}
+        cfg = self.linuxdo()
+        url = LINUXDO_AUTHORIZE_URL + "?" + urlencode({
+            "client_id": cfg["client_id"],
+            "redirect_uri": self.linuxdo_callback_url(),
+            "response_type": "code",
+            "scope": "user",
+            "state": state,
+        })
+        return url, state
+
+    def linuxdo_callback(self, *, code, state, cookie_state, error, session_uid, ip):
+        with self.lock:
+            entry = self.pending_linuxdo.pop(state, None) if state else None
+        home = self.public_url + "/"
+        is_bind = bool(entry and entry["action"] == "bind")
+        back = "%s#/profile" % home if is_bind else home
+        if error:
+            return False, "授权已取消", "你取消了 Linux DO 授权。", back, None
+        if not self.linuxdo_active():
+            return False, "无法完成登录", "管理员已关闭 Linux DO 登录。", back, None
+        if (entry is None or entry["expires"] < time.time() or not cookie_state
+                or not hmac.compare_digest(cookie_state.encode(), state.encode())):
+            self.audit("linuxdo_callback", ip=ip, ok=False)
+            return False, "授权已失效", "这次授权已过期或校验未通过，请返回 Studia 重新发起。", back, None
+        if not code:
+            return False, "授权未完成", "没有收到 Linux DO 返回的授权码，请重试。", back, None
+        if is_bind and (session_uid is None or session_uid != entry["uid"]):
+            return False, "绑定未完成", "当前浏览器登录的 Studia 账号和发起绑定的账号不一致，请换回原账号重试。", back, None
+        try:
+            profile = linuxdo_exchange(self.linuxdo(), code, self.linuxdo_callback_url())
+        except HttpError as exc:
+            self.audit("linuxdo_bind" if is_bind else "linuxdo_login", ip=ip, ok=False)
+            return False, "授权失败", str(exc), back, None
+        if profile.get("active") is False:
+            self.audit("linuxdo_bind" if is_bind else "linuxdo_login", actor=str(profile.get("username") or profile["id"]), ip=ip, ok=False)
+            return False, "无法继续", "这个 Linux DO 账号尚未激活，无法使用。", back, None
+        if profile.get("silenced") is True:
+            self.audit("linuxdo_bind" if is_bind else "linuxdo_login", actor=str(profile.get("username") or profile["id"]), ip=ip, ok=False)
+            return False, "无法继续", "这个 Linux DO 账号已被禁言，无法使用。", back, None
+        ext_id = str(profile["id"]).strip()
+        uname = str(profile.get("username") or "").strip()
+        display = str(profile.get("name") or "").strip()
+        level = profile.get("trust_level")
+        if is_bind:
+            try:
+                self.accounts.bind_oauth(entry["uid"], "linuxdo", ext_id, username=uname, name=display, trust_level=level)
+            except AccountError as exc:
+                self.audit("linuxdo_bind", actor=(self.accounts.user(entry["uid"]) or {}).get("username", ""), target=uname or ext_id, ip=ip, ok=False)
+                return False, "绑定失败", str(exc), back, None
+            self.audit("linuxdo_bind", actor=(self.accounts.user(entry["uid"]) or {}).get("username", ""), target=uname or ext_id, ip=ip, ok=True)
+            return True, "", "", "%s?oauth=bound#/profile" % home, None
+        try:
+            uid, created = self.accounts.login_oauth("linuxdo", ext_id, username=uname, name=display, trust_level=level)
+        except AccountError as exc:
+            self.audit("linuxdo_login", actor=uname or ext_id, ip=ip, ok=False)
+            return False, "无法登录", str(exc), home, None
+        user = self.accounts.user(uid)
+        self.audit("linuxdo_register" if created else "linuxdo_login", actor=user["username"], target=uname or ext_id, ip=ip, ok=True)
+        return True, "", "", home, uid
+
     # ------------------------------------------------------------ admin helpers
 
     def default_model(self):
@@ -417,10 +599,16 @@ class Hub:
         self.accounts.set_setting("registration", rules)
 
     def site_settings(self):
-        config, smtp = self.default_model(), self.smtp()
+        config, smtp, linuxdo = self.default_model(), self.smtp(), self.linuxdo()
         health = self.default_model_health(config)
         return {"max_jobs": self.default_job_limit(),
                 "registration": self.registration(),
+                "oauth": {
+                    "enabled": self.oauth_enabled(),
+                    "callback_url": self.linuxdo_callback_url(),
+                    "icon_url": "%s/icon-512.png" % self.public_url,
+                    "linuxdo": linuxdo and {"client_id": linuxdo["client_id"], "secret_hint": key_hint(linuxdo["client_secret"])},
+                },
                 "zhs_parallel_study": bool(self.accounts.setting("zhs_parallel_study", False)),
                 "answer_pace": self.answer_pace(),
                 "ui_speed": self.ui_speed(),
@@ -740,17 +928,23 @@ class HostedAccess:
             return forwarded.split(",")[-1].strip()
         return request.client_address[0]
 
-    def _token(self, request):
+    def _cookie_value(self, request, name):
         cookie = SimpleCookie()
         try:
             cookie.load(request.headers.get("Cookie", ""))
         except Exception:
             return ""
-        return cookie[COOKIE].value if COOKIE in cookie else ""
+        return cookie[name].value if name in cookie else ""
+
+    def _token(self, request):
+        return self._cookie_value(request, COOKIE)
+
+    def _set_cookie(self, name, value, max_age):
+        return "%s=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=%d%s" % (
+            name, value, max_age, "; Secure" if self.secure else "")
 
     def _cookie(self, value, max_age):
-        return {"Set-Cookie": "%s=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=%d%s"
-                              % (COOKIE, value, max_age, "; Secure" if self.secure else "")}
+        return {"Set-Cookie": self._set_cookie(COOKIE, value, max_age)}
 
     def _signed_in(self, uid):
         token = self.hub.sessions.create(uid)
@@ -761,7 +955,38 @@ class HostedAccess:
     def public(self, request, method, path, query, body):
         hub = self.hub
         if method == "GET" and path == "/api/mode":
-            return {"mode": self.mode, "setup": not hub.accounts.has_admin(), "register": hub.registration(), "speed": hub.ui_speed()}
+            return {"mode": self.mode, "setup": not hub.accounts.has_admin(), "register": hub.registration(),
+                    "oauth": hub.oauth_public(), "speed": hub.ui_speed()}
+        if method == "GET" and path == "/auth/linuxdo/start":
+            try:
+                url, state = hub.linuxdo_start(action="login")
+            except HttpError as exc:
+                return Reply(_page("无法登录", str(exc), False, hub.public_url + "/"), status=exc.status,
+                             content_type="text/html; charset=utf-8",
+                             headers={"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"})
+            return Reply(b"", status=302, content_type="text/plain; charset=utf-8",
+                         headers={"Location": url, "Set-Cookie": self._set_cookie(OAUTH_STATE_COOKIE, state, OAUTH_TTL)})
+        if method == "GET" and path == "/auth/linuxdo/callback":
+            session = hub.sessions.get(self._token(request))
+            ok, title, message, target, login_uid = hub.linuxdo_callback(
+                code=(query.get("code") or [""])[0].strip(),
+                state=(query.get("state") or [""])[0].strip(),
+                cookie_state=self._cookie_value(request, OAUTH_STATE_COOKIE),
+                error=(query.get("error") or [""])[0].strip(),
+                session_uid=session["uid"] if session else None,
+                ip=self._ip(request),
+            )
+            clear_state = self._set_cookie(OAUTH_STATE_COOKIE, "", 0)
+            if ok:
+                cookies = [clear_state]
+                if login_uid:
+                    cookies.append(self._set_cookie(COOKIE, hub.sessions.create(login_uid), hub.sessions.ttl))
+                return Reply(b"", status=302, content_type="text/plain; charset=utf-8",
+                             headers={"Location": target, "Set-Cookie": cookies})
+            return Reply(_page(title, message, False, target), status=400,
+                         content_type="text/html; charset=utf-8",
+                         headers={"Set-Cookie": clear_state,
+                                  "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"})
         if method == "POST" and path == "/api/auth/setup":
             ip = self._ip(request)
             key = "ip:" + ip
@@ -890,7 +1115,17 @@ class HostedAccess:
     def private(self, request, method, path, query, body, ctx):
         hub, user = self.hub, ctx["user"]
         if method == "GET" and path == "/api/auth/me":
-            return {"user": user, "csrf": ctx["session"]["csrf"], "mail": hub.smtp() is not None}
+            return {"user": user, "csrf": ctx["session"]["csrf"], "mail": hub.smtp() is not None, "oauth": hub.oauth_public()}
+        if method == "POST" and path == "/api/auth/linuxdo/bind":
+            url, state = hub.linuxdo_start(action="bind", uid=user["id"])
+            return Reply({"url": url}, headers={"Set-Cookie": self._set_cookie(OAUTH_STATE_COOKIE, state, OAUTH_TTL)})
+        if method == "POST" and path == "/api/auth/linuxdo/unbind":
+            try:
+                hub.accounts.unbind_oauth(user["id"], "linuxdo")
+            except AccountError as exc:
+                raise HttpError(400, str(exc))
+            hub.audit("linuxdo_unbind", actor=user["username"], ip=self._ip(request))
+            return {"user": hub.accounts.user(user["id"])}
         if method == "POST" and path == "/api/auth/logout":
             hub.sessions.drop(ctx["token"])
             return Reply({}, headers=self._cookie("", 0))
@@ -979,6 +1214,8 @@ class HostedAccess:
                 hub.save_smtp(body["smtp"])
             if "registration" in body:
                 hub.save_registration(body["registration"])
+            if "oauth" in body:
+                hub.save_oauth(body["oauth"])
             if limit is not None:
                 hub.accounts.set_setting("max_jobs", limit)
             if "zhs_parallel_study" in body:

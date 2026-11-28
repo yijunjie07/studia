@@ -232,6 +232,94 @@ class WebResponsivenessTests(unittest.TestCase):
         self.assertLessEqual(overflow["scrollW"], overflow["innerW"])
         self.assertEqual(overflow["heroOut"], 0)
 
+    def test_profile_tab_oauth_admin_and_passwordless_linuxdo_ui(self):
+        import os
+        import tempfile
+        from unittest.mock import patch
+        import web.accounts
+        from web.hosting import COOKIE, HostedAccess, Hub
+        from web.server import make_handler
+
+        errors = []
+        self.page.on("pageerror", lambda err: errors.append(str(err)))
+        with tempfile.TemporaryDirectory() as directory, patch.object(web.accounts, "ITERATIONS", 1000):
+            srv = ThreadingHTTPServer(("127.0.0.1", 0), None)
+            port = srv.server_address[1]
+            hub = Hub(directory, "http://127.0.0.1:%d" % port, key=os.urandom(32))
+            hub.accounts.create_user("admin", "admin-password", role="admin")
+            hub.site_store.set("smtp", {"host": "smtp.example.com", "port": 465, "security": "ssl",
+                                        "username": "a@example.com", "password": "pw",
+                                        "sender": "a@example.com", "sender_name": "Studia"})
+            srv.RequestHandlerClass = make_handler(HostedAccess(hub, port))
+            threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
+            base = "http://127.0.0.1:%d" % port
+            try:
+                # 1. Login page hides Linux DO entry while OAuth master switch is off.
+                self.page.goto(base + "/", wait_until="domcontentloaded")
+                self.page.get_by_role("heading", name="登录").wait_for(timeout=3000)
+                self.assertEqual(self.page.locator(".auth_oauth").count(), 0)
+
+                # 2. Sign in as admin (password account without email sees email-prompt), dismiss it, then configure OAuth.
+                self.page.locator('input[name="username"]').fill("admin")
+                self.page.locator('input[name="password"]').fill("admin-password")
+                self.page.locator(".auth_submit").click()
+                self.page.wait_for_function("() => !document.body.classList.contains('signed-out')", timeout=3000)
+                self.page.locator('dialog[aria-labelledby="email-prompt"] [data-later]').click()
+                self.page.wait_for_function("() => !document.querySelector('dialog[open]')", timeout=3000)
+                self.page.goto(base + "/#/admin/oauth", wait_until="domcontentloaded")
+                self.page.get_by_role("heading", name="OAuth 总开关").wait_for(timeout=3000)
+                self.assertTrue(self.page.locator('[data-oauth-enabled="1"]').is_disabled())
+                self.assertIn(base + "/auth/linuxdo/callback", self.page.content())
+                self.page.locator("[data-linuxdo-edit]").click()
+                self.page.locator('dialog input[name="client_id"]').fill("demo-client-id")
+                self.page.locator('dialog input[name="client_secret"]').fill("demo-secret-9999")
+                self.page.locator("dialog button.primary").click()
+                self.page.locator(".pill.blue", has_text="已配置").wait_for(timeout=3000)
+                self.page.locator('[data-oauth-enabled="1"]').click()
+                self.page.locator('[data-oauth-enabled="1"][aria-pressed="true"]').wait_for(timeout=3000)
+
+                # 3. 个人资料 and 设置 are separate: sidebar menu has both, 设置 holds only 平台账号, 个人资料 holds user profile.
+                self.page.locator("[data-me]").click()
+                self.page.locator('.me_menu [data-go="#/profile"]').wait_for(timeout=3000)
+                self.page.locator('.me_menu [data-go="#/settings"]').wait_for(timeout=3000)
+                self.page.locator('.me_menu [data-go="#/profile"]').click()
+                self.page.get_by_role("heading", name="个人资料").wait_for(timeout=3000)
+                self.page.locator("[data-linuxdo-bind]").wait_for(timeout=3000)
+                self.assertGreater(self.page.get_by_text("邮箱", exact=True).count(), 0)
+                self.assertGreater(self.page.get_by_text("密码", exact=True).count(), 0)
+                self.assertEqual(self.page.get_by_role("heading", name="平台账号").count(), 0)
+
+                self.page.goto(base + "/#/settings/account", wait_until="domcontentloaded")
+                self.page.get_by_role("tab", name="平台账号").wait_for(timeout=3000)
+                self.page.get_by_role("heading", name="平台账号").wait_for(timeout=3000)
+                self.assertEqual(self.page.locator("[data-linuxdo-bind]").count(), 0)
+                self.assertEqual(self.page.locator('[data-account-edit="username"]').count(), 0)
+
+                # 4. Sign out: login page now displays the Linux DO OAuth button.
+                self.page.context.clear_cookies()
+                self.page.goto(base + "/", wait_until="domcontentloaded")
+                oauth_link = self.page.locator('a.auth_oauth[href="/auth/linuxdo/start"]')
+                oauth_link.wait_for(timeout=3000)
+                self.assertEqual(oauth_link.text_content().strip(), "使用 Linux DO 登录")
+
+                # 5. Passwordless Linux DO user sees 个人资料 with Linux DO info, no email/password rows, and no email modal.
+                uid, _ = hub.accounts.login_oauth("linuxdo", "777", username="ld_user", name="LD", trust_level=2)
+                tok = hub.sessions.create(uid)
+                self.page.context.add_cookies([{"name": COOKIE, "value": tok, "url": base}])
+                self.page.goto("about:blank")
+                self.page.goto(base + "/#/profile", wait_until="domcontentloaded")
+                self.page.get_by_role("heading", name="个人资料").wait_for(timeout=3000)
+                self.page.get_by_text("@ld_user · 2 级 · 通过 Linux DO 登录").wait_for(timeout=3000)
+                self.page.wait_for_timeout(300)
+                self.assertEqual(self.page.locator("dialog[open]").count(), 0)
+                self.assertEqual(self.page.locator("[data-linuxdo-unbind]").count(), 0)
+                self.assertEqual(self.page.locator('[data-account-edit="email"]').count(), 0)
+                self.assertEqual(self.page.locator('[data-account-edit="password"]').count(), 0)
+            finally:
+                srv.shutdown()
+                srv.server_close()
+        self.assertEqual(errors, [])
+
 
 if __name__ == "__main__":
     unittest.main()

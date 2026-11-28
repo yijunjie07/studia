@@ -20,6 +20,7 @@ USERNAME_RULE = "用户名需 2–32 位，只能包含字母、数字、汉字�
 # No list separators or quoting: "a,b@x.com" would reach several mailboxes from one To header.
 EMAIL = re.compile(r"^[^@\s,;<>\"()\[\]\\]+@[^@\s,;<>\"()\[\]\\]+\.[^@\s,;<>\"()\[\]\\]+$")
 MIN_PASSWORD = 8
+NO_PASSWORD = "!"  # sentinel for OAuth-only accounts; never matches check_password
 SESSION_TTL = 7 * 86400
 INVITE_TTL = 7 * 86400
 RESET_TTL = 30 * 60
@@ -37,12 +38,24 @@ def hash_password(password, salt=None, iterations=None):
 
 
 def check_password(password, stored):
+    if not stored or stored == NO_PASSWORD:
+        return False
     try:
         _, iterations, salt, digest = stored.split("$")
         actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), base64.b64decode(salt), int(iterations))
         return hmac.compare_digest(actual, base64.b64decode(digest))
     except (ValueError, TypeError):
         return False
+
+
+def _oauth_username(username, external_id, provider="linuxdo"):
+    """Turn an external OAuth handle into a valid Studia username."""
+    cleaned = re.sub(r"[^\w.\-]", "_", (username or "").strip()).strip("_")
+    if len(cleaned) < 2:
+        cleaned = "%s_%s" % (provider, re.sub(r"[^\w.\-]", "", str(external_id)))
+    if len(cleaned) < 2:
+        cleaned = "%s_%s" % (provider, secrets.token_hex(3))
+    return cleaned[:32]
 
 
 # Verifying against a dummy hash keeps unknown usernames as slow as wrong passwords.
@@ -69,6 +82,10 @@ class Accounts:
             key TEXT PRIMARY KEY, uid TEXT NOT NULL, csrf TEXT NOT NULL, expires REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
         CREATE TABLE IF NOT EXISTS resets (key TEXT PRIMARY KEY, uid TEXT NOT NULL, expires REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS oauth_accounts (
+            provider TEXT NOT NULL, external_id TEXT NOT NULL, uid TEXT NOT NULL,
+            username TEXT, name TEXT, trust_level INTEGER, created REAL,
+            PRIMARY KEY (provider, external_id), UNIQUE (provider, uid));
     """
 
     def __init__(self, directory):
@@ -126,10 +143,18 @@ class Accounts:
             return self.db.execute(sql, args).fetchone()
 
     @staticmethod
-    def public(row):
+    def _oauth_public(row):
+        if row is None:
+            return None
+        return {"id": row["external_id"], "username": row["username"] or "", "name": row["name"] or "",
+                "trust_level": row["trust_level"]}
+
+    @staticmethod
+    def public(row, oauth=None):
         return {"id": row["id"], "username": row["username"], "role": row["role"], "disabled": bool(row["disabled"]),
                 "created": row["created"], "last_login": row["last_login"], "max_jobs": row["max_jobs"],
-                "email": row["email"]}
+                "email": row["email"], "has_password": bool(row["password"] and row["password"] != NO_PASSWORD),
+                "linuxdo": oauth}
 
     # ------------------------------------------------------------ site settings and limits
 
@@ -172,26 +197,38 @@ class Accounts:
         return uid
 
     def user(self, uid):
-        row = self._one("SELECT * FROM users WHERE id = ?", uid)
-        return self.public(row) if row else None
+        with self.lock:
+            row = self.db.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
+            if row is None:
+                return None
+            oauth = self.db.execute("SELECT * FROM oauth_accounts WHERE uid = ? AND provider = 'linuxdo'", (uid,)).fetchone()
+        return self.public(row, self._oauth_public(oauth))
 
     def users(self):
         with self.lock:
-            return [self.public(row) for row in self.db.execute("SELECT * FROM users ORDER BY created")]
+            rows = self.db.execute("SELECT * FROM users ORDER BY created").fetchall()
+            links = {r["uid"]: self._oauth_public(r)
+                     for r in self.db.execute("SELECT * FROM oauth_accounts WHERE provider = 'linuxdo'").fetchall()}
+        return [self.public(row, links.get(row["id"])) for row in rows]
 
     def find(self, login):
         """A user by username or bound email (登录 and 忘记密码 take either)."""
         if not login:
             return None
-        row = self._one("SELECT * FROM users WHERE username = ? OR email = ? COLLATE NOCASE", login, login)
-        return self.public(row) if row else None
+        with self.lock:
+            row = self.db.execute("SELECT * FROM users WHERE username = ? OR email = ? COLLATE NOCASE", (login, login)).fetchone()
+            if row is None:
+                return None
+            oauth = self.db.execute("SELECT * FROM oauth_accounts WHERE uid = ? AND provider = 'linuxdo'", (row["id"],)).fetchone()
+        return self.public(row, self._oauth_public(oauth))
 
     def has_admin(self):
         return self._one("SELECT 1 FROM users WHERE role = 'admin'") is not None
 
     def authenticate(self, login, password):
         row = self._one("SELECT * FROM users WHERE username = ? OR email = ? COLLATE NOCASE", login, login) if login else None
-        if not check_password(password or "", row["password"] if row else _DUMMY) or row is None:
+        stored = row["password"] if (row is not None and row["password"] != NO_PASSWORD) else _DUMMY
+        if not check_password(password or "", stored) or row is None or row["password"] == NO_PASSWORD:
             return None
         if row["disabled"]:
             raise AccountError("这个账号已被停用，请联系管理员")
@@ -201,7 +238,8 @@ class Accounts:
 
     def password_ok(self, uid, password):
         row = self._one("SELECT password FROM users WHERE id = ?", uid)
-        return check_password(password or "", row["password"] if row else _DUMMY) and row is not None
+        stored = row["password"] if (row is not None and row["password"] != NO_PASSWORD) else _DUMMY
+        return check_password(password or "", stored) and row is not None and row["password"] != NO_PASSWORD
 
     def touch(self, uid, every=60):
         """Record activity: last_login is shown as "last seen", so a 7-day cookie or a fresh
@@ -313,6 +351,94 @@ class Accounts:
             if invite:
                 self.db.execute("UPDATE invites SET used_by = ? WHERE code = ?", (uid, code))
         return uid
+
+    # ------------------------------------------------------------ OAuth accounts
+
+    def login_oauth(self, provider, external_id, *, username="", name="", trust_level=None):
+        """Sign in via an OAuth identity, creating a passwordless user on first visit. Returns (uid, created)."""
+        external_id = str(external_id or "").strip()
+        if not external_id:
+            raise AccountError("第三方账号标识无效")
+        level = trust_level if isinstance(trust_level, int) and not isinstance(trust_level, bool) else None
+        uname, display = str(username or "").strip()[:64], str(name or "").strip()[:64]
+        now = time.time()
+        with self.transaction():
+            link = self.db.execute("SELECT uid FROM oauth_accounts WHERE provider = ? AND external_id = ?",
+                                   (provider, external_id)).fetchone()
+            if link is not None:
+                row = self.db.execute("SELECT id, disabled FROM users WHERE id = ?", (link["uid"],)).fetchone()
+                if row is not None:
+                    if row["disabled"]:
+                        raise AccountError("这个账号已被停用，请联系管理员")
+                    self.db.execute("UPDATE oauth_accounts SET username = ?, name = ?, trust_level = ? "
+                                    "WHERE provider = ? AND external_id = ?",
+                                    (uname, display, level, provider, external_id))
+                    self.db.execute("UPDATE users SET last_login = ? WHERE id = ?", (now, row["id"]))
+                    return row["id"], False
+                self.db.execute("DELETE FROM oauth_accounts WHERE provider = ? AND external_id = ?",
+                                (provider, external_id))
+            base = _oauth_username(uname, external_id, provider)
+            uid = secrets.token_hex(8)
+            candidates = [base] + ["%s_%d" % (base[:27], n) for n in range(2, 20)] + [
+                "%s_%s" % (base[:25], secrets.token_hex(3)) for _ in range(10)
+            ]
+            inserted = False
+            for candidate in candidates:
+                try:
+                    self.db.execute(
+                        "INSERT INTO users (id, username, password, role, created, last_login) VALUES (?,?,?,'user',?,?)",
+                        (uid, candidate, NO_PASSWORD, now, now),
+                    )
+                    inserted = True
+                    break
+                except sqlite3.IntegrityError:
+                    continue
+            if not inserted:
+                raise AccountError("无法分配用户名，请稍后重试")
+            self.db.execute(
+                "INSERT INTO oauth_accounts (provider, external_id, uid, username, name, trust_level, created) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (provider, external_id, uid, uname, display, level, now),
+            )
+            return uid, True
+
+    def bind_oauth(self, uid, provider, external_id, *, username="", name="", trust_level=None):
+        """Link an external OAuth identity to an existing Studia account."""
+        external_id = str(external_id or "").strip()
+        if not external_id:
+            raise AccountError("第三方账号标识无效")
+        level = trust_level if isinstance(trust_level, int) and not isinstance(trust_level, bool) else None
+        uname, display = str(username or "").strip()[:64], str(name or "").strip()[:64]
+        with self.transaction():
+            if self.db.execute("SELECT 1 FROM users WHERE id = ?", (uid,)).fetchone() is None:
+                raise AccountError("用户不存在")
+            existing = self.db.execute("SELECT uid FROM oauth_accounts WHERE provider = ? AND external_id = ?",
+                                       (provider, external_id)).fetchone()
+            if existing is not None:
+                if existing["uid"] != uid:
+                    raise AccountError("这个 Linux DO 账号已经绑定了其他 Studia 账号")
+                self.db.execute("UPDATE oauth_accounts SET username = ?, name = ?, trust_level = ? "
+                                "WHERE provider = ? AND external_id = ?",
+                                (uname, display, level, provider, external_id))
+                return
+            if self.db.execute("SELECT 1 FROM oauth_accounts WHERE provider = ? AND uid = ?", (provider, uid)).fetchone():
+                raise AccountError("当前账号已经绑定了其他 Linux DO 账号，请先解绑")
+            self.db.execute(
+                "INSERT INTO oauth_accounts (provider, external_id, uid, username, name, trust_level, created) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (provider, external_id, uid, uname, display, level, time.time()),
+            )
+
+    def unbind_oauth(self, uid, provider):
+        """Remove an OAuth link; refused when the account has no password to fall back on."""
+        with self.transaction():
+            row = self.db.execute("SELECT password FROM users WHERE id = ?", (uid,)).fetchone()
+            if row is None:
+                raise AccountError("用户不存在")
+            if not row["password"] or row["password"] == NO_PASSWORD:
+                raise AccountError("当前账号没有设置密码，不能解绑 Linux DO")
+            if self.db.execute("DELETE FROM oauth_accounts WHERE provider = ? AND uid = ?", (provider, uid)).rowcount == 0:
+                raise AccountError("当前账号尚未绑定 Linux DO")
 
 
 class Sessions:
